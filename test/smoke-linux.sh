@@ -20,14 +20,14 @@ for attempt in {1..20}; do
   sleep 1
 done
 sudo governor status --json
-[[ $(governor version) == 0.2.0 ]]
+[[ $(governor version) == 0.2.1 ]]
 if governor seed 34560; then echo "consumer control unexpectedly succeeded" >&2; exit 1; fi
 if sudo -u governor governor limit off; then echo "daemon control unexpectedly succeeded" >&2; exit 1; fi
 if sudo -u governor sudo -n /usr/local/libexec/governor-cap 200 system.slice; then
   echo "cap helper accepted system.slice" >&2; exit 1
 fi
 
-sudo governor exec -- sh -c 'test "$(cut -d: -f3 /proc/self/cgroup)" != /; case $(cat /proc/self/cgroup) in */user.slice/*) exit 0;; *) exit 1;; esac'
+sudo governor exec --wait 5 -- sh -c 'cgroup=$(cut -d: -f3 /proc/self/cgroup); case $cgroup in /user.slice/*) test "$(cat /sys/fs/cgroup$cgroup/cpu.weight)" = 1;; *) exit 1;; esac'
 sudo install -m 0644 test/fixtures/governor-smoke.service /etc/systemd/system/governor-smoke.service
 sudo systemctl daemon-reload
 sudo governor enroll-service governor-smoke.service

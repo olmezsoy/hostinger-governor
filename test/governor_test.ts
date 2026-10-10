@@ -386,3 +386,199 @@ Deno.test("recovery completes under a host limit with background demand and neig
   assertEquals(limited, false);
   assertEquals(f.g.s.limit, undefined);
 });
+
+// A lift test drives several cores into the limit on purpose. The interval that contains it shows
+// that steal and that CPU; neither is the slice pressing on the limit.
+Deno.test("a failed lift test's own steal and CPU do not tighten the limit", async () => {
+  const f = fixture();
+  await f.g.tick();
+  f.g.enterLimit(start, false);
+  f.g.io.demand = () => Promise.resolve({ busy: 0.3, steal: 0.52, seconds: 25 });
+  f.g.s.balance = p.recovered;
+  await f.advance(60, 0.25, 0);
+  const held = f.g.s.limit!.ceiling;
+  assert(held > 20);
+  await f.advance(30, 0.6, 0.35, 0.2);
+  assertEquals(f.g.s.limit!.ceiling, held);
+});
+
+Deno.test("evident steal enters a limit even while neighbour probes are cooling down", async () => {
+  const f = fixture();
+  await f.g.tick();
+  let probes = 0;
+  f.g.probe = () => {
+    probes++;
+    return Promise.resolve(false);
+  };
+  for (let i = 0; i < 4; i++) await f.advance(30, 0.25, 0.03);
+  assertEquals(probes, 1);
+  for (let i = 0; i < 12 && !f.g.s.limit; i++) await f.advance(30, 0.2, 0.4);
+  assert(f.g.s.limit);
+});
+
+Deno.test("steal well above what a failed probe saw is probed again inside the cooldown", async () => {
+  const f = fixture();
+  await f.g.tick();
+  let probes = 0;
+  let confirm = false;
+  f.g.probe = () => {
+    probes++;
+    return Promise.resolve(confirm);
+  };
+  for (let i = 0; i < 4; i++) await f.advance(30, 0.25, 0.03);
+  assertEquals(probes, 1);
+  confirm = true;
+  for (let i = 0; i < 10 && !f.g.s.limit; i++) await f.advance(30, 0.25, 0.15);
+  assertEquals(probes, 2);
+  assert(f.g.s.limit);
+});
+
+Deno.test("failed lift tests back off from two minutes to fifteen", async () => {
+  const f = fixture();
+  await f.g.tick();
+  f.g.enterLimit(start, false);
+  const at: number[] = [];
+  f.g.limitGone = () => {
+    at.push(f.g.s.uptime!);
+    return Promise.resolve(false);
+  };
+  f.g.s.balance = p.recovered;
+  for (let i = 0; i < 120; i++) await f.advance(30);
+  const gaps = at.slice(1).map((t, i) => Math.round((t - at[i]) / 60_000));
+  assertEquals(gaps.slice(0, 5), [2, 4, 8, 15, 15]);
+});
+
+Deno.test("a limit teaches the margin only once a lift test fails", async () => {
+  const f = fixture();
+  await f.g.tick();
+  [f.g.s.balance, f.g.s.used] = [20_000, 50_000];
+  const margin = { ...f.g.s.margin };
+  f.g.enterLimit(start, true);
+  assertEquals(f.g.s.margin, margin);
+  f.g.io.demand = () => Promise.resolve({ busy: 0.3, steal: 0.52, seconds: 25 });
+  for (let i = 0; i < 60; i++) await f.advance(30, 0.3, 0);
+  assert(f.g.s.margin.mul > margin.mul);
+});
+
+Deno.test("a first lift test that passes leaves margin and conservative credits intact", async () => {
+  const f = fixture();
+  await f.g.tick();
+  [f.g.s.balance, f.g.s.used] = [20_000, 50_000];
+  const margin = { ...f.g.s.margin };
+  f.g.enterLimit(start, true);
+  assertEquals(f.g.s.balance, 0);
+  f.g.limitGone = () => Promise.resolve(true);
+  // Delivery above the limit proves that it is gone, not that the bank is at the recovery point.
+  // The alarm may have been false while an ungoverned workload keeps spending the real bank.
+  for (let i = 0; i < 60 && f.g.s.limit; i++) await f.advance(30, 0.6, 0);
+  assertEquals(f.g.s.limit, undefined);
+  assertEquals(f.g.s.margin, margin);
+  assertEquals(f.g.s.balance, 0);
+});
+
+Deno.test("test CPU stays billed but cannot report outside demand blocking recovery", async () => {
+  const f = fixture();
+  await f.g.tick();
+  f.g.enterLimit(start, false);
+  f.g.s.balance = p.recovered;
+  f.g.io.demand = () => Promise.resolve({ busy: 0.3, steal: 0.52, seconds: 25 });
+  await f.advance(60, 0.25, 0);
+  const balance = f.g.s.balance;
+  await f.advance(30, 0.6, 0.35, 0.2);
+  assert(f.g.s.balance < balance);
+  assertEquals(f.g.publicState(start).coverage.recoveryBlocked, false);
+  assertEquals(f.g.publicState(start).coverage.outsideCores, 0);
+  await f.advance(30, 0.25, 0);
+  assert(f.g.publicState(start).credits.rate > 0);
+});
+
+Deno.test("root reseeding invalidates pending margin learning", async () => {
+  const f = fixture();
+  await f.g.tick();
+  [f.g.s.balance, f.g.s.used] = [20_000, 50_000];
+  f.g.enterLimit(start, true);
+  await f.request("seed");
+  const margin = { ...f.g.s.margin };
+  f.g.io.demand = () => Promise.resolve({ busy: 0.3, steal: 0.52, seconds: 25 });
+  await f.advance(30, 0.3, 0);
+  assertEquals(f.g.s.margin, margin);
+});
+
+Deno.test("entering another limit ignores recent probe and burner outside CPU", async () => {
+  const f = fixture();
+  await f.g.tick();
+  await f.advance(30, 0.1);
+  await f.g.limitGone();
+  await f.advance(30, 0.6, 0, 0.2);
+  f.g.enterLimit(start, false);
+  assert(f.g.s.limit!.ceiling > 20);
+});
+
+Deno.test("a reboot discards pending limit learning and test intervals", async () => {
+  const f = fixture();
+  await f.g.tick();
+  [f.g.s.balance, f.g.s.used] = [20_000, 50_000];
+  f.g.enterLimit(start, true);
+  const margin = { ...f.g.s.margin };
+  await f.g.limitGone();
+  f.reboot();
+  await f.g.tick();
+  f.g.limitGone = () => Promise.resolve(false);
+  for (let i = 0; i < 60; i++) await f.advance(30, 0.3, 0);
+  assertEquals(f.g.s.margin, margin);
+});
+
+Deno.test("failed burners and ambiguous delivery cannot widen the billing margin", async () => {
+  for (const brokenBurner of [true, false]) {
+    const f = fixture();
+    await f.g.tick();
+    [f.g.s.balance, f.g.s.used] = [20_000, 50_000];
+    f.g.enterLimit(start, true);
+    const margin = { ...f.g.s.margin };
+    if (brokenBurner) {
+      f.g.io.burner = () => ({
+        status: Promise.resolve({ success: false, code: 1, signal: null }),
+        kill: () => {},
+      });
+    } else {
+      // Less than the required delivery, but still above the host's known limit.
+      f.g.io.demand = () => Promise.resolve({ busy: 3.5 / p.vcpus, steal: 0.2, seconds: 25 });
+    }
+    for (let i = 0; i < 50; i++) await f.advance(30, 0.3, 0);
+    assertEquals(f.g.s.margin, margin);
+  }
+});
+
+Deno.test("a failed test's cooldown starts after the test completes", async () => {
+  const f = fixture();
+  await f.g.tick();
+  f.g.enterLimit(start, false);
+  f.g.s.balance = p.recovered;
+  f.g.limitGone = () => {
+    const uptime = f.g.s.uptime! + 35_000;
+    f.g.io.clock = () => Promise.resolve({ at: start, uptime, bootId: "boot-a" });
+    return Promise.resolve(false);
+  };
+  await f.advance(30);
+  assertEquals(f.g.s.limit!.testAt, f.g.s.uptime! + 35_000 + 120_000);
+});
+
+Deno.test("a throwing lift test backs off without learning or failing the tick", async () => {
+  const f = fixture();
+  await f.g.tick();
+  [f.g.s.balance, f.g.s.used] = [20_000, 50_000];
+  f.g.enterLimit(start, true);
+  f.g.s.balance = p.recovered;
+  const margin = { ...f.g.s.margin };
+  let attempts = 0;
+  f.g.io.burner = () => {
+    attempts++;
+    throw new Error("timeout unavailable");
+  };
+  await f.advance(30);
+  for (let i = 0; i < 3; i++) await f.advance(30);
+  assertEquals(attempts, 1);
+  assertEquals(f.g.s.margin, margin);
+  await f.advance(30);
+  assertEquals(attempts, 2);
+});

@@ -31,13 +31,17 @@ The governor measures the whole machine and caps workloads placed under `user.sl
   governor compares steal with demand, cuts the quota for 20 seconds, then restores it. A limit's
   steal should follow demand. This is a heuristic; the guest cannot read the host's count of
   throttled scheduling periods.
-- **Recovers on its own.** Under a limit it holds every login below the limit, so earning resumes.
-  It accounts for services outside the slice and tightens every minute while demand still presses on
-  the limit, down to a 20% quota of one core. A load test requires less than 15% demand steal and
-  actual CPU delivery above the host limit. Tests start at the estimated recovery point, or after
-  the earliest possible idle recovery time, and retry every two minutes. This lets recovery finish
-  even when neighbour steal prevents the estimate from rising. The billing margin can continue
-  learning beyond the old caps.
+- **Helps the VPS recover.** Under a limit it reduces login and enrolled-workload demand so earning
+  can resume. It accounts for services outside the slice and tightens every minute while demand
+  still presses on the limit, down to a 20% quota of one core. A load test requires less than 15%
+  demand steal and actual CPU delivery above the host limit. Tests start at the estimated recovery
+  point, or after the earliest possible idle recovery time. Failed tests back off for 2, 4, 8, then
+  15 minutes from completion. Probe and test intervals still count toward billed CPU, but cannot
+  tighten the quota or masquerade as outside demand. Obvious or sharply increased steal can bypass a
+  neighbour-probe cooldown. These remain heuristics, so detection can be delayed and neighbours can
+  cause false alarms. The margin learns only after healthy burners show delivery consistent with an
+  ongoing host limit. A first test that passes leaves the margin unchanged and never restores old
+  credits.
 - **Keeps a fallback quota.** A 20% quota of one core applies before startup, after shutdown or a
   crash, and early in boot. The helper can change only `user.slice`.
 
@@ -49,7 +53,7 @@ On the VPS, as root (systemd with cgroup v2; Ubuntu 22.04+ and Debian 12+ have i
 
 ```sh
 curl -fsSL https://github.com/olmezsoy/hostinger-governor/releases/latest/download/install.sh |
-  sudo bash -s -- --vm-id <id> --token-file <path> --timezone Europe/Istanbul --consumer <user>
+  sudo bash -s -- --vm-id <id> --token-file <path> --timezone Europe/Istanbul
 ```
 
 - `--vm-id`: your VM's id, from hPanel or `GET /api/vps/v1/virtual-machines`.
@@ -102,8 +106,29 @@ governor exec -- /path/to/job arg1 arg2
 ```
 
 This checks that the governor is accepting work and starts a systemd scope under the managed quota.
-Root uses the system manager; other users use their user manager, which must be available. For a
-service or the service activated by a systemd timer:
+It exits 3 without running the command if work is not accepted. For cron jobs that should wait
+instead of skipping an attempt, use a bounded wait, up to 86400 seconds:
+
+```sh
+governor exec --wait 3600 -- /path/to/job arg1 arg2
+```
+
+Waiting does not reserve credits or guarantee a later run. Check exit codes and use a queue or retry
+policy if every job must eventually run. The wait uses a monotonic deadline.
+
+Root uses the system manager; other users use their user manager, which must be available. Scopes
+use `CPUWeight=1` so batch competes at low priority with sibling services. For an agent with its own
+login user, the containing user slice still competes with web services under `user.slice`. Set its
+weight explicitly, replacing `<uid>` with that user's numeric UID:
+
+```sh
+sudo systemctl set-property user-<uid>.slice CPUWeight=1
+```
+
+Weights affect siblings under contention; they are not CPU reservations. Enrollment alone does not
+prioritize services over every login. Keep latency-sensitive services outside the slice if they must
+avoid probe cuts, but account for their uncapped CPU use. For a service or the service activated by
+a systemd timer:
 
 ```sh
 sudo governor enroll-service heavy-job.service
@@ -132,12 +157,17 @@ settings follow
 
 ## Baseline verification
 
-Hostinger's article repeatedly states a 60% baseline and matching capacities, but still contains a
-30% formula and a conflicting FAQ. The default follows the main table; it has not been confirmed
-against your VPS's billing. Ask support to confirm your plan's rules. Under a truly idle workload,
-the published model predicts recovery in 24 minutes at 60%, or 84 minutes at 30%. Recovery logs
-record limit start and end, but background CPU and earning pauses make elapsed time alone
-inconclusive. Do not intentionally exhaust a production VPS to measure it.
+The directly fetched Hostinger article states a 60% baseline and matching capacities, but still
+contains a 30% formula. Search-index copies have also shown different per-plan tables. The default
+follows the directly fetched main table; it has not been confirmed against your VPS's billing. Ask
+support to confirm your plan's rules. Under a truly idle workload, the published model predicts
+recovery in 24 minutes at 60%, or 84 minutes at 30%. Each completed episode logs a
+`recovery observation` with elapsed time, the configured idle minimum, a recovery prediction based
+on observed charged CPU and conservative earning pauses, and the baseline share. Read it with
+`journalctl -u governor.service`. Compare repeated real episodes with support's answer; the guest
+cannot prove the host's earning pauses, billing, or exact lift time. Probe backoff can also delay
+noticing a lift. The governor does not change the baseline automatically. Do not intentionally
+exhaust a production VPS to measure it.
 
 If support or measurements establish a 30% baseline, set `"baseline_share": 0.3` in
 `/etc/governor/config.json`, run `sudo governor validate-config`, then restart `governor.service`.
@@ -149,6 +179,36 @@ The governor keeps:
 - top-process snapshots from hot or stolen moments in `/var/lib/governor/top/<day>.log`, for a week;
 - its working state in `/var/lib/governor/persist.json`.
 
+## Emergency access
+
+The fallback remains a shared 20% quota of one CPU. Repeated crashes can leave SSH sessions and
+enrolled web services with very little CPU. From a root shell or the provider console:
+
+```sh
+sudo systemctl stop governor.service
+sudo systemctl set-property --runtime user.slice CPUQuota=
+```
+
+This removes credit protection until the daemon restarts. Fix the configuration or service failure,
+then run `sudo systemctl start governor.service` to reapply protection. Raising the fallback is not
+universally safe when the host limits individual vCPUs.
+
+## Simulations
+
+The supplied second-by-second simulator runs the real governor against seeded workloads:
+
+```sh
+deno task sim "hidden overhead" 5 --episodes
+deno task sim "paused earning debits CPU" 5
+```
+
+It models neighbour steal, billing overhead, stops, outside workloads, alternate baselines, and
+aggregate or per-vCPU limits. Scheduling and host earning windows are assumptions. The original
+model freezes a growing bank while pressing; the `paused earning debits CPU` scenarios instead
+subtract CPU consumption during pauses. `used_pct` compares billed CPU with the theoretical
+baseline, including paused time, not actual earned-credit utilization. Neither model validates live
+billing.
+
 ## Limits
 
 - Sustained work above the baseline (4.8 vCPU on KVM 8) cannot fit; it runs slower instead. If that
@@ -158,6 +218,10 @@ The governor keeps:
 - System services and containers outside `user.slice` are measured, not capped. Enroll heavy work
   using the commands above. The governor cannot guarantee recovery while outside demand remains
   above the host limit.
+- An aggregate quota cannot guarantee recovery under per-vCPU throttling. The simulator's packed
+  per-vCPU case remains limited even at the 20% slice floor, because uncapped system work shares the
+  same throttled vCPU. Aggregate outside CPU can look harmless while a single vCPU is overloaded.
+  Reduce or reroute that work and verify the deployed rules; probe backoff alone cannot fix it.
 - Hostinger may change its rules. They live in `src/plans.ts`; check that article when it announces
   changes.
 

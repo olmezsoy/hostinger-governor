@@ -7,6 +7,7 @@ import {
   creditStep,
   demandSteal,
   LAW,
+  LIFT_STEAL,
   liftConfirmed,
   LIMIT_EVIDENT,
   LIMIT_PRESSING,
@@ -67,6 +68,7 @@ export type Sample = {
   seconds?: number;
   outside?: number;
   clockValid?: boolean;
+  test?: boolean;
 };
 export type Limit = {
   since: number;
@@ -74,6 +76,11 @@ export type Limit = {
   heldFrom: number;
   startedAt?: number;
   testAt?: number;
+  testEvery?: number;
+  // Defer learning until a failed lift test supplies more evidence. Passing the first test does
+  // not distinguish a false alarm from a genuine limit that has already recovered.
+  entry?: { balance: number; used: number; learn: boolean };
+  recovery?: { seconds: number; earningSeconds: number; charged: number };
 };
 
 type Private = {
@@ -87,8 +94,9 @@ type Private = {
   used: number;
   anchor?: Anchor & { checkedAt: number };
   limit?: Limit;
-  probe: { cooldownUntil: number; backoffMs: number };
+  probe: { cooldownUntil: number; backoffMs: number; failedSf?: number };
   samples: Sample[];
+  tested?: boolean;
   readings: Reading[];
   cpuPrev?: Counters;
   usagePrev?: UsageSnapshot;
@@ -136,6 +144,7 @@ const READINGS_KEEP_MS = 48 * 3_600_000;
 const ANCHOR_EVERY_MS = 30 * 60_000;
 const LIMIT_STEAL = 0.1;
 const TEST_EVERY_MS = 2 * 60_000;
+const TEST_MAX_MS = 15 * 60_000;
 const TIGHTEN_AFTER_MS = 60_000;
 const BACKOFF_MS = 10 * 60_000;
 const BACKOFF_MAX_MS = 3_600_000;
@@ -302,6 +311,7 @@ export class Governor {
   s: Private;
   readonly io: GovernorIO;
   comparison: number | null = null;
+  private liftEvidence: "unknown" | "limited" | "lifted" = "unknown";
   constructor(
     readonly cfg: Config,
     readonly plan: Plan,
@@ -372,11 +382,17 @@ export class Governor {
     );
   }
 
+  controlSamples(window: number) {
+    return this.recent(window).filter((x) => !x.test);
+  }
+
   publicState(now: number): PublicState {
     const s = this.s;
     const p = this.plan;
     const recent = this.recent(STEAL_WINDOW_MS);
     const half = this.recent(CPU_WINDOW_MS);
+    const control = this.controlSamples(STEAL_WINDOW_MS);
+    const outside = avg(control.map((x) => x.outside ?? x.busy * p.vcpus));
     const users30: Record<string, number> = {};
     for (const x of half) {
       for (const [who, v] of Object.entries(x.users ?? {})) {
@@ -386,7 +402,8 @@ export class Governor {
     const busy5 = avg(recent.map((x) => x.busy));
     const delta = p.baseline - charged(busy5 * p.vcpus, s.margin);
     const pressing = s.limit &&
-      demandSteal(busy5, avg(recent.map((x) => x.steal))) >= LIMIT_PRESSING;
+      demandSteal(avg(control.map((x) => x.busy)), avg(control.map((x) => x.steal))) >=
+        LIMIT_PRESSING;
     return {
       updatedAt: now,
       bootId: s.bootId ?? null,
@@ -424,25 +441,31 @@ export class Governor {
       readings: s.readings,
       accepting: !s.limit && !s.capFailed,
       coverage: {
-        outsideCores: avg(recent.map((x) => x.outside ?? x.busy * p.vcpus)),
-        recoveryBlocked: !!s.limit &&
-          avg(recent.map((x) => x.outside ?? x.busy * p.vcpus)) >= p.limit - 0.2,
+        outsideCores: outside,
+        recoveryBlocked: !!s.limit && outside >= p.limit - 0.2,
       },
     };
   }
 
   enterLimit(now: number, learn: boolean) {
     const s = this.s;
-    if (learn) s.margin = widen(s.margin, s.balance, s.used);
+    const entry = { balance: s.balance, used: s.used, learn };
     s.balance = 0;
     s.used = 0;
     s.earning = false;
     // Under the limit with what runs outside the slice on top.
     const outside = avg(
-      this.recent(STEAL_WINDOW_MS).map((x) => x.outside ?? x.busy * this.plan.vcpus),
+      this.controlSamples(STEAL_WINDOW_MS).map((x) => x.outside ?? x.busy * this.plan.vcpus),
     );
     const ceiling = recoveryCeiling(this.plan, outside);
-    s.limit = { since: now, ceiling, heldFrom: s.uptime ?? 0, startedAt: s.uptime ?? 0 };
+    s.limit = {
+      since: now,
+      ceiling,
+      heldFrom: s.uptime ?? 0,
+      startedAt: s.uptime ?? 0,
+      entry,
+      recovery: { seconds: 0, earningSeconds: 0, charged: 0 },
+    };
   }
 
   async request(path: string, now: number) {
@@ -459,12 +482,13 @@ export class Governor {
     if (r.action === "limit-on") this.enterLimit(now, false);
     else if (r.action === "limit-off") {
       this.s.limit = undefined;
-      // Hostinger lifts a limit at the recovery point; the next anchor corrects this.
+      // Root explicitly confirms that Hostinger lifted the limit at its recovery point.
       this.s.balance = Math.max(this.s.balance, this.plan.recovered);
       this.s.used = 0;
     } else if (r.action === "seed" && typeof r.balance === "number" && Number.isFinite(r.balance)) {
       this.s.balance = Math.min(Math.max(0, r.balance), this.plan.capacity);
       this.s.used = 0;
+      if (this.s.limit) this.s.limit.entry = undefined;
     } else return log("unknown request:", JSON.stringify(r));
     log("request:", JSON.stringify(r));
   }
@@ -496,6 +520,7 @@ export class Governor {
   // Demand under the limit for 20 seconds, then back: a limit's steal follows demand.
   async probe(sf0: number, ceiling: number): Promise<boolean> {
     this.s.noEarn = true;
+    this.s.tested = true;
     if (!await this.io.cap(this.slice, 20)) return false;
     let sfCut: number;
     let restored = false;
@@ -519,9 +544,11 @@ export class Governor {
 
   // More cores than the limit allows, busy for 30 seconds: under it much of that is stolen.
   async limitGone(): Promise<boolean> {
+    this.liftEvidence = "unknown";
     const n = Math.min(this.plan.vcpus, Math.ceil(this.plan.limit) + 2);
     const burn: Pick<Deno.ChildProcess, "status" | "kill">[] = [];
     this.s.noEarn = true;
+    this.s.tested = true;
     try {
       for (let i = 0; i < n; i++) {
         burn.push(this.io.burner());
@@ -529,8 +556,14 @@ export class Governor {
       await this.io.pause(5_000);
       const sample = await this.io.demand(25_000);
       const statuses = await Promise.all(burn.map((c) => c.status));
-      return statuses.every((s) => s.code === 124) &&
-        liftConfirmed(this.plan, n, sample.busy * this.plan.vcpus, sample.steal);
+      if (!statuses.every((s) => s.code === 124)) return false;
+      const busyCores = sample.busy * this.plan.vcpus;
+      const gone = liftConfirmed(this.plan, n, busyCores, sample.steal);
+      if (gone) this.liftEvidence = "lifted";
+      else if (busyCores <= this.plan.limit + 0.1 && sample.steal >= LIFT_STEAL) {
+        this.liftEvidence = "limited";
+      }
+      return gone;
     } finally {
       for (const c of burn) {
         try {
@@ -557,6 +590,7 @@ export class Governor {
       if (s.bootId !== undefined || prev) s.balance = 0;
       s.used = 0;
       s.noEarn = false;
+      s.tested = false;
       s.earning = false;
       s.anchor = undefined;
       this.comparison = null;
@@ -569,6 +603,9 @@ export class Governor {
         s.limit.heldFrom = uptime;
         s.limit.startedAt = uptime;
         s.limit.testAt = 0;
+        s.limit.testEvery = undefined;
+        s.limit.entry = undefined;
+        s.limit.recovery = { seconds: 0, earningSeconds: 0, charged: 0 };
       }
     }
     s.cpuPrev = counters;
@@ -601,7 +638,9 @@ export class Governor {
       seconds,
       outside: Math.max(0, (counters.busy - prev.busy) / total * p.vcpus - managed),
       clockValid: Math.abs((now - beforeAt) / 1000 - seconds) <= 2,
+      test: !!s.tested,
     };
+    s.tested = false;
     s.samples = [...s.samples, sample].filter((x) => uptime - (x.uptime ?? -Infinity) <= KEEP_MS);
     if (
       (sample.busy >= HOT_BUSY || sample.steal >= HOT_STEAL) &&
@@ -619,6 +658,12 @@ export class Governor {
     s.balance = creditStep(p, s.balance, busyCores, seconds, s.margin, earning);
     s.noEarn = false;
     s.used += charged(busyCores, s.margin) * seconds;
+    if (s.limit) {
+      const recovery = s.limit.recovery ??= { seconds: 0, earningSeconds: 0, charged: 0 };
+      recovery.seconds += seconds;
+      recovery.earningSeconds += earning ? seconds : 0;
+      recovery.charged += charged(busyCores, s.margin) * seconds;
+    }
     s.at = now;
     if (!s.limit && uptime >= (s.anchorNext ?? 0)) {
       s.anchorNext = uptime + ANCHOR_EVERY_MS;
@@ -632,25 +677,36 @@ export class Governor {
       }
     }
 
-    const recent = this.recent(STEAL_WINDOW_MS);
+    const recent = this.controlSamples(STEAL_WINDOW_MS);
     const steal = recent.length >= 3 ? avg(recent.map((x) => x.steal)) : 0;
     const busy = avg(recent.map((x) => x.busy));
-    const outside = Math.max(sample.outside ?? 0, avg(recent.map((x) => x.outside ?? 0)));
+    const outside = Math.max(
+      sample.test ? 0 : sample.outside ?? 0,
+      avg(recent.map((x) => x.outside ?? 0)),
+    );
     const current = await this.io.ceiling(this.slice);
 
+    const sfNow = demandSteal(busy, steal);
+    // During a cooldown, probe again only if steal is evident or well above what the failed probe
+    // saw: neighbours that failed a probe should not hide a limit that starts behind them.
+    const failed = uptime < s.probe.cooldownUntil ? s.probe.failedSf : undefined;
+    const jumped = failed !== undefined && sfNow >= Math.max(2 * failed, failed + 0.15);
     if (
-      !s.limit && recent.length >= 3 && demandSteal(busy, steal) >= LIMIT_STEAL &&
-      steal * p.vcpus >= 0.02 && uptime >= s.probe.cooldownUntil
+      !s.limit && recent.length >= 3 && sfNow >= LIMIT_STEAL &&
+      steal * p.vcpus >= 0.02 &&
+      (uptime >= s.probe.cooldownUntil || sfNow >= LIMIT_EVIDENT || jumped)
     ) {
-      const sf0 = demandSteal(busy, steal);
+      const sf0 = sfNow;
       if (sf0 >= LIMIT_EVIDENT || await this.probe(sf0, current ?? 100 * p.vcpus)) {
         this.enterLimit(now, true);
         s.probe.backoffMs = BACKOFF_MS;
+        s.probe.failedSf = undefined;
         log(`limit: start (margin x${s.margin.mul} +${s.margin.add})`);
         await this.io.hooks("limit-start", this.publicState(now));
       } else {
         s.probe.cooldownUntil = uptime + s.probe.backoffMs;
         s.probe.backoffMs = Math.min(s.probe.backoffMs * 2, BACKOFF_MAX_MS);
+        s.probe.failedSf = sf0;
       }
     }
 
@@ -658,7 +714,7 @@ export class Governor {
     if (limit) {
       limit.ceiling = Math.min(limit.ceiling, recoveryCeiling(p, outside));
       if (
-        demandSteal(sample.busy, sample.steal) >= LIMIT_PRESSING &&
+        !sample.test && demandSteal(sample.busy, sample.steal) >= LIMIT_PRESSING &&
         uptime - limit.heldFrom >= TIGHTEN_AFTER_MS
       ) {
         const managedDemand = Math.max(0, (sample.busy + sample.steal) * p.vcpus - outside);
@@ -672,11 +728,51 @@ export class Governor {
       const recoveryElapsed =
         uptime - (limit.startedAt ?? limit.heldFrom) >= p.recovered / p.baseline * 1000;
       if ((s.balance >= p.recovered || recoveryElapsed) && uptime >= (limit.testAt ?? 0)) {
-        if (await this.limitGone()) {
+        let lifted = false;
+        try {
+          lifted = await this.limitGone();
+        } catch (e) {
+          this.liftEvidence = "unknown";
+          log("lift test inconclusive:", e);
+        }
+        const finished = await this.io.clock();
+        if (lifted) {
+          if (limit.entry) {
+            log("limit: first lift test passed; margin unchanged, no credits restored");
+          }
+          const recovery = limit.recovery;
+          const net = recovery?.seconds
+            ? (p.baseline * recovery.earningSeconds - recovery.charged) / recovery.seconds
+            : 0;
+          log(
+            "recovery observation:",
+            JSON.stringify({
+              elapsedSeconds: Math.round(
+                (Math.max(uptime, finished.uptime) - (limit.startedAt ?? uptime)) / 1000,
+              ),
+              idleMinimumSeconds: Math.round(p.recovered / p.baseline),
+              estimatedRecoverySeconds: net > 0 ? Math.round(p.recovered / net) : null,
+              estimatedPausedSeconds: recovery
+                ? Math.round(recovery.seconds - recovery.earningSeconds)
+                : null,
+              baselineShare: p.baseline / p.vcpus,
+            }),
+          );
           s.limit = undefined;
           log("limit: lifted");
           await this.io.hooks("limit-end", this.publicState(now));
-        } else limit.testAt = uptime + TEST_EVERY_MS;
+        } else {
+          if (this.liftEvidence === "limited") {
+            if (limit.entry?.learn) {
+              s.margin = widen(s.margin, limit.entry.balance, limit.entry.used);
+              log(`limit: confirmed (margin x${s.margin.mul} +${s.margin.add})`);
+            }
+            limit.entry = undefined;
+          }
+          limit.testEvery = Math.min(2 * (limit.testEvery ?? TEST_EVERY_MS / 2), TEST_MAX_MS);
+          // Schedule from completion, not the sample taken before a 35-second test.
+          limit.testAt = Math.max(uptime, finished.uptime) + limit.testEvery;
+        }
       }
     }
 

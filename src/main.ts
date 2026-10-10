@@ -18,8 +18,9 @@ import {
 import { creditLines, report } from "./report.ts";
 import { configureDocker, enrollService } from "./workloads.ts";
 import { readClock } from "./sample.ts";
+import { execOptions, scopeArgs, waitForAccepting } from "./exec.ts";
 
-export const VERSION = "0.2.0";
+export const VERSION = "0.2.1";
 const STALE_MS = 5 * 60_000;
 
 async function state(): Promise<PublicState | null> {
@@ -47,9 +48,9 @@ async function ask(body: Record<string, unknown>) {
   console.log("sent; the governor applies it within one tick");
 }
 
-const usage = () => {
+const usage = (): never => {
   console.error(
-    "usage: governor run | status [--json] | report [hours] | limit on|off | seed <core-seconds> | exec -- <command> | enroll-service <unit> | configure-docker | version",
+    "usage: governor run | status [--json] | report [hours] | limit on|off | seed <core-seconds> | exec [--wait <seconds>] -- <command> | enroll-service <unit> | configure-docker | version",
   );
   Deno.exit(2);
 };
@@ -109,21 +110,25 @@ switch (cmd) {
     await ask({ action: "seed", balance: Number(args[0]) });
     break;
   case "exec": {
-    const command = args[0] === "--" ? args.slice(1) : args;
-    if (!command.length) usage();
-    const s = await state();
-    if (!s?.accepting) {
+    const options = (() => {
+      try {
+        return execOptions(args);
+      } catch {
+        return usage();
+      }
+    })();
+    if (
+      !await waitForAccepting(options.waitSeconds, {
+        state,
+        now: () => performance.now(),
+        sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+      })
+    ) {
       console.error("governor is not accepting work");
       Deno.exit(3);
     }
     const out = await new Deno.Command("systemd-run", {
-      args: [
-        ...(Deno.uid() === 0 ? ["--slice=user.slice"] : ["--user"]),
-        "--scope",
-        "--quiet",
-        "--",
-        ...command,
-      ],
+      args: scopeArgs(options.command, Deno.uid() === 0),
       stdin: "inherit",
       stdout: "inherit",
       stderr: "inherit",
