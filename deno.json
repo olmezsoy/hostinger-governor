@@ -1,0 +1,9 @@
+{
+  "tasks": {
+    "test": "deno test test/",
+    "check": "deno fmt --check && deno lint && deno check src/main.ts && deno test test/",
+    "compile": "deno compile --allow-read --allow-write --allow-run --allow-net --allow-env -o dist/governor src/main.ts"
+  },
+  "fmt": { "lineWidth": 100 },
+  "imports": { "@std/assert": "jsr:@std/assert@^1.0.14" }
+}
