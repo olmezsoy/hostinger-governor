@@ -6,7 +6,7 @@ and automatic recovery from Hostinger CPU limits.
 ## Hostinger referral discount
 
 > [!TIP]
-> **[Get 20% off your first Hostinger plan](https://www.hostinger.com/tr?REFERRALCODE=ASNVARDA3ZHG)**
+> **[Get 20% off your first Hostinger plan](https://www.hostinger.com/pricing/vps-hosting?REFERRALCODE=ASNVARDA3ZHG)**
 >
 > When I researched my own Hostinger plan, the influencer codes I found on YouTube gave 10% off.
 > This referral link gives you 20% instead. It's free to use, and I may earn a commission if you buy
