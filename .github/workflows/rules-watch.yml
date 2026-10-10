@@ -1,0 +1,49 @@
+name: Rules watch
+# Compares Hostinger's CPU credit article with the reviewed record in rules/ and opens an issue when
+# they differ. See "Rule changes" in the README.
+on:
+  schedule:
+    - cron: "41 */4 * * *"
+  workflow_dispatch:
+permissions:
+  contents: read
+  issues: write
+concurrency:
+  group: rules-watch
+jobs:
+  watch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: denoland/setup-deno@22d081ff2d3a40755e97629de92e3bcbfa7cf2ed # v2.0.5
+        with:
+          deno-version: v2.x
+      # Reads Hostinger's page without the GitHub token.
+      - name: Compare the live article with the reviewed record
+        run: >-
+          deno run --allow-net=www.hostinger.com --allow-read=rules
+          --allow-write="$RUNNER_TEMP/rules-report"
+          tools/rules-watch.ts check --report "$RUNNER_TEMP/rules-report"
+      # Holds the token without reading Hostinger's page.
+      - name: Open or update the issue
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: >-
+          deno run --allow-net=api.github.com --allow-read="$RUNNER_TEMP/rules-report"
+          --allow-env=GITHUB_TOKEN,GITHUB_REPOSITORY,GITHUB_REPOSITORY_OWNER
+          tools/rules-watch.ts publish --report "$RUNNER_TEMP/rules-report"
+      - name: Heartbeat
+        if: always()
+        run: |
+          watch_health=fail
+          if [[ -f "$REPORT/health.txt" ]]; then
+            watch_health="$(<"$REPORT/health.txt")"
+          fi
+          WATCH_HEALTH="$watch_health" bash tools/rules-heartbeat.sh
+        env:
+          HEARTBEAT_URL: ${{ secrets.RULES_WATCH_HEARTBEAT_URL }}
+          WATCH_JOB_STATUS: ${{ job.status }}
+          REPORT: ${{ runner.temp }}/rules-report

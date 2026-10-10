@@ -1,5 +1,18 @@
 # Changelog
 
+## Unreleased
+
+- Watch Hostinger's CPU credit article. A scheduled workflow opens an issue when the article
+  changes, with the reviewed and live numbers, numbers it can no longer find, contradictions inside
+  the article, the changed lines, and whether the code still agrees. Only markers from the workflow
+  or verified maintainers count as reported, failures are reported once per kind, and an optional
+  heartbeat alerts when the watcher stops running or cannot read all essential rules. Bot markers
+  inside quoted article content cannot suppress other versions.
+- `rules/hostinger-cpu-credits.json` records the reviewed version (a fingerprint, the numbers and
+  their source sentences, not the article). `deno task rules:accept` refuses incomplete records, and
+  `deno task check` keeps `src/plans.ts` and the new `EARNING_PAUSE_SHARE` in line with the record.
+  The daemon still never reads the article.
+
 ## v0.2.1
 
 - Exclude probe and lift-test intervals from quota control, outside-demand estimates, and recovery

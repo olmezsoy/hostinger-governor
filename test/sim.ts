@@ -27,7 +27,7 @@
 // lag_s (host limit to governor noticing), gov_min (minutes the governor knew), burns, avgCeil,
 // paused_min split by cause (burn test, probe, other = pressing with no test running).
 import { Governor, type GovernorIO } from "../src/governor.ts";
-import { plan } from "../src/plans.ts";
+import { EARNING_PAUSE_SHARE, plan } from "../src/plans.ts";
 
 type Sc = {
   name: string;
@@ -207,7 +207,7 @@ export function run(sc: Sc) {
     const steal = Math.max(0, want - busy);
     const bill = busy * mul + add;
     let delta = baseline - bill;
-    if (h.limited && throttled >= 0.33) {
+    if (h.limited && throttled >= EARNING_PAUSE_SHARE) {
       delta = sc.debitPaused ? -bill : Math.min(delta, 0);
       h.m.pausedS++;
       if (h.ep) {

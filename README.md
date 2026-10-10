@@ -3,6 +3,24 @@
 Manages CPU credit spending for workloads under `user.slice`, with a conservative balance estimate
 and automatic recovery from Hostinger CPU limits.
 
+## Hostinger referral discount
+
+> [!TIP]
+> **[Get 20% off your first Hostinger plan](https://www.hostinger.com/tr?REFERRALCODE=ASNVARDA3ZHG)**
+>
+> When I researched my own Hostinger plan, the influencer codes I found on YouTube gave 10% off.
+> This referral link gives you 20% instead. It's free to use, and I may earn a commission if you buy
+> through it.
+>
+> Open the full link; the code `ASNVARDA3ZHG` on its own won't apply the referral. Before paying,
+> check that your cart shows the 20% `REF_REFERRALDISCOUNT` discount.
+>
+> It's for new customers who haven't already been referred. Eligible services include hosting, VPS,
+> AI automation apps, email and AI Builder plans. Domain-related services aren't eligible. The
+> discount is for your first eligible purchase, not renewals.
+
+## How it works
+
 Hostinger meters VPS CPU in credits
 ([How CPU credits work on Hostinger VPS](https://www.hostinger.com/support/how-cpu-credits-work-on-hostinger-vps/)).
 A plan earns a baseline of 60% of its vCPUs, spends what it uses, and holds at most three hours of
@@ -178,6 +196,52 @@ The governor keeps:
 
 - top-process snapshots from hot or stolen moments in `/var/lib/governor/top/<day>.log`, for a week;
 - its working state in `/var/lib/governor/persist.json`.
+
+## Rule changes
+
+Hostinger can change its CPU credit rules. The watcher compares article content, not the relative
+"Updated ... ago" label, which can be stale in cached HTML. It records an absolute modification
+timestamp when one is available.
+
+`rules/hostinger-cpu-credits.json` records the version this code was reviewed against: a fingerprint
+of the article text, the numbers the code depends on, and the sentences they come from. It does not
+copy the article.
+
+The `Rules watch` workflow fetches the article every four hours. When the text differs from the
+record, it opens an issue labelled `hostinger-rules` with the reviewed and live numbers, numbers it
+can no longer find, contradictions inside the article, the new or changed lines, and whether the
+code still agrees. Each version is reported once: a version counts as reported only when its exact
+marker appears in an issue or comment from the workflow or someone with verified write access, so an
+outside comment cannot silence an alert. Closing an issue without accepting it silences that
+version. The page is read in one step without the GitHub token, and the issue is written in another
+that never sees the page. Until a record exists, the first run opens an issue showing what the
+watcher reads from the live page.
+
+To accept a version, update `src/plans.ts` if the rules changed, then record the article and commit:
+
+```sh
+deno task rules:accept
+git diff rules/
+```
+
+`rules:accept` refuses a record missing any essential number (baseline, capacity formula, lift and
+earning-pause thresholds, and the table row and limit for each plan) or one the code disagrees with.
+`deno task check` enforces the same on the committed record. It covers the plan parameters in
+`src/plans.ts` and `EARNING_PAUSE_SHARE`, which the simulator models; the rest of the article,
+including the leftover 0.30 earning formula and the FAQ's 20% limit, is reported for review but not
+enforced. `deno task rules:check` compares without writing.
+
+The daemon never reads the article. A help-center page is not a billing API: it contradicts itself
+today, it can lag or lead real billing changes, and a governor that obeyed it would let anyone who
+can edit or spoof that page decide how hard your VPS runs. Rule changes reach the governor as
+reviewed releases; recovery observations are supporting evidence, not a trigger.
+
+GitHub can delay or skip scheduled runs, and disables schedules in public repositories after 60 days
+without activity. To hear about a watcher that stopped, create a check with a dead man's switch such
+as [healthchecks.io](https://healthchecks.io) (period 4 hours, grace 12 hours) and save its ping URL
+as the repository secret `RULES_WATCH_HEARTBEAT_URL`. Every run pings it. Failed runs, unreadable
+pages and missing essential numbers ping `/fail`, even if an issue was successfully posted. The
+service also alerts when pings stop. Without the secret, no heartbeat requests are sent.
 
 ## Emergency access
 

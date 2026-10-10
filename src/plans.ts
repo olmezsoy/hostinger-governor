@@ -38,5 +38,9 @@ export function plan(vcpus: number, name = `KVM ${vcpus}`, baselineShare = BASEL
   };
 }
 
+// While limited, a period in which demand is throttled in this share of scheduling periods or more
+// earns nothing. The guest cannot observe it; the simulator models it and the rules watch checks it.
+export const EARNING_PAUSE_SHARE = 0.33;
+
 // Readings before this ran under the previous rules (a 30% baseline on KVM 8), so replays start here.
 export const RULES_SINCE = Date.parse("2026-10-09T15:00:00Z");
