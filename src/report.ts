@@ -52,10 +52,17 @@ async function sysstat(flag: string, from: number): Promise<Record<string, numbe
   const rows: Record<string, number>[] = [];
   for (let day = from - (from % 86_400_000); day <= Date.now(); day += 86_400_000) {
     const file = `/var/log/sysstat/sa${new Date(day).toISOString().slice(8, 10)}`;
-    const out = await new Deno.Command("sadf", { args: ["-d", file, "--", flag], stderr: "null" })
-      .output().catch(() => null);
-    if (out?.success) {
-      rows.push(...parseSadf(new TextDecoder().decode(out.stdout)).filter((r) => r.at >= from));
+    try {
+      const out = await new Deno.Command("sadf", {
+        args: ["-d", file, "--", flag],
+        cwd: "/",
+        stderr: "null",
+      }).output();
+      if (out.success) {
+        rows.push(...parseSadf(new TextDecoder().decode(out.stdout)).filter((r) => r.at >= from));
+      }
+    } catch {
+      // No sysstat history for that day; the report shows what there is.
     }
   }
   return rows;

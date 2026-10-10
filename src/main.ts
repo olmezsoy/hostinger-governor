@@ -10,7 +10,7 @@
 import { fallback, type PublicState, REQUESTS, runDaemon, STATE_FILE } from "./governor.ts";
 import { creditLines, report } from "./report.ts";
 
-export const VERSION = "0.1.0";
+export const VERSION = "0.1.1";
 const STALE_MS = 5 * 60_000;
 
 async function state(): Promise<PublicState | null> {

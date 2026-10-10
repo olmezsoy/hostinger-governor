@@ -19,7 +19,7 @@ jobs:
         run: |
           mkdir dist
           for target in x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu; do
-            deno compile --allow-read --allow-write --allow-run --allow-net --allow-env \
+            deno compile --allow-all \
               --target "$target" -o "dist/governor-$target" src/main.ts
           done
           cp install.sh dist/
