@@ -34,11 +34,46 @@ export const vm = (src: TokenSource, id: number) =>
   get<{ plan?: string; cpus?: number }>(src, `/${id}`);
 
 // CPU readings, in percent of the plan, about every 30 minutes.
-export async function cpuReadings(src: TokenSource, id: number, from: number): Promise<Reading[]> {
-  const body = await get<{ cpu_usage?: { usage?: Record<string, number> } }>(
+export function parseReadings(
+  body: { cpu_usage?: { unit?: string; usage?: Record<string, number> } },
+  from: number,
+  now: number,
+): Reading[] {
+  const metric = body.cpu_usage;
+  if (!metric) return [];
+  if (
+    typeof metric.unit !== "string" ||
+    !["%", "percent", "percentage"].includes(metric.unit.trim().toLowerCase())
+  ) {
+    throw new Error("unrecognized CPU metric unit");
+  }
+  const readings = Object.entries(metric.usage ?? {}).map(([t, v]) => ({
+    at: Number(t) * 1000,
+    v,
+  }));
+  if (
+    readings.some((r) =>
+      !Number.isFinite(r.at) || typeof r.v !== "number" || !Number.isFinite(r.v) || r.v < 0 ||
+      r.v > 100 || r.at > now
+    )
+  ) {
+    throw new Error("invalid CPU metric reading");
+  }
+  // Omit the newest bucket even if it looks old: completeness is not documented by this API.
+  return readings.filter((r) => r.at >= from).sort((a, b) => a.at - b.at).slice(0, -1);
+}
+
+export async function cpuReadings(
+  src: TokenSource,
+  id: number,
+  from: number,
+  now = Date.now(),
+): Promise<Reading[]> {
+  const body = await get<{ cpu_usage?: { unit?: string; usage?: Record<string, number> } }>(
     src,
-    `/${id}/metrics?date_from=${new Date(from).toISOString()}&date_to=${new Date().toISOString()}`,
+    `/${id}/metrics?date_from=${new Date(from).toISOString()}&date_to=${
+      new Date(now).toISOString()
+    }`,
   );
-  return Object.entries(body.cpu_usage?.usage ?? {}).map(([t, v]) => ({ at: Number(t) * 1000, v }))
-    .filter((r) => r.at >= from).sort((a, b) => a.at - b.at);
+  return parseReadings(body, from, now);
 }

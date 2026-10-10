@@ -10,15 +10,19 @@
 #   --vm-id N              Hostinger VM id (hPanel, or the API's virtual-machines list)
 #   --token-file PATH      copy this Hostinger API token to /etc/governor/hostinger-token
 #   --timezone ZONE        timezone for reports (default UTC)
-#   --consumer USER        let USER run `governor limit` and `governor seed` (repeatable)
+#   --consumer USER        accepted for compatibility; status is readable by every user
+#   --baseline-share N     baseline fraction for a new config (default 0.6)
 #   --uninstall            stop it and lift the ceiling; keeps /etc/governor (add --purge to drop it)
 set -euo pipefail
-[[ $EUID -eq 0 ]] || { echo "run as root" >&2; exit 1; }
 
 REPO=olmezsoy/hostinger-governor
-version="" binary="" vm_id="" token_file="" timezone="" uninstall=0 purge=0
+version="" binary="" vm_id="" token_file="" timezone="" baseline_share="" uninstall=0 purge=0
 consumers=()
 while (($#)); do
+  case $1 in
+    --version|--binary|--vm-id|--token-file|--timezone|--consumer|--baseline-share)
+      (($# >= 2)) || { echo "$1 needs a value" >&2; exit 2; } ;;
+  esac
   case $1 in
     --version) version=$2; shift ;;
     --binary) binary=$2; shift ;;
@@ -26,6 +30,7 @@ while (($#)); do
     --token-file) token_file=$2; shift ;;
     --timezone) timezone=$2; shift ;;
     --consumer) consumers+=("$2"); shift ;;
+    --baseline-share) baseline_share=$2; shift ;;
     --uninstall) uninstall=1 ;;
     --purge) purge=1 ;;
     *) echo "unknown option $1" >&2; exit 2 ;;
@@ -33,11 +38,22 @@ while (($#)); do
   shift
 done
 
+[[ -z $vm_id || $vm_id =~ ^[1-9][0-9]{0,14}$ ]] ||
+  { echo "--vm-id must be a positive decimal integer (at most 15 digits)" >&2; exit 2; }
+[[ -z $baseline_share || $baseline_share =~ ^(0\.[1-8][0-9]*|0\.9)$ ]] ||
+  { echo "--baseline-share must be from 0.1 to 0.9" >&2; exit 2; }
+if [[ -n $timezone ]]; then
+  [[ $timezone =~ ^[A-Za-z][A-Za-z0-9_+/-]*$ && $timezone != *..* && -f /usr/share/zoneinfo/$timezone ]] ||
+    { echo "--timezone must be an installed timezone name" >&2; exit 2; }
+fi
+[[ $EUID -eq 0 ]] || { echo "run as root" >&2; exit 1; }
+
 if ((uninstall)); then
   systemctl disable --now governor.service 2>/dev/null || true
   systemctl set-property --runtime user.slice CPUQuota= || true
   rm -f /etc/systemd/system/governor.service /usr/local/bin/governor \
-    /usr/local/libexec/governor-cap /etc/sudoers.d/governor
+    /usr/local/libexec/governor-cap /etc/sudoers.d/governor \
+    /etc/systemd/system/user.slice.d/10-governor.conf
   systemctl daemon-reload
   if ((purge)); then rm -r -f /etc/governor /var/lib/governor; fi
   echo "governor removed"
@@ -68,16 +84,16 @@ install -m 0755 "$binary" /usr/local/bin/governor
 
 # sysstat keeps the 10-minute history `governor report` draws.
 if ! command -v sadf >/dev/null; then
+  DEBIAN_FRONTEND=noninteractive apt-get update -q >/dev/null
   DEBIAN_FRONTEND=noninteractive apt-get install -y -q sysstat >/dev/null
 fi
 [[ -f /etc/default/sysstat ]] && sed -i 's/^ENABLED=.*/ENABLED="true"/' /etc/default/sysstat
 systemctl enable --now sysstat >/dev/null 2>&1 || true
 
-getent group governor-ctl >/dev/null || groupadd --system governor-ctl
+getent group governor >/dev/null || groupadd --system governor
 id governor >/dev/null 2>&1 ||
-  useradd --system --home-dir /var/lib/governor --shell /usr/sbin/nologin governor
-usermod -aG governor-ctl governor
-for u in "${consumers[@]}"; do usermod -aG governor-ctl "$u"; done
+  useradd --system --gid governor --home-dir /var/lib/governor --shell /usr/sbin/nologin governor
+if ((${#consumers[@]})); then echo "--consumer no longer grants control access; all users can read status"; fi
 
 install -d -o root -g governor -m 0750 /etc/governor
 install -d -o root -g root -m 0755 /etc/governor/hooks.d
@@ -91,12 +107,14 @@ if [[ ! -f /etc/governor/config.json ]]; then
   "slice": "user.slice",
   "timezone": "${timezone:-UTC}",
   "initial_balance": 0,
+  "baseline_share": ${baseline_share:-0.6},
   "tick_seconds": 30
 }
 EOF
   chown root:governor /etc/governor/config.json
   chmod 0640 /etc/governor/config.json
 fi
+/usr/local/bin/governor validate-config
 
 # The only root action the daemon needs: the ceiling on one slice.
 install -d /usr/local/libexec
@@ -106,14 +124,22 @@ cat > /usr/local/libexec/governor-cap <<'EOF'
 set -euo pipefail
 p=${1:-} slice=${2:-user.slice}
 max=$(( $(grep -c '^cpu[0-9]' /proc/stat) * 100 ))
-[[ $p =~ ^[0-9]+$ ]] && (( p >= 20 && p <= max )) && [[ $slice =~ ^[a-z0-9-]+\.slice$ ]] ||
-  { echo "usage: governor-cap 20..$max [slice]" >&2; exit 2; }
+(( $# >= 1 && $# <= 2 )) && [[ $p =~ ^[1-9][0-9]{0,5}$ ]] && (( p >= 20 && p <= max )) && [[ $slice == user.slice ]] ||
+  { echo "usage: governor-cap 20..$max [user.slice]" >&2; exit 2; }
 exec systemctl set-property --runtime "$slice" "CPUQuota=$p%"
 EOF
 chmod 0755 /usr/local/libexec/governor-cap
 printf 'governor ALL=(root) NOPASSWD: /usr/local/libexec/governor-cap *\n' > /etc/sudoers.d/governor
 chmod 0440 /etc/sudoers.d/governor
 visudo -cq
+
+# A runtime quota disappears on reboot. Start logins safely before the daemon runs.
+install -d /etc/systemd/system/user.slice.d
+cat > /etc/systemd/system/user.slice.d/10-governor.conf <<'EOF'
+[Slice]
+CPUAccounting=yes
+CPUQuota=20%
+EOF
 
 cat > /etc/systemd/system/governor.service <<'EOF'
 [Unit]
@@ -129,8 +155,9 @@ RuntimeDirectoryMode=0755
 RuntimeDirectoryPreserve=yes
 StateDirectory=governor
 StateDirectoryMode=0755
-# Consumers in governor-ctl drop requests here (`governor limit`, `governor seed`).
-ExecStartPre=+/usr/bin/install -d -o governor -g governor-ctl -m 3770 /run/governor/requests
+# Only root and the daemon can access requests; the daemon checks file ownership too.
+ExecStartPre=+/usr/bin/install -d -o root -g governor -m 0770 /run/governor/requests
+ExecStartPre=+/usr/local/bin/governor fallback
 ExecStart=/usr/local/bin/governor run
 # Stopped or crashed, the machine keeps a ceiling under the credit baseline.
 ExecStopPost=+/usr/local/bin/governor fallback

@@ -1,0 +1,5 @@
+[Unit]
+Description=Governor release smoke-test workload
+
+[Service]
+ExecStart=/usr/bin/sleep infinity

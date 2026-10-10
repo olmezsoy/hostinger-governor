@@ -14,19 +14,43 @@ export const readCounters = async () => cpuCounters(await Deno.readTextFile("/pr
 export const vcpusSeen = async () =>
   (await Deno.readTextFile("/proc/stat")).match(/^cpu\d+ /gm)?.length ?? 1;
 
+export type Clock = { at: number; uptime: number; bootId: string };
+export async function readClock(): Promise<Clock> {
+  const [uptime, bootId] = await Promise.all([
+    Deno.readTextFile("/proc/uptime"),
+    Deno.readTextFile("/proc/sys/kernel/random/boot_id"),
+  ]);
+  const ms = Number(uptime.split(/\s+/)[0]) * 1000;
+  if (!Number.isFinite(ms) || ms < 0 || !bootId.trim()) throw new Error("invalid kernel clock");
+  return { at: Date.now(), uptime: ms, bootId: bootId.trim() };
+}
+
 // Steal as a share of demand over `ms`, measured directly.
 export async function stealShare(ms: number): Promise<number> {
+  return (await demandSample(ms)).steal;
+}
+
+export async function demandSample(ms: number) {
   const a = await readCounters();
+  const start = performance.now();
   await new Promise((r) => setTimeout(r, ms));
   const b = await readCounters();
   const demand = b.busy - a.busy + b.steal - a.steal;
-  return demand > 0 ? (b.steal - a.steal) / demand : 0;
+  const total = b.total - a.total;
+  return {
+    steal: demand > 0 ? (b.steal - a.steal) / demand : 0,
+    busy: total > 0 ? (b.busy - a.busy) / total : 0,
+    seconds: (performance.now() - start) / 1000,
+  };
 }
 
-export type UsageSnapshot = { at: number; usage: Record<string, number> };
+export type UsageSnapshot = { at: number; usage: Record<string, number>; total?: number };
 
 // CPU microseconds per login, from the slice's per-user cgroups.
 export async function userUsage(slice: string, at: number): Promise<UsageSnapshot> {
+  const root = await Deno.readTextFile(`/sys/fs/cgroup/${slice}/cpu.stat`);
+  const total = Number(root.match(/^usage_usec (\d+)/m)?.[1]);
+  if (!Number.isFinite(total)) throw new Error("invalid slice CPU counter");
   const names = new Map(
     (await Deno.readTextFile("/etc/passwd")).split("\n").map((l) => l.split(":"))
       .map((f) => [f[2], f[0]]),
@@ -40,7 +64,7 @@ export async function userUsage(slice: string, at: number): Promise<UsageSnapsho
     const usec = Number(stat.match(/^usage_usec (\d+)/m)?.[1]);
     if (usec) usage[names.get(uid) ?? uid] = usec;
   }
-  return { at, usage };
+  return { at, usage, total };
 }
 
 // Each login's share of the whole box between two snapshots.

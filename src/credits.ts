@@ -21,8 +21,8 @@ export function creditStep(
   m: Margin,
   earning = true,
 ): number {
-  const delta = (p.baseline - charged(busyCores, m)) * seconds;
-  return clamp(balance + (earning ? delta : Math.min(delta, 0)), 0, p.capacity);
+  const delta = ((earning ? p.baseline : 0) - charged(busyCores, m)) * seconds;
+  return clamp(balance + delta, 0, p.capacity);
 }
 
 // Spend law: the baseline plus the balance's surplus over the floor, spread across `spendS`; under
@@ -41,14 +41,14 @@ export const sliceCeiling = (p: Plan, allowed: number, outsideCores: number) =>
   clamp(Math.floor((allowed - outsideCores) * 10) * 10, 20, 100 * p.vcpus);
 
 // A limit means the balance was empty while the mirror said `err` was left, after `used` billed
-// core-seconds since it was last known. Widen the margin by that drift and a quarter more, so it
-// cannot repeat; under a core-hour of evidence there is nothing to learn.
+// core-seconds since it was last known. Widen the margin toward that drift with a quarter extra.
+// Large differences may need several updates; under a core-hour there is too little evidence.
 export function widen(m: Margin, err: number, used: number): Margin {
   if (used < 3600) return m;
   const r4 = (x: number) => Math.round(x * 10_000) / 10_000;
   return {
-    mul: Math.min(r4(m.mul + clamp((1.25 * err) / used, 0.02, 0.1)), 1.5),
-    add: Math.min(r4(m.add + 0.02), 0.5),
+    mul: r4(m.mul + clamp((1.25 * err) / used, 0.02, 0.1)),
+    add: r4(m.add + 0.02),
   };
 }
 
@@ -59,8 +59,20 @@ export const LIMIT_EVIDENT = 0.6;
 export const limitConfirmed = (sf0: number, sfCut: number, sfRestore: number) =>
   sfCut <= 0.75 * sf0 && sfRestore >= Math.max(0.6 * sf0, 1.5 * sfCut);
 
-// Hostinger's CPU readings (percent of the plan, each averaging the time since the one before)
-// replayed through the rules from an empty balance: a lower bound, exact once it reaches capacity.
+export const demandSteal = (busy: number, steal: number) =>
+  busy + steal > 0 ? steal / (busy + steal) : 0;
+// Heuristics for demand, not the host's unobservable count of throttled scheduling periods.
+export const LIMIT_PRESSING = 0.02;
+export const LIFT_STEAL = 0.15;
+export const recoveryCeiling = (p: Plan, outside: number) =>
+  Math.max(20, Math.floor((p.limit - outside - 0.2) * 10) * 10);
+export const tightenCeiling = (ceiling: number, managedDemand: number) =>
+  Math.max(20, Math.min(Math.floor(ceiling / 2), Math.floor(managedDemand * 0.7 * 100)));
+export const liftConfirmed = (p: Plan, burners: number, busyCores: number, steal: number) =>
+  steal < LIFT_STEAL && busyCores >= Math.max(burners * 0.75, p.limit + 0.1);
+
+// A model of complete, end-stamped, 30-minute readings. Those semantics are not established by the
+// API, so the daemon uses this only as a diagnostic. Unknown intervals invalidate the model balance.
 export type Reading = { at: number; v: number };
 export type Anchor = { at: number; balance: number; exact: boolean };
 export function replay(p: Plan, readings: Reading[], since = RULES_SINCE): Anchor | null {
@@ -70,6 +82,12 @@ export function replay(p: Plan, readings: Reading[], since = RULES_SINCE): Ancho
   let exact = false;
   for (let i = 1; i < rs.length; i++) {
     const seconds = (rs[i].at - rs[i - 1].at) / 1000;
+    if (
+      seconds !== 1800 || !Number.isFinite(rs[i].v) || rs[i].v < 0 || rs[i].v > 100
+    ) {
+      [balance, exact] = [0, false];
+      continue;
+    }
     balance += (p.baseline - (rs[i].v / 100) * p.vcpus) * seconds;
     if (balance >= p.capacity) [balance, exact] = [p.capacity, true];
     else if (balance < 0) balance = 0;

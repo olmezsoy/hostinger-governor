@@ -1,0 +1,51 @@
+#!/usr/bin/env bash
+# Installs into a disposable hosted runner. Never run against a developer or production machine.
+set -euo pipefail
+[[ ${GITHUB_ACTIONS:-} == true && ${RUNNER_ENVIRONMENT:-} == github-hosted && $(uname -s) == Linux ]] ||
+  { echo "smoke test requires a disposable GitHub-hosted Linux runner" >&2; exit 2; }
+binary=${1:?pass the compiled Linux binary}
+container=""
+cleanup() {
+  if [[ -n $container ]]; then sudo docker stop "$container" >/dev/null || true; fi
+  sudo systemctl disable --now governor-smoke.service >/dev/null 2>&1 || true
+  sudo rm -f /etc/systemd/system/governor-smoke.service \
+    /etc/systemd/system/governor-smoke.service.d/50-governor.conf
+  sudo bash install.sh --uninstall || true
+}
+trap cleanup EXIT
+
+sudo bash install.sh --binary "$binary"
+for attempt in {1..20}; do
+  if sudo governor status --json >/dev/null 2>&1; then break; fi
+  sleep 1
+done
+sudo governor status --json
+[[ $(governor version) == 0.2.0 ]]
+if governor seed 34560; then echo "consumer control unexpectedly succeeded" >&2; exit 1; fi
+if sudo -u governor governor limit off; then echo "daemon control unexpectedly succeeded" >&2; exit 1; fi
+if sudo -u governor sudo -n /usr/local/libexec/governor-cap 200 system.slice; then
+  echo "cap helper accepted system.slice" >&2; exit 1
+fi
+
+sudo governor exec -- sh -c 'test "$(cut -d: -f3 /proc/self/cgroup)" != /; case $(cat /proc/self/cgroup) in */user.slice/*) exit 0;; *) exit 1;; esac'
+sudo install -m 0644 test/fixtures/governor-smoke.service /etc/systemd/system/governor-smoke.service
+sudo systemctl daemon-reload
+sudo governor enroll-service governor-smoke.service
+sudo systemctl start governor-smoke.service
+[[ $(systemctl show governor-smoke.service --property=ControlGroup --value) == /user.slice/* ]]
+
+sudo governor configure-docker
+sudo systemctl restart docker
+container=$(sudo docker run --rm -d alpine:3.22 sleep 120)
+container_pid=$(sudo docker inspect --format '{{.State.Pid}}' "$container")
+[[ $(sudo cut -d: -f3 "/proc/$container_pid/cgroup") == /user.slice/* ]]
+sudo docker stop "$container" >/dev/null
+container=""
+
+sudo systemctl stop governor.service
+read -r quota period < /sys/fs/cgroup/user.slice/cpu.max
+(( quota * 100 / period == 20 ))
+sudo -u governor sudo -n /usr/local/libexec/governor-cap 200 user.slice
+read -r quota period < /sys/fs/cgroup/user.slice/cpu.max
+(( quota * 100 / period == 200 ))
+echo "Linux smoke test passed: service, ownership, quota, scopes, service routing, Docker routing"

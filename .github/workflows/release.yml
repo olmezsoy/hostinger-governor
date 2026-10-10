@@ -24,6 +24,8 @@ jobs:
           done
           cp install.sh dist/
           (cd dist && sha256sum governor-* install.sh > SHA256SUMS)
+      - name: Linux smoke test
+        run: bash test/smoke-linux.sh dist/governor-x86_64-unknown-linux-gnu
       - name: Publish
         env:
           GH_TOKEN: ${{ github.token }}

@@ -102,10 +102,10 @@ export function creditLines(s: PublicState, clock: (ms: number) => string): stri
       Math.abs(c.rate).toFixed(1)
     } vCPU's worth now (baseline ${s.plan.baseline} of ${s.plan.vcpus}) · ${
       a
-        ? `checked against Hostinger's readings ${clock(a.checkedAt)}, ${
-          a.exact ? "exact" : "lower bound so far"
+        ? `Hostinger history checked ${clock(a.checkedAt)}, diagnostic only${
+          a.difference === null ? "" : `, CPU difference ${a.difference.toFixed(1)} points`
         }`
-        : "not yet checked against Hostinger's readings"
+        : "Hostinger history not yet checked"
     } · margin ×${c.margin.mul} +${c.margin.add} vCPU`,
   ];
 }

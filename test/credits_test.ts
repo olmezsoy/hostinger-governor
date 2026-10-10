@@ -32,7 +32,7 @@ Deno.test("the mirror follows the rules with a conservative margin", () => {
   const level = (4.8 - MARGIN.add) / MARGIN.mul;
   assertEquals(Math.round(creditStep(kvm8, 20_000, level, 3_600, MARGIN)), 20_000);
   assertEquals(charged(2, MARGIN), 2.18);
-  assertEquals(creditStep(kvm8, 1_000, 0.2, 60, MARGIN, false), 1_000);
+  assertEquals(creditStep(kvm8, 1_000, 0.2, 60, MARGIN, false), 982.6);
 });
 
 Deno.test("the spend law glides onto the floor and spends every core above it", () => {
@@ -65,6 +65,25 @@ Deno.test("Hostinger's readings replay to a lower bound, exact once full", () =>
   assertEquals([quiet.balance, quiet.exact], [kvm8.capacity, true]);
   const busy = replay(kvm8, Array.from({ length: 5 }, (_, i) => ({ at: at(i), v: 70 })))!;
   assertEquals([busy.balance, busy.exact], [0, false]);
+});
+
+Deno.test("a stopped VPS or unknown API gap cannot certify a full bank", () => {
+  const at = RULES_SINCE;
+  const r = replay(kvm8, [{ at, v: 0 }, { at: at + 10_800_000, v: 0 }])!;
+  assertEquals(r.exact, false);
+  assertEquals(r.balance, 0);
+});
+
+Deno.test("a gap invalidates certainty even after an earlier full bank", () => {
+  const quiet = Array.from({ length: 10 }, (_, i) => ({ at: RULES_SINCE + i * 1_800_000, v: 0 }));
+  quiet.push({ at: RULES_SINCE + 30 * 1_800_000, v: 0 });
+  assertEquals(replay(kvm8, quiet)!.exact, false);
+});
+
+Deno.test("learning can compensate for a baseline that is twice the real one", () => {
+  let m = MARGIN;
+  for (let i = 0; i < 30; i++) m = widen(m, 10_000, 100_000);
+  assertEquals(allowedCores(kvm8, kvm8.recovered, m) <= 2.4, true);
 });
 
 // Hostinger's bucket second by second against the governor ticking every 30 seconds through a week

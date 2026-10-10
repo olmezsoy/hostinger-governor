@@ -19,8 +19,14 @@ export type Plan = {
 const LIMIT_SHARE: Record<number, number> = { 1: 0.4, 2: 0.3, 4: 0.3, 8: 0.3 };
 const BASELINE_SHARE = 0.6;
 
-export function plan(vcpus: number, name = `KVM ${vcpus}`): Plan {
-  const baseline = BASELINE_SHARE * vcpus;
+export function plan(vcpus: number, name = `KVM ${vcpus}`, baselineShare = BASELINE_SHARE): Plan {
+  if (!Number.isSafeInteger(vcpus) || vcpus < 1 || vcpus > 128) {
+    throw new Error("vcpus must be an integer from 1 to 128");
+  }
+  if (!Number.isFinite(baselineShare) || baselineShare < 0.1 || baselineShare > 0.9) {
+    throw new Error("baseline_share must be from 0.1 to 0.9");
+  }
+  const baseline = baselineShare * vcpus;
   const capacity = 10_800 * (vcpus - baseline);
   return {
     name,
