@@ -50,8 +50,6 @@ for (
     ["--vm-id"],
     ["--timezone", 'UTC"oops'],
     ["--baseline-share", "1"],
-    ["--resource-files"],
-    ["--resource-files", "/definitely-not-a-governor-template-directory"],
   ]
 ) {
   Deno.test(`installer rejects bad config before any privileged change: ${args.join(" ")}`, async () => {

@@ -173,24 +173,22 @@ with the JSON settings. Check a running container's `/proc/<pid>/cgroup` to veri
 settings follow
 [Docker's cgroup-parent documentation](https://docs.docker.com/reference/cli/dockerd/#default-cgroup-parent).
 
-## Telegram resource dashboard
+## Resource reports
 
-The dashboard template used on our VPSes is included. `/resource` returns rich tables for credits,
-reserve-aware burst runway, earning rate, quota and recovery, plus per-user CPU and CPU, steal,
-memory and load charts. It reads public governor state and sysstat, needs Python 3.10+, and cannot
-change credits or caps. No Hostinger token is needed.
+`governor report` exposes credits, reserve-aware burst runway, earning rate, quota and recovery,
+per-user CPU, and CPU, steal, memory and load charts. Choose readable text, an HTML table-and-chart
+layout, or structured JSON for your own integration:
 
 ```sh
-curl -fsSL https://github.com/olmezsoy/hostinger-governor/releases/latest/download/install.sh |
-  sudo bash -s -- --resource
-/usr/local/libexec/governor-resource --hours 12
+governor report
+governor report 24 --format html
+governor report --format json
 ```
 
-The installer adds the renderer and an optional bot template, but never enables Telegram or asks for
-a token. Connect it to your existing bot or configure a dedicated, allowlisted bot using the
-[setup guide](docs/telegram-resource.md). Use `/resource 24` for a different history window, from 1
-to 72 hours. Both paths use the same editable layout. The guide covers Announcements topics,
-permissions, missing readings and custom rows.
+All formats are built in and read-only. No extra runtime, messaging account or Hostinger token is
+needed. Connect the output to Slack, Telegram, a web dashboard, or whatever you use. Delivery and
+command handling stay in your integration. The [report guide](docs/resource-reports.md) covers the
+data format and editable layout, including a browser preview template.
 
 ## Baseline verification
 

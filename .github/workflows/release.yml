@@ -24,8 +24,7 @@ jobs:
               --target "$target" -o "dist/governor-$target" src/main.ts
           done
           cp install.sh dist/
-          cp examples/telegram-resource.py examples/telegram-resource-bot.py examples/telegram-resource.service dist/
-          (cd dist && sha256sum governor-* install.sh telegram-resource* > SHA256SUMS)
+          (cd dist && sha256sum governor-* install.sh > SHA256SUMS)
       - name: Linux smoke test
         run: bash test/smoke-linux.sh dist/governor-x86_64-unknown-linux-gnu
       - name: Publish

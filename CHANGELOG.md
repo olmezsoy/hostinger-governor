@@ -11,11 +11,10 @@
 - Explain reserve rebuilding in public state and reports without treating it as a host limit or
   closing job admission. Keep compatible v0.2 estimates on upgrade. Mark CPU sample warmup and use
   reserve-aware, margin-adjusted runway in text reports too.
-- Package the read-only `/resource` dashboard with rich tables and charts. Add an existing-bot
-  adapter, an optional allowlisted polling bot, a rootless systemd template, setup docs, and
-  checksum verification through installer `--resource`. Telegram remains opt-in and cannot control
-  credits or quotas. Test permissions, command arguments, failed delivery, token redaction, missing
-  readings, recovery and HTML escaping.
+- Add channel-neutral resource reports with readable text tables, an HTML table-and-chart layout,
+  and structured JSON through `governor report [hours] --format text|html|json`. Include an editable
+  browser preview template. No bot, credentials, extra runtime or delivery mechanism is bundled.
+  Test missing readings, recovery, warmup, rates, runway and HTML escaping.
 - Watch Hostinger's CPU credit article. A scheduled workflow opens an issue when the article
   changes, with the reviewed and live numbers, numbers it can no longer find, contradictions inside
   the article, the changed lines, and whether the code still agrees. Only markers from the workflow
@@ -27,9 +26,9 @@
   `deno task check` keeps `src/plans.ts` and the new `EARNING_PAUSE_SHARE` in line with the record.
   The daemon still never reads the article.
 
-Upgrade by running the installer again. Existing v0.2 configuration and estimates are kept. Add
-`--resource` to install the dashboard; connect it using `docs/telegram-resource.md`. The baseline,
-credit policy and 20% fallback are unchanged.
+Upgrade by running the installer again. Existing v0.2 configuration and estimates are kept. Resource
+reports are built in; connect their output using `docs/resource-reports.md`. The baseline, credit
+policy and 20% fallback are unchanged.
 
 ## v0.2.1
 

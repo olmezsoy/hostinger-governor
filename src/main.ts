@@ -2,7 +2,7 @@
 //
 //   governor run                    the daemon (systemd runs it as the governor user)
 //   governor status [--json]        the state every consumer reads; exit 3 if the daemon is not running
-//   governor report [hours]         vitals for people (default 12 hours)
+//   governor report [hours] [--format text|html|json]  read-only vitals (default 12 hours)
 //   governor limit on|off           tell it what hPanel or Hostinger support says (root only)
 //   governor seed <core-seconds>    set the credit balance, for example when moving from another tool
 //   governor fallback               run by systemd as root when the daemon stops
@@ -16,6 +16,7 @@ import {
   STATE_FILE,
 } from "./governor.ts";
 import { creditLines, report } from "./report.ts";
+import { reportOptions } from "./resource.ts";
 import { configureDocker, enrollService } from "./workloads.ts";
 import { readClock } from "./sample.ts";
 import { execOptions, scopeArgs, waitForAccepting } from "./exec.ts";
@@ -50,7 +51,7 @@ async function ask(body: Record<string, unknown>) {
 
 const usage = (): never => {
   console.error(
-    "usage: governor run | status [--json] | report [hours] | limit on|off | seed <core-seconds> | exec [--wait <seconds>] -- <command> | enroll-service <unit> | configure-docker | version",
+    "usage: governor run | status [--json] | report [hours] [--format text|html|json] | limit on|off | seed <core-seconds> | exec [--wait <seconds>] -- <command> | enroll-service <unit> | configure-docker | version",
   );
   Deno.exit(2);
 };
@@ -93,12 +94,15 @@ switch (cmd) {
     break;
   }
   case "report": {
+    const options = (() => {
+      try {
+        return reportOptions(args);
+      } catch {
+        return usage();
+      }
+    })();
     const s = await state();
-    if (!s) {
-      console.error("governor is not running (no fresh state)");
-      Deno.exit(3);
-    }
-    console.log(await report(s, Math.min(72, Math.max(1, Number(args[0] ?? 12) || 12))));
+    console.log(await report(s, options.hours, Date.now(), options.format));
     break;
   }
   case "limit":

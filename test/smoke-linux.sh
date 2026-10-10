@@ -18,18 +18,18 @@ cleanup() {
 trap cleanup EXIT
 
 sudo systemctl set-property user.slice CPUQuota=780%
-sudo bash install.sh --binary "$binary" --resource-files examples
+sudo bash install.sh --binary "$binary"
 [[ ! -f /etc/systemd/system.control/user.slice.d/50-CPUQuota.conf ]]
 [[ ! -f /etc/systemd/system/user.slice.d/50-CPUQuota.conf ]]
 [[ -f /etc/systemd/system/user.slice.d/10-governor.conf ]]
-sudo systemd-analyze verify /etc/systemd/system/telegram-resource.service
 for attempt in {1..20}; do
   if sudo governor status --json >/dev/null 2>&1; then break; fi
   sleep 1
 done
 sudo governor status --json
 [[ $(governor version) == 0.2.2 ]]
-/usr/local/libexec/governor-resource --hours 12 | python3 -c 'import sys; report=sys.stdin.read(); assert "<table striped compact>" in report; assert "Estimated CPU credit bank" in report; assert "Server vitals</h3>" in report'
+governor report --format html | python3 -c 'import sys; report=sys.stdin.read(); assert "<table>" in report; assert "Estimated CPU credit bank" in report; assert "Server vitals</h3>" in report'
+governor report --format json | python3 -c 'import json,sys; report=json.load(sys.stdin); assert report["schema"] == 1; assert report["credits"]["balance"] >= 0; assert report["sections"]'
 if governor seed 34560; then echo "consumer control unexpectedly succeeded" >&2; exit 1; fi
 if sudo -u governor governor limit off; then echo "daemon control unexpectedly succeeded" >&2; exit 1; fi
 if sudo -u governor sudo -n /usr/local/libexec/governor-cap 200 system.slice; then
