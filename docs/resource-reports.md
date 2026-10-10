@@ -30,7 +30,8 @@ integration if your scheduler provides them.
 The HTML output is a fragment with standard headings, tables and preformatted charts. It contains no
 scripts, styles or platform-specific markup. Apply your own styles, or open the editable
 [`examples/resource-report.html`](../examples/resource-report.html) template in a browser and load a
-saved JSON report. The preview works locally, without uploading the report anywhere:
+saved JSON report. The template is also included in release assets. The preview works locally,
+without uploading the report anywhere:
 
 ```sh
 governor report --format json > resource.json

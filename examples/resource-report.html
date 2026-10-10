@@ -5,106 +5,111 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Server vitals</title>
     <style>
-      :root {
-        color-scheme: dark light;
-        font-family: system-ui, sans-serif;
-      }
+    :root {
+      color-scheme: dark light;
+      font-family: system-ui, sans-serif;
+    }
+    body {
+      max-width: 1100px;
+      margin: 2rem auto;
+      padding: 0 1rem;
+      background: #111820;
+      color: #e9eef4;
+    }
+    h1 {
+      margin-bottom: 0.4rem;
+    }
+    h2 {
+      font-size: 1.05rem;
+      margin: 0 0 0.8rem;
+    }
+    header p,
+    section p {
+      color: #aebccb;
+      line-height: 1.5;
+    }
+    label {
+      display: block;
+      margin: 1.5rem 0;
+    }
+    input {
+      margin-left: 0.5rem;
+    }
+    main {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(min(100%, 430px), 1fr));
+      gap: 1rem;
+    }
+    section {
+      background: #19232e;
+      border: 1px solid #2c3b4a;
+      border-radius: 12px;
+      padding: 1.2rem;
+      overflow-x: auto;
+    }
+    section:first-child {
+      grid-column: 1 / -1;
+      border-color: #468fcb;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 0.9rem;
+    }
+    th {
+      color: #91a7ba;
+      font-weight: 500;
+      text-align: left;
+    }
+    th,
+    td {
+      padding: 0.65rem 0.5rem;
+      border-bottom: 1px solid #2c3b4a;
+      vertical-align: top;
+    }
+    tr:last-child td {
+      border-bottom: 0;
+    }
+    td:first-child {
+      color: #becbd7;
+    }
+    pre {
+      font-size: clamp(0.8rem, 2vw, 1.1rem);
+      color: #75bff3;
+      overflow-x: auto;
+      letter-spacing: 0;
+    }
+    #error {
+      color: #ffaeae;
+    }
+    #time {
+      font-variant-numeric: tabular-nums;
+    }
+    @media (prefers-color-scheme: light) {
       body {
-        max-width: 1100px;
-        margin: 2rem auto;
-        padding: 0 1rem;
-        background: #111820;
-        color: #e9eef4;
-      }
-      h1 {
-        margin-bottom: 0.4rem;
-      }
-      h2 {
-        font-size: 1.05rem;
-        margin: 0 0 0.8rem;
-      }
-      header p, section p {
-        color: #aebccb;
-        line-height: 1.5;
-      }
-      label {
-        display: block;
-        margin: 1.5rem 0;
-      }
-      input {
-        margin-left: 0.5rem;
-      }
-      main {
-        display: grid;
-        grid-template-columns: repeat(auto-fit, minmax(min(100%, 430px), 1fr));
-        gap: 1rem;
+        background: #f4f7fa;
+        color: #172330;
       }
       section {
-        background: #19232e;
-        border: 1px solid #2c3b4a;
-        border-radius: 12px;
-        padding: 1.2rem;
-        overflow-x: auto;
+        background: white;
+        border-color: #dce4eb;
       }
-      section:first-child {
-        grid-column: 1 / -1;
-        border-color: #468fcb;
+      header p,
+      section p,
+      td:first-child {
+        color: #526576;
       }
-      table {
-        width: 100%;
-        border-collapse: collapse;
-        font-size: 0.9rem;
+      th,
+      td {
+        border-color: #e2e8ef;
       }
       th {
-        color: #91a7ba;
-        font-weight: 500;
-        text-align: left;
-      }
-      th, td {
-        padding: 0.65rem 0.5rem;
-        border-bottom: 1px solid #2c3b4a;
-        vertical-align: top;
-      }
-      tr:last-child td {
-        border-bottom: 0;
-      }
-      td:first-child {
-        color: #becbd7;
+        color: #637789;
       }
       pre {
-        font-size: clamp(0.8rem, 2vw, 1.1rem);
-        color: #75bff3;
-        overflow-x: auto;
-        letter-spacing: 0;
+        color: #17669f;
       }
-      #error {
-        color: #ffaeae;
-      }
-      #time {
-        font-variant-numeric: tabular-nums;
-      }
-      @media (prefers-color-scheme: light) {
-        body {
-          background: #f4f7fa;
-          color: #172330;
-        }
-        section {
-          background: white;
-          border-color: #dce4eb;
-        }
-        header p, section p, td:first-child {
-          color: #526576;
-        }
-        th, td {
-          border-color: #e2e8ef;
-        }
-        th {
-          color: #637789;
-        }
-        pre {
-          color: #17669f;
-        }
-      }
+    }
     </style>
   </head>
   <body>
@@ -120,56 +125,56 @@
     </header>
     <main id="report"></main>
     <script type="module">
-      const report = document.querySelector("#report");
-      const error = document.querySelector("#error");
-      // All report content is text, never executable HTML. No network requests are made.
-      const element = (tag, text) => {
-        const node = document.createElement(tag);
-        if (text !== undefined) node.textContent = text;
-        return node;
-      };
-      document.querySelector("#file").addEventListener("change", async (event) => {
-        report.replaceChildren();
-        error.textContent = "";
-        document.querySelector("#time").textContent = "No snapshot loaded.";
-        try {
-          const file = event.target.files[0];
-          if (!file) return;
-          if (file.size > 2_000_000) throw new Error("File too large");
-          const data = JSON.parse(await file.text());
-          if (data.schema !== 1 || !Array.isArray(data.sections)) throw new Error("Unknown schema");
-          const clock = new Intl.DateTimeFormat(undefined, {
-            timeZone: data.timezone,
-            dateStyle: "medium",
-            timeStyle: "short",
-          }).format(data.collectedAt);
-          document.querySelector("#time").textContent =
-            `Saved snapshot · last ${data.window.hours}h · ${clock} ${data.timezone}`;
-          for (const item of data.sections) {
-            const section = element("section");
-            section.append(element("h2", item.title));
-            if (item.note) section.append(element("p", item.note));
-            if (item.chart) section.append(element("pre", item.chart));
-            if (item.table) {
-              const table = element("table");
-              const header = element("tr");
-              for (const cell of item.table.headers) header.append(element("th", cell));
-              table.append(header);
-              for (const row of item.table.rows) {
-                const tr = element("tr");
-                for (const cell of row) tr.append(element("td", cell));
-                table.append(tr);
-              }
-              section.append(table);
+    const report = document.querySelector("#report");
+    const error = document.querySelector("#error");
+    // All report content is text, never executable HTML. No network requests are made.
+    const element = (tag, text) => {
+      const node = document.createElement(tag);
+      if (text !== undefined) node.textContent = text;
+      return node;
+    };
+    document.querySelector("#file").addEventListener("change", async (event) => {
+      report.replaceChildren();
+      error.textContent = "";
+      document.querySelector("#time").textContent = "No snapshot loaded.";
+      try {
+        const file = event.target.files[0];
+        if (!file) return;
+        if (file.size > 2_000_000) throw new Error("File too large");
+        const data = JSON.parse(await file.text());
+        if (data.schema !== 1 || !Array.isArray(data.sections)) throw new Error("Unknown schema");
+        const clock = new Intl.DateTimeFormat(undefined, {
+          timeZone: data.timezone,
+          dateStyle: "medium",
+          timeStyle: "short",
+        }).format(data.collectedAt);
+        document.querySelector("#time").textContent =
+          `Saved snapshot · last ${data.window.hours}h · ${clock} ${data.timezone}`;
+        for (const item of data.sections) {
+          const section = element("section");
+          section.append(element("h2", item.title));
+          if (item.note) section.append(element("p", item.note));
+          if (item.chart) section.append(element("pre", item.chart));
+          if (item.table) {
+            const table = element("table");
+            const header = element("tr");
+            for (const cell of item.table.headers) header.append(element("th", cell));
+            table.append(header);
+            for (const row of item.table.rows) {
+              const tr = element("tr");
+              for (const cell of row) tr.append(element("td", cell));
+              table.append(tr);
             }
-            report.append(section);
+            section.append(table);
           }
-        } catch {
-          report.replaceChildren();
-          document.querySelector("#time").textContent = "No snapshot loaded.";
-          error.textContent = "Could not read this file as a schema 1 governor resource report.";
+          report.append(section);
         }
-      });
+      } catch {
+        report.replaceChildren();
+        document.querySelector("#time").textContent = "No snapshot loaded.";
+        error.textContent = "Could not read this file as a schema 1 governor resource report.";
+      }
+    });
     </script>
   </body>
 </html>
