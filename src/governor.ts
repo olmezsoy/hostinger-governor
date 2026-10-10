@@ -332,8 +332,9 @@ export class Governor {
       ...io,
     };
     const planKey = `${plan.vcpus}:${plan.baseline}:${plan.capacity}`;
-    this.s = saved && saved.schema === 2 && saved.planKey === planKey ? structuredClone(saved) : {
-      balance: Math.min(cfg.initial_balance ?? 0, plan.capacity),
+    const restoring = saved && saved.schema === 2 && saved.planKey === planKey;
+    this.s = restoring ? structuredClone(saved) : {
+      balance: saved ? 0 : Math.min(cfg.initial_balance ?? 0, plan.capacity),
       at: Date.now(),
       margin: { ...MARGIN },
       used: 0,
@@ -342,6 +343,22 @@ export class Governor {
       readings: [],
       capFailed: true,
     };
+    if (saved && !restoring) {
+      if (
+        saved.margin && Number.isFinite(saved.margin.mul) && saved.margin.mul >= MARGIN.mul &&
+        Number.isFinite(saved.margin.add) && saved.margin.add >= MARGIN.add
+      ) {
+        this.s.margin = { ...saved.margin };
+      }
+      if (saved.limit && Number.isFinite(saved.limit.since)) {
+        this.s.limit = {
+          since: saved.limit.since,
+          ceiling: recoveryCeiling(plan, 0.4),
+          heldFrom: 0,
+          startedAt: 0,
+        };
+      }
+    }
     this.s.schema = 2;
     this.s.planKey = planKey;
   }

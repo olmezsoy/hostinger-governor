@@ -14,6 +14,7 @@
 #   --baseline-share N     baseline fraction for a new config (default 0.6)
 #   --uninstall            stop it and lift the ceiling; keeps /etc/governor (add --purge to drop it)
 set -euo pipefail
+trap 'echo "install failed at line $LINENO" >&2' ERR
 
 REPO=olmezsoy/hostinger-governor
 version="" binary="" vm_id="" token_file="" timezone="" baseline_share="" uninstall=0 purge=0
@@ -170,6 +171,6 @@ PrivateTmp=yes
 WantedBy=multi-user.target
 EOF
 systemctl daemon-reload
-systemctl enable governor.service >/dev/null 2>&1
+systemctl enable governor.service >/dev/null
 systemctl restart governor.service
 echo "governor $(/usr/local/bin/governor version) running; check with: governor status"

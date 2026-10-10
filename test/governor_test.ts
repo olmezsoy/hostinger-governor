@@ -145,8 +145,17 @@ for (const jump of [-10_800, 10_800]) {
 
 Deno.test("legacy inflated state is discarded during upgrade", () => {
   const f = fixture();
-  const saved = { ...f.g.s, schema: undefined, balance: p.capacity };
-  assertEquals(new Governor({}, p, saved, f.io).s.balance, 0);
+  f.g.enterLimit(start, false);
+  const saved = {
+    ...f.g.s,
+    schema: undefined,
+    balance: p.capacity,
+    margin: { mul: 1.4, add: 0.2 },
+  };
+  const migrated = new Governor({ initial_balance: p.capacity }, p, saved, f.io);
+  assertEquals(migrated.s.balance, 0);
+  assert(migrated.s.limit);
+  assertEquals(migrated.s.margin, saved.margin);
 });
 
 Deno.test("changing baseline invalidates a persisted estimate", () => {
