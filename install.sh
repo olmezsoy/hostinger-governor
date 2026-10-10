@@ -7,6 +7,8 @@
 # Options:
 #   --version vX.Y.Z       release to install (default: the latest)
 #   --binary PATH          install this binary instead of downloading one
+#   --resource             also install the read-only Telegram dashboard and bot template
+#   --resource-files DIR   use local dashboard files (also enables --resource)
 #   --vm-id N              Hostinger VM id (hPanel, or the API's virtual-machines list)
 #   --token-file PATH      copy this Hostinger API token to /etc/governor/hostinger-token
 #   --timezone ZONE        timezone for reports (default UTC)
@@ -18,10 +20,11 @@ trap 'echo "install failed at line $LINENO" >&2' ERR
 
 REPO=olmezsoy/hostinger-governor
 version="" binary="" vm_id="" token_file="" timezone="" baseline_share="" uninstall=0 purge=0
+resource=0 resource_files=""
 consumers=()
 while (($#)); do
   case $1 in
-    --version|--binary|--vm-id|--token-file|--timezone|--consumer|--baseline-share)
+    --version|--binary|--vm-id|--token-file|--timezone|--consumer|--baseline-share|--resource-files)
       (($# >= 2)) || { echo "$1 needs a value" >&2; exit 2; } ;;
   esac
   case $1 in
@@ -32,6 +35,8 @@ while (($#)); do
     --timezone) timezone=$2; shift ;;
     --consumer) consumers+=("$2"); shift ;;
     --baseline-share) baseline_share=$2; shift ;;
+    --resource) resource=1 ;;
+    --resource-files) resource_files=$2; resource=1; shift ;;
     --uninstall) uninstall=1 ;;
     --purge) purge=1 ;;
     *) echo "unknown option $1" >&2; exit 2 ;;
@@ -43,6 +48,11 @@ done
   { echo "--vm-id must be a positive decimal integer (at most 15 digits)" >&2; exit 2; }
 [[ -z $baseline_share || $baseline_share =~ ^(0\.[1-8][0-9]*|0\.9)$ ]] ||
   { echo "--baseline-share must be from 0.1 to 0.9" >&2; exit 2; }
+if [[ -n $resource_files ]]; then
+  for name in telegram-resource.py telegram-resource-bot.py telegram-resource.service; do
+    [[ -f $resource_files/$name ]] || { echo "--resource-files is missing $name" >&2; exit 2; }
+  done
+fi
 if [[ -n $timezone ]]; then
   [[ $timezone =~ ^[A-Za-z][A-Za-z0-9_+/-]*$ && $timezone != *..* && -f /usr/share/zoneinfo/$timezone ]] ||
     { echo "--timezone must be an installed timezone name" >&2; exit 2; }
@@ -50,11 +60,14 @@ fi
 [[ $EUID -eq 0 ]] || { echo "run as root" >&2; exit 1; }
 
 if ((uninstall)); then
+  systemctl disable --now telegram-resource.service 2>/dev/null || true
   systemctl disable --now governor.service 2>/dev/null || true
   systemctl set-property --runtime user.slice CPUQuota= || true
   rm -f /etc/systemd/system/governor.service /usr/local/bin/governor \
     /usr/local/libexec/governor-cap /etc/sudoers.d/governor \
-    /etc/systemd/system/user.slice.d/10-governor.conf
+    /etc/systemd/system/user.slice.d/10-governor.conf \
+    /usr/local/libexec/governor-resource /usr/local/libexec/governor-resource-bot \
+    /etc/systemd/system/telegram-resource.service
   systemctl daemon-reload
   if ((purge)); then rm -r -f /etc/governor /var/lib/governor; fi
   echo "governor removed"
@@ -64,29 +77,119 @@ fi
 command -v systemctl >/dev/null && [[ -f /sys/fs/cgroup/cgroup.controllers ]] ||
   { echo "needs systemd with cgroup v2" >&2; exit 1; }
 
+# Quota migration functions are also exercised with isolated files in installer tests.
+quota_only_dropin() {
+  local line seen=0
+  while IFS= read -r line || [[ -n $line ]]; do
+    line=${line#"${line%%[![:space:]]*}"}
+    line=${line%"${line##*[![:space:]]}"}
+    case $line in
+      ''|'#'*|';'*|'[Slice]') ;;
+      CPUQuota=*) seen=1 ;;
+      *) return 1 ;;
+    esac
+  done < "$1"
+  ((seen))
+}
+
+find_persistent_quotas() {
+  local paths path
+  persistent_quotas=()
+  paths=$(systemctl show user.slice --property=DropInPaths --value)
+  # Include shadowed local files too, so retiring a higher-priority file cannot reveal an old cap.
+  for path in $paths /etc/systemd/system/user.slice.d/*.conf /etc/systemd/system.control/user.slice.d/*.conf; do
+    case $path in
+      /run/*|/etc/systemd/system/user.slice.d/10-governor.conf) continue ;;
+    esac
+    [[ -f $path ]] || continue
+    [[ " ${persistent_quotas[*]:-} " != *" $path "* ]] || continue
+    if grep -Eq '^[[:space:]]*CPUQuota[[:space:]]*=' "$path"; then
+      case $path in
+        /etc/systemd/system/user.slice.d/*|/etc/systemd/system.control/user.slice.d/*) ;;
+        *) echo "CPUQuota in $path conflicts with governor; remove that quota before installing" >&2; return 1 ;;
+      esac
+      quota_only_dropin "$path" || {
+        echo "CPUQuota in $path shares a file with other settings; remove only CPUQuota before installing" >&2
+        return 1
+      }
+      [[ ! -L $path ]] || { echo "refusing to migrate symlink $path" >&2; return 1; }
+      persistent_quotas+=("$path")
+    fi
+  done
+  # A quota in the main unit cannot be retired without replacing unrelated configuration.
+  local fragment
+  fragment=$(systemctl show user.slice --property=FragmentPath --value)
+  if [[ -f $fragment ]] && grep -Eq '^[[:space:]]*CPUQuota[[:space:]]*=' "$fragment"; then
+    echo "CPUQuota in $fragment conflicts with governor; remove only CPUQuota before installing" >&2
+    return 1
+  fi
+}
+
+retire_persistent_quotas() {
+  ((${#persistent_quotas[@]})) || return 0
+  local backup path
+  backup=$(mktemp -d /var/backups/governor-quota.XXXXXX)
+  for path in "${persistent_quotas[@]}"; do
+    install -d -m 0700 "$backup$(dirname "$path")"
+    mv -- "$path" "$backup$path"
+    echo "Retired $path; recoverable at $backup$path"
+  done
+}
+# End quota migration functions.
+
+find_persistent_quotas
+
 case $(uname -m) in
   x86_64) target=x86_64-unknown-linux-gnu ;;
   aarch64) target=aarch64-unknown-linux-gnu ;;
   *) echo "unsupported architecture $(uname -m)" >&2; exit 1 ;;
 esac
 
-if [[ -z $binary ]]; then
-  base="https://github.com/$REPO/releases/latest/download"
-  [[ -n $version ]] && base="https://github.com/$REPO/releases/download/$version"
+base="https://github.com/$REPO/releases/latest/download"
+[[ -n $version ]] && base="https://github.com/$REPO/releases/download/$version"
+if [[ -z $binary ]] || { ((resource)) && [[ -z $resource_files ]]; }; then
   tmp=$(mktemp -d)
   trap 'rm -r -f "$tmp"' EXIT
-  curl -fsSL -o "$tmp/governor-$target" "$base/governor-$target"
   curl -fsSL -o "$tmp/SHA256SUMS" "$base/SHA256SUMS"
+fi
+if [[ -z $binary ]]; then
+  curl -fsSL -o "$tmp/governor-$target" "$base/governor-$target"
   (cd "$tmp" && grep " governor-$target\$" SHA256SUMS | sha256sum -c -) ||
     { echo "checksum mismatch" >&2; exit 1; }
   binary="$tmp/governor-$target"
 fi
+if ((resource)) && [[ -z $resource_files ]]; then
+  for name in telegram-resource.py telegram-resource-bot.py telegram-resource.service; do
+    curl -fsSL -o "$tmp/$name" "$base/$name"
+    (cd "$tmp" && grep " $name\$" SHA256SUMS | sha256sum -c -) ||
+      { echo "checksum mismatch for $name" >&2; exit 1; }
+  done
+  resource_files=$tmp
+fi
+# Stop any old writer before retiring its persistent quota. Keep a safe runtime ceiling throughout.
+if [[ $(systemctl show governor.service --property=LoadState --value) == loaded ]]; then
+  systemctl stop governor.service
+fi
+systemctl set-property --runtime user.slice CPUQuota=20%
+retire_persistent_quotas
 install -m 0755 "$binary" /usr/local/bin/governor
 
 # sysstat keeps the 10-minute history `governor report` draws.
 if ! command -v sadf >/dev/null; then
   DEBIAN_FRONTEND=noninteractive apt-get update -q >/dev/null
   DEBIAN_FRONTEND=noninteractive apt-get install -y -q sysstat >/dev/null
+fi
+if ((resource)) && ! command -v python3 >/dev/null; then
+  DEBIAN_FRONTEND=noninteractive apt-get update -q >/dev/null
+  DEBIAN_FRONTEND=noninteractive apt-get install -y -q python3 >/dev/null
+fi
+if ((resource)); then
+  python3 -c 'import sys; assert sys.version_info >= (3, 10), "dashboard needs Python 3.10+"'
+  install -d /usr/local/libexec
+  install -m 0755 "$resource_files/telegram-resource.py" /usr/local/libexec/governor-resource
+  install -m 0755 "$resource_files/telegram-resource-bot.py" /usr/local/libexec/governor-resource-bot
+  install -m 0644 "$resource_files/telegram-resource.service" /etc/systemd/system/telegram-resource.service
+  echo "Dashboard installed. Telegram is not enabled; see docs/telegram-resource.md for setup."
 fi
 [[ -f /etc/default/sysstat ]] && sed -i 's/^ENABLED=.*/ENABLED="true"/' /etc/default/sysstat
 systemctl enable --now sysstat >/dev/null 2>&1 || true

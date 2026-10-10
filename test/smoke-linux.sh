@@ -8,19 +8,28 @@ container=""
 cleanup() {
   if [[ -n $container ]]; then sudo docker stop "$container" >/dev/null || true; fi
   sudo systemctl disable --now governor-smoke.service >/dev/null 2>&1 || true
+  sudo systemctl stop governor-smoke@check.service >/dev/null 2>&1 || true
   sudo rm -f /etc/systemd/system/governor-smoke.service \
-    /etc/systemd/system/governor-smoke.service.d/50-governor.conf
+    /etc/systemd/system/governor-smoke.service.d/50-governor.conf \
+    /etc/systemd/system/governor-smoke@.service \
+    /etc/systemd/system/governor-smoke@.service.d/50-governor.conf
   sudo bash install.sh --uninstall || true
 }
 trap cleanup EXIT
 
-sudo bash install.sh --binary "$binary"
+sudo systemctl set-property user.slice CPUQuota=780%
+sudo bash install.sh --binary "$binary" --resource-files examples
+[[ ! -f /etc/systemd/system.control/user.slice.d/50-CPUQuota.conf ]]
+[[ ! -f /etc/systemd/system/user.slice.d/50-CPUQuota.conf ]]
+[[ -f /etc/systemd/system/user.slice.d/10-governor.conf ]]
+sudo systemd-analyze verify /etc/systemd/system/telegram-resource.service
 for attempt in {1..20}; do
   if sudo governor status --json >/dev/null 2>&1; then break; fi
   sleep 1
 done
 sudo governor status --json
-[[ $(governor version) == 0.2.1 ]]
+[[ $(governor version) == 0.2.2 ]]
+/usr/local/libexec/governor-resource --hours 12 | python3 -c 'import sys; report=sys.stdin.read(); assert "<table striped compact>" in report; assert "Estimated CPU credit bank" in report; assert "Server vitals</h3>" in report'
 if governor seed 34560; then echo "consumer control unexpectedly succeeded" >&2; exit 1; fi
 if sudo -u governor governor limit off; then echo "daemon control unexpectedly succeeded" >&2; exit 1; fi
 if sudo -u governor sudo -n /usr/local/libexec/governor-cap 200 system.slice; then
@@ -33,6 +42,11 @@ sudo systemctl daemon-reload
 sudo governor enroll-service governor-smoke.service
 sudo systemctl start governor-smoke.service
 [[ $(systemctl show governor-smoke.service --property=ControlGroup --value) == /user.slice/* ]]
+sudo install -m 0644 test/fixtures/governor-smoke.service /etc/systemd/system/governor-smoke@.service
+sudo systemctl daemon-reload
+sudo governor enroll-service governor-smoke@.service
+sudo systemctl start governor-smoke@check.service
+[[ $(systemctl show governor-smoke@check.service --property=ControlGroup --value) == /user.slice/* ]]
 
 sudo governor configure-docker
 sudo systemctl restart docker
@@ -43,6 +57,7 @@ sudo docker stop "$container" >/dev/null
 container=""
 
 sudo systemctl stop governor.service
+sudo systemctl daemon-reload
 read -r quota period < /sys/fs/cgroup/user.slice/cpu.max
 (( quota * 100 / period == 20 ))
 sudo -u governor sudo -n /usr/local/libexec/governor-cap 200 user.slice

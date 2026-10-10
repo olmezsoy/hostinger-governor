@@ -91,6 +91,51 @@ function fixture(config = {}) {
   };
 }
 
+Deno.test("rebuilding reserve is visible without claiming a Hostinger limit", async () => {
+  const f = fixture();
+  await f.g.tick();
+  const s = f.g.publicState(start);
+  assertEquals(s.credits.rebuilding, { reason: "first-start", since: start });
+  assertEquals(s.cpu.observedSeconds, 0);
+  assertEquals(s.accepting, true);
+  assertEquals(s.limit, null);
+  await f.advance();
+  assertEquals(f.g.publicState(start).cpu.observedSeconds, 30);
+  for (let i = 0; i < 50; i++) await f.advance();
+  assertEquals(f.g.publicState(start).credits.rebuilding, null);
+  f.g.s.balance = 0;
+  assertEquals(f.g.publicState(start).credits.rebuilding, null);
+});
+
+Deno.test("compatible upgrades preserve the balance and rebuilding progress", async () => {
+  const f = fixture();
+  await f.g.tick();
+  await f.advance();
+  const restored = new Governor({}, p, f.g.s, f.io);
+  assertEquals(restored.s.balance, f.g.s.balance);
+  assertEquals(restored.publicState(start).credits.rebuilding, f.g.s.rebuilding);
+  const old = { ...f.g.s, rebuilding: undefined, balance: 12000 };
+  assertEquals(new Governor({}, p, old, f.io).s.balance, 12000);
+});
+
+Deno.test("reset reasons explain legacy state, changed plans and reboots", async () => {
+  const f = fixture();
+  const legacy = new Governor({}, p, { ...f.g.s, schema: 1 }, f.io);
+  assertEquals(legacy.publicState(start).credits.rebuilding?.reason, "state-upgrade");
+  const smaller = plan(8, undefined, 0.3);
+  assertEquals(
+    new Governor({ baseline_share: 0.3 }, smaller, f.g.s, f.io).publicState(start)
+      .credits.rebuilding?.reason,
+    "plan-change",
+  );
+  await f.g.tick();
+  f.reboot();
+  await f.g.tick();
+  assertEquals(f.g.publicState(start).credits.rebuilding?.reason, "reboot");
+  await f.request("seed");
+  assertEquals(f.g.publicState(start).credits.rebuilding, null);
+});
+
 Deno.test("a three-hour stop cannot earn a full bank or request eight cores", async () => {
   const f = fixture();
   await f.g.tick();

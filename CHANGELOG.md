@@ -1,7 +1,21 @@
 # Changelog
 
-## Unreleased
+## v0.2.2
 
+- Retire inherited, quota-only `user.slice` drop-ins into recoverable backups before installation.
+  Check shadowed files too. Refuse mixed-setting files or quotas in the main unit before changing
+  the installation, so unrelated settings are kept and stale persistent caps cannot override the
+  boot fallback. Stop the old governor before migrating quotas and maintain a safe runtime cap.
+- Support enrollment of bare service templates such as `xfs_scrub@.service` without loading an
+  instance. Verify a real template instance in the Linux smoke test.
+- Explain reserve rebuilding in public state and reports without treating it as a host limit or
+  closing job admission. Keep compatible v0.2 estimates on upgrade. Mark CPU sample warmup and use
+  reserve-aware, margin-adjusted runway in text reports too.
+- Package the read-only `/resource` dashboard with rich tables and charts. Add an existing-bot
+  adapter, an optional allowlisted polling bot, a rootless systemd template, setup docs, and
+  checksum verification through installer `--resource`. Telegram remains opt-in and cannot control
+  credits or quotas. Test permissions, command arguments, failed delivery, token redaction, missing
+  readings, recovery and HTML escaping.
 - Watch Hostinger's CPU credit article. A scheduled workflow opens an issue when the article
   changes, with the reviewed and live numbers, numbers it can no longer find, contradictions inside
   the article, the changed lines, and whether the code still agrees. Only markers from the workflow
@@ -12,6 +26,10 @@
   their source sentences, not the article). `deno task rules:accept` refuses incomplete records, and
   `deno task check` keeps `src/plans.ts` and the new `EARNING_PAUSE_SHARE` in line with the record.
   The daemon still never reads the article.
+
+Upgrade by running the installer again. Existing v0.2 configuration and estimates are kept. Add
+`--resource` to install the dashboard; connect it using `docs/telegram-resource.md`. The baseline,
+credit policy and 20% fallback are unchanged.
 
 ## v0.2.1
 

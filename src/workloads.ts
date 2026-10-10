@@ -32,12 +32,13 @@ export async function enrollService(unit: string) {
   requireRoot();
   const path = serviceDropIn(unit);
   const out = await new Deno.Command("systemctl", {
-    args: ["show", unit, "--property=LoadState", "--value"],
+    // Bare templates cannot be loaded, but their unit file can be read without instantiating it.
+    args: serviceLookup(unit),
     stdout: "piped",
     stderr: "piped",
   }).output();
-  if (!out.success || new TextDecoder().decode(out.stdout).trim() !== "loaded") {
-    throw new Error(`service ${unit} is not loaded`);
+  if (!serviceFound(unit, out.success, new TextDecoder().decode(out.stdout))) {
+    throw new Error(`service ${unit} has no usable unit definition`);
   }
   await Deno.mkdir(path.slice(0, path.lastIndexOf("/")), { recursive: true });
   const content = "[Service]\nSlice=user.slice\n";
@@ -51,6 +52,18 @@ export async function enrollService(unit: string) {
   const reload = await new Deno.Command("systemctl", { args: ["daemon-reload"] }).output();
   if (!reload.success) throw new Error("systemd reload failed");
   console.log(`Configured ${unit}; restart it to move its processes under the governor.`);
+}
+
+export function serviceLookup(unit: string): string[] {
+  serviceDropIn(unit);
+  return unit.endsWith("@.service")
+    ? ["cat", "--", unit]
+    : ["show", unit, "--property=LoadState", "--value"];
+}
+
+export function serviceFound(unit: string, success: boolean, output: string): boolean {
+  return success &&
+    (unit.endsWith("@.service") ? output.trim().length > 0 : output.trim() === "loaded");
 }
 
 export async function configureDocker() {

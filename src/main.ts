@@ -20,7 +20,7 @@ import { configureDocker, enrollService } from "./workloads.ts";
 import { readClock } from "./sample.ts";
 import { execOptions, scopeArgs, waitForAccepting } from "./exec.ts";
 
-export const VERSION = "0.2.1";
+export const VERSION = "0.2.2";
 const STALE_MS = 5 * 60_000;
 
 async function state(): Promise<PublicState | null> {

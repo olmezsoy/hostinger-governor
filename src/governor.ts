@@ -83,6 +83,11 @@ export type Limit = {
   recovery?: { seconds: number; earningSeconds: number; charged: number };
 };
 
+type Rebuilding = {
+  reason: "first-start" | "state-upgrade" | "plan-change" | "reboot" | "counter-reset";
+  since: number;
+};
+
 type Private = {
   schema?: number;
   planKey?: string;
@@ -107,6 +112,7 @@ type Private = {
   noEarn?: boolean;
   earning?: boolean;
   capFailed?: boolean;
+  rebuilding?: Rebuilding | null;
 };
 
 // What every consumer reads.
@@ -124,13 +130,21 @@ export type PublicState = {
     // vCPUs of credit earned per second now; negative while spending.
     rate: number;
     margin: Margin;
+    // Rebuilding a conservative reserve is not evidence of an empty Hostinger bank or a limit.
+    rebuilding: Rebuilding | null;
     anchor:
       | { checkedAt: number; exact: boolean; applied: boolean; difference: number | null }
       | null;
   };
   ceiling: number;
   limit: Limit | null;
-  cpu: { busy5: number; steal5: number; busy30: number; users30: Record<string, number> };
+  cpu: {
+    busy5: number;
+    steal5: number;
+    busy30: number;
+    users30: Record<string, number>;
+    observedSeconds: number;
+  };
   readings: Reading[];
   // False while Hostinger limits the machine: start nothing that can wait.
   accepting: boolean;
@@ -352,6 +366,10 @@ export class Governor {
       samples: [],
       readings: [],
       capFailed: true,
+      rebuilding: {
+        reason: saved ? saved.schema === 2 ? "plan-change" : "state-upgrade" : "first-start",
+        since: Date.now(),
+      },
     };
     if (saved && !restoring) {
       if (
@@ -371,6 +389,7 @@ export class Governor {
     }
     this.s.schema = 2;
     this.s.planKey = planKey;
+    if (this.s.balance >= plan.recovered) this.s.rebuilding = null;
   }
   get slice() {
     return "user.slice";
@@ -421,6 +440,7 @@ export class Governor {
             : delta) * 10,
         ) / 10,
         margin: s.margin,
+        rebuilding: s.balance < p.recovered ? s.rebuilding ?? null : null,
         anchor: s.anchor
           ? {
             checkedAt: s.anchor.checkedAt,
@@ -437,6 +457,7 @@ export class Governor {
         steal5: avg(recent.map((x) => x.steal)),
         busy30: avg(half.map((x) => x.busy)),
         users30,
+        observedSeconds: half.reduce((sum, x) => sum + (x.seconds ?? 0), 0),
       },
       readings: s.readings,
       accepting: !s.limit && !s.capFailed,
@@ -490,6 +511,7 @@ export class Governor {
       this.s.used = 0;
       if (this.s.limit) this.s.limit.entry = undefined;
     } else return log("unknown request:", JSON.stringify(r));
+    if (this.s.balance >= this.plan.recovered) this.s.rebuilding = null;
     log("request:", JSON.stringify(r));
   }
 
@@ -587,7 +609,12 @@ export class Governor {
     const reset = s.bootId !== bootId || before === undefined || uptime <= before || !prev ||
       counters.total <= prev.total || counters.busy < prev.busy || counters.steal < prev.steal;
     if (reset) {
-      if (s.bootId !== undefined || prev) s.balance = 0;
+      if (s.bootId !== undefined || prev) {
+        s.balance = 0;
+        s.rebuilding = { reason: s.bootId !== bootId ? "reboot" : "counter-reset", since: now };
+      } else if (s.rebuilding) {
+        s.rebuilding.since = now;
+      }
       s.used = 0;
       s.noEarn = false;
       s.tested = false;
@@ -656,6 +683,7 @@ export class Governor {
       !(s.limit && demandSteal(sample.busy, sample.steal) >= LIMIT_PRESSING);
     s.earning = earning;
     s.balance = creditStep(p, s.balance, busyCores, seconds, s.margin, earning);
+    if (s.balance >= p.recovered) s.rebuilding = null;
     s.noEarn = false;
     s.used += charged(busyCores, s.margin) * seconds;
     if (s.limit) {

@@ -94,19 +94,34 @@ const stats = (ps: Point[]) =>
 export function creditLines(s: PublicState, clock: (ms: number) => string): string[] {
   const c = s.credits;
   const a = c.anchor;
+  const surplus = Math.max(0, c.balance - s.plan.recovered);
+  const debit = s.plan.vcpus * c.margin.mul + c.margin.add - s.plan.baseline;
   return [
-    `Hostinger CPU credits ${c.percent}% · ${c.balance.toLocaleString("en-US")} of ${
+    `Estimated CPU credits ${c.percent}% · ${c.balance.toLocaleString("en-US")} of ${
       s.plan.capacity.toLocaleString("en-US")
-    } core-seconds · ${c.minutesAtFull} min at all ${s.plan.vcpus} vCPUs`,
-    `${c.rate >= 0 ? "Earning" : "Spending"} ${
-      Math.abs(c.rate).toFixed(1)
-    } vCPU's worth now (baseline ${s.plan.baseline} of ${s.plan.vcpus}) · ${
-      a
-        ? `Hostinger history checked ${clock(a.checkedAt)}, diagnostic only${
-          a.difference === null ? "" : `, CPU difference ${a.difference.toFixed(1)} points`
-        }`
-        : "Hostinger history not yet checked"
-    } · margin ×${c.margin.mul} +${c.margin.add} vCPU`,
+    } core-seconds · ${
+      surplus > 0 && debit > 0
+        ? `${Math.floor(surplus / debit / 60)} min at all ${s.plan.vcpus} vCPUs until reserve`
+        : "no surplus above reserve"
+    }`,
+    ...(c.rebuilding
+      ? [
+        `Estimate rebuilding after ${c.rebuilding.reason}; this does not mean Hostinger is limiting CPU.`,
+      ]
+      : []),
+    ...(s.cpu.observedSeconds === 0
+      ? ["Waiting for the first CPU sample; rate is not yet measured."]
+      : [
+        `${c.rate >= 0 ? "Earning" : "Spending"} ${
+          Math.abs(c.rate).toFixed(1)
+        } vCPU's worth now (baseline ${s.plan.baseline} of ${s.plan.vcpus}) · ${
+          a
+            ? `Hostinger history checked ${clock(a.checkedAt)}, diagnostic only${
+              a.difference === null ? "" : `, CPU difference ${a.difference.toFixed(1)} points`
+            }`
+            : "Hostinger history not yet checked"
+        } · margin ×${c.margin.mul} +${c.margin.add} vCPU`,
+      ]),
   ];
 }
 
