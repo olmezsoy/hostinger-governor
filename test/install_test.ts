@@ -67,4 +67,5 @@ Deno.test("installer updates package indexes and revokes legacy consumer write a
   assert(script.includes("-o root -g governor -m 0770 /run/governor/requests"));
   assert(!script.includes("usermod -aG governor-ctl"));
   assert(script.includes("/etc/systemd/system/user.slice.d/10-governor.conf"));
+  assert(script.includes("visudo -cf /etc/sudoers.d/governor"));
 });

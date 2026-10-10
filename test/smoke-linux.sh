@@ -14,7 +14,7 @@ cleanup() {
 }
 trap cleanup EXIT
 
-sudo bash -x install.sh --binary "$binary"
+sudo bash install.sh --binary "$binary"
 for attempt in {1..20}; do
   if sudo governor status --json >/dev/null 2>&1; then break; fi
   sleep 1

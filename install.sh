@@ -132,7 +132,7 @@ EOF
 chmod 0755 /usr/local/libexec/governor-cap
 printf 'governor ALL=(root) NOPASSWD: /usr/local/libexec/governor-cap *\n' > /etc/sudoers.d/governor
 chmod 0440 /etc/sudoers.d/governor
-visudo -cq
+visudo -cf /etc/sudoers.d/governor
 
 # A runtime quota disappears on reboot. Start logins safely before the daemon runs.
 install -d /etc/systemd/system/user.slice.d
