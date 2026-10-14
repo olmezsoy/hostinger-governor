@@ -335,6 +335,8 @@ class LauncherTest(unittest.TestCase):
         self.assertIn("ProtectHome=yes", args)
         self.assertIn("NoNewPrivileges=yes", args)
         self.assertIn("RuntimeMaxSec=" + str(BROKER.WORKER_SECONDS), args)
+        # Transient units reject job timeouts on systemd 255 (Ubuntu 24.04).
+        self.assertFalse(any(arg.startswith("JobTimeout") for arg in args))
         self.assertEqual(launched.call_args.kwargs["env"], BROKER.ENV)
         self.assertNotIn("shell", launched.call_args.kwargs)
 

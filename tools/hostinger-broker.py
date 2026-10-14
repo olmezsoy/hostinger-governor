@@ -385,9 +385,9 @@ def launch(raw):
                 "-p",
                 "RuntimeMaxSec=" + str(WORKER_SECONDS),
                 "-p",
+                # systemd 255 refuses JobTimeoutSec on transient units, which
+                # fails every request; RUN_SECONDS bounds a queued start.
                 "TimeoutStartSec=" + str(START_SECONDS),
-                "-p",
-                "JobTimeoutSec=" + str(START_SECONDS),
                 "-p",
                 "TimeoutStopSec=" + str(STOP_SECONDS),
                 "--",
