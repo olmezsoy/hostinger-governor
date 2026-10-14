@@ -25,7 +25,9 @@ jobs:
           done
           cp install.sh dist/
           cp examples/resource-report.html dist/
-          (cd dist && sha256sum governor-* install.sh resource-report.html > SHA256SUMS)
+          cp tools/hostinger-broker.py dist/
+          cp tools/setup-hostinger-broker.sh tools/setup-hostinger-broker.py dist/
+          (cd dist && sha256sum governor-* install.sh resource-report.html hostinger-broker.py setup-hostinger-broker.sh setup-hostinger-broker.py > SHA256SUMS)
       - name: Linux smoke test
         run: bash test/smoke-linux.sh dist/governor-x86_64-unknown-linux-gnu
       - name: Publish

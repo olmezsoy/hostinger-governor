@@ -1,0 +1,19 @@
+{
+  "max_response_bytes": 4194304,
+  "max_interval_ms": 172800000,
+  "max_vm_id": 9007199254740991,
+  "max_vcpus": 128,
+  "request_timeout_ms": 25000,
+  "alarm_seconds": 24,
+  "run_seconds": 23,
+  "worker_seconds": 18,
+  "api_seconds": 15,
+  "start_seconds": 3,
+  "stop_seconds": 1,
+  "max_token_bytes": 8192,
+  "cooldown_seconds": 60,
+  "check_window_ms": 43200000,
+  "governor_limit_test_ms": 40000,
+  "capability": "request_command v1 supported",
+  "temporary_errors": ["busy", "rate_limited"]
+}

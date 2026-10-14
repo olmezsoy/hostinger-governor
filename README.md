@@ -60,8 +60,9 @@ The governor measures the whole machine and caps workloads placed under `user.sl
   cause false alarms. The margin learns only after healthy burners show delivery consistent with an
   ongoing host limit. A first test that passes leaves the margin unchanged and never restores old
   credits.
-- **Keeps a fallback quota.** A 20% quota of one core applies before startup, after shutdown or a
-  crash, and early in boot. The helper can change only `user.slice`.
+- **Keeps a fallback quota.** The default is 20% of one core before startup, after shutdown or a
+  crash, and early in boot. Operators can choose a different fallback. The helper can change only
+  `user.slice`; recovery and probe floors still use 20%.
 
 Plans are read from Hostinger's API (KVM 1 to 8).
 
@@ -78,7 +79,9 @@ curl -fsSL https://github.com/olmezsoy/hostinger-governor/releases/latest/downlo
 - `--token-file`: a Hostinger API token (hPanel → Account → API). It is copied to
   `/etc/governor/hostinger-token`, readable only by root and the governor. Treat it like a password:
   it can manage the account. To keep it in a secret store instead, set
-  `"token_command": ["your-cli", "get", "hostinger"]` in the config.
+  `"token_command": ["your-cli", "get", "hostinger"]` in the config. Both options give Governor the
+  raw token. For operation-only access without disclosing the token, use `request_command` instead.
+  See [Hostinger credential isolation](docs/hostinger-credentials.md).
 - `--consumer`: accepted for compatibility. All users can read status; control requires root.
 - `--baseline-share`: baseline fraction for a new config, default `0.6`. Existing configs are kept;
   change `baseline_share` there when you have evidence for different rules.
@@ -98,6 +101,12 @@ access. The first v0.2 startup discards the v0.1 estimate, which may have been i
 configured separately is kept; remove those service drop-ins or restore Docker's backup if you want
 to undo that routing.
 
+For guided operation-only API setup after installing v0.2.3, run
+`bash tools/setup-hostinger-broker.sh <SSH-destination>` from a checkout of that release. It
+verifies the VPS, hides token input, asks before changing the server and restores the original
+configuration if setup fails. See
+[the setup requirements and migration notes](docs/hostinger-credentials.md#guided-setup).
+
 ## Use it
 
 | Who                        | How                                                                                                                                                                                    |
@@ -109,6 +118,75 @@ to undo that routing.
 
 A fresh install starts the estimate at zero because the real balance is unknown. It grows from
 observed CPU use. Only root can seed a known balance; API history never seeds it automatically.
+
+Public `/run/governor/state.json` and `governor status --json` include `"schemaVersion": 1`. Hook
+snapshots use the same version. This describes the public format, not the persisted credit estimate
+or the resource report's separate `schema` field. Consumers should reject unsupported versions and
+tolerate additional fields within a supported version. Older releases omit the field; the built-in
+reader accepts that legacy format during upgrades.
+
+## Choose a fallback quota
+
+The default `fallback_cpu_percent` is `20`, meaning **0.2 of one vCPU**, not 20% of the whole VPS.
+On an eight-vCPU box, `150` means 1.5 cores shared by everyone in `user.slice`, including SSH and
+enrolled services. A larger fallback can keep those services responsive while Governor is stopped.
+It also gives up some credit protection.
+
+Add the setting to the existing `/etc/governor/config.json`, keeping its other fields:
+
+```json
+{ "fallback_cpu_percent": 150 }
+```
+
+Validate and restart Governor:
+
+```sh
+sudo governor validate-config
+sudo systemctl restart governor.service
+```
+
+Runtime fallback calls read the current configuration. Re-run the matching-version installer to copy
+the setting into the early-boot quota too; installation and upgrades keep existing configuration.
+Missing fields use the default. Values must be whole numbers from 20 to the VM's vCPU count
+times 100. Invalid or unreadable configuration uses the emergency default of 20 when applying a
+fallback.
+
+Choose the value from the **verified baseline**, the CPU available while Hostinger limits the VM,
+and the peak CPU used by services outside `user.slice`. Under an aggregate host limit, leave enough
+room that:
+
+```text
+fallback cores + peak outside cores + headroom < min(baseline cores, host-limit cores)
+```
+
+For example, with the configured KVM 8 baseline of 4.8 cores, an aggregate limit of 2.4 cores, 0.4
+cores outside the slice and 0.2 cores of headroom, a 150% fallback totals 2.1 cores. That fits those
+assumptions. It is not a guarantee if Hostinger applies per-vCPU limits, the baseline differs,
+outside usage spikes, or billing overhead exceeds the allowance. Keep 20 if those assumptions are
+unknown. Outside services alone can prevent recovery; the slice quota cannot constrain them.
+
+This setting applies during service startup and after stopping or crashing. A stale status file
+alone does **not** activate a watchdog or change the cap. It also does not change the 20% quota used
+for detection probes or the governor's recovery floor.
+
+## Hook delivery
+
+Place notification executables in `/etc/governor/hooks.d`. Hooks run as the `governor` user, with
+`GOVERNOR_EVENT=limit-start` or `limit-end` and the captured public state on stdin. CPU quota
+control happens first. Delivery runs in the background, preserving event order and alphabetical hook
+order, so a slow notification destination cannot delay the control loop.
+
+Each hook has its own deadline. `hook_timeout_seconds` defaults to 60 and accepts 1 to 300 seconds.
+It includes startup and writing stdin, even if the hook never reads it or ignores SIGTERM. Governor
+kills the hook's ordinary process group at the deadline, cleans up children left behind when the
+hook exits, and cancels active and queued work on shutdown. Hooks should finish their own children
+before exiting, not launch detached background jobs.
+
+Delivery is best-effort, not durable: at most 16 events wait behind the active event and each
+payload is limited to 1 MiB. Full queues or oversized payloads are dropped with a log message. Hook
+failures are logged without copying their stdout or stderr into the daemon's logs. Notification
+failure never changes credit accounting or job admission. Use a separate durable delivery process if
+you need guaranteed notifications. See `examples/hooks.d` for a starting point.
 
 ## Govern service workloads
 
@@ -267,8 +345,9 @@ service also alerts when pings stop. Without the secret, no heartbeat requests a
 
 ## Emergency access
 
-The fallback remains a shared 20% quota of one CPU. Repeated crashes can leave SSH sessions and
-enrolled web services with very little CPU. From a root shell or the provider console:
+The default fallback is a shared 20% quota of one CPU; `fallback_cpu_percent` can change it.
+Repeated crashes can leave SSH sessions and enrolled services with very little CPU. From a root
+shell or the provider console:
 
 ```sh
 sudo systemctl stop governor.service
@@ -280,6 +359,21 @@ then run `sudo systemctl start governor.service` to reapply protection. Raising 
 universally safe when the host limits individual vCPUs.
 
 ## Simulations
+
+Run repository checks with the Deno version pinned in CI, currently 2.9.7:
+
+```sh
+deno task check
+python3 -m unittest discover -s test -p '*_test.py'
+```
+
+The test task needs unrestricted `--allow-run` because Deno requires that permission to signal
+negative PIDs for hook process-group cleanup. Tests also invoke Bash and the Deno CLI. This does not
+widen the daemon's sudo grants. Child CLI tests use explicit permissions, not unrestricted
+`deno eval`. Writable test data stays in ignored `test/.tmp` directories and each test removes its
+own directory. Tracked `test/fixtures` remains read-only. The Linux smoke test only runs on
+disposable GitHub-hosted runners. It tests the real localhost SSH, sudo, credential and systemd flow
+with an offline API fixture and a dummy token, including sudo I/O logs and the journal.
 
 The supplied second-by-second simulator runs the real governor against seeded workloads:
 
