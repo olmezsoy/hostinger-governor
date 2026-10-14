@@ -57,6 +57,9 @@ async function commandRequest(command: string[], request: HostingerRequest): Pro
   // contain sensitive upstream text, so neither is included in the daemon's logs.
   const child = new Deno.Command(command[0], {
     args: command.slice(1),
+    // The caller's directory may be private to another user, e.g. when an admin runs
+    // check-hostinger as the governor user; the broker needs no working directory.
+    cwd: "/",
     clearEnv: true,
     env: { PATH: "/usr/bin:/bin" },
     stdin: "piped",

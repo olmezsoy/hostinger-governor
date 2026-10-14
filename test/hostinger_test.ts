@@ -76,6 +76,11 @@ Deno.test("operation broker receives only a versioned VM request on stdin", asyn
   assertEquals(await vm(src, 123), { cpus: 8, plan: undefined });
 });
 
+Deno.test("operation broker starts from the root directory, not the caller's", async () => {
+  const src = broker(`IFS= read -r request; [[ $PWD == / ]] || exit 1; ${reply({ cpus: 8 })}`);
+  assertEquals(await vm(src, 123), { cpus: 8, plan: undefined });
+});
+
 Deno.test("operation broker receives bounded metrics parameters and keeps bucket validation", async () => {
   const src = broker(
     `IFS= read -r request; [[ $request == '{"version":1,"operation":"metrics","vm_id":123,"from":0,"to":5000000}' ]] || exit 1; ${
