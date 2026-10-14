@@ -34,8 +34,88 @@ def offline_source(source, overrides):
     )
 
 
-def show_failure(started, governor_io):
+def probe_worker_unit(setup):
+    """Retry the broker's systemd-run properties with /usr/bin/true."""
+    captured = []
+
+    def capture(argv, **kwargs):
+        captured.append(argv)
+        raise RuntimeError("captured")
+
+    real_run = setup.BROKER.subprocess.run
+    setup.BROKER.subprocess.run = capture
+    try:
+        setup.BROKER.launch(b"{}")
+    except RuntimeError:
+        pass
+    finally:
+        setup.BROKER.subprocess.run = real_run
+    if not captured:
+        print("--- broker did not reach systemd-run ---")
+        return
+    argv = captured[0][: captured[0].index("--")]
+    archives = sorted(Path("/var/backups").glob("governor-api.*/rejected-hostinger-token.cred"))
+    if archives:
+        argv = [
+            "LoadCredentialEncrypted=hostinger-token:" + str(archives[-1])
+            if arg.startswith("LoadCredentialEncrypted=")
+            else arg
+            for arg in argv
+        ]
+    argv = [
+        "--unit=governor-hostinger-diagnostic" if arg.startswith("--unit=") else arg
+        for arg in argv
+    ]
+    print("--- " + subprocess.run(
+        ["/usr/bin/systemctl", "--version"], stdout=subprocess.PIPE, check=False
+    ).stdout.decode().splitlines()[0] + " ---")
+    print(" ".join(shlex.quote(arg) for arg in argv))
+    trial = subprocess.run(
+        [*argv, "--", "/usr/bin/true"],
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        timeout=60,
+        env=setup.BROKER.ENV,
+        check=False,
+    )
+    print("--- worker unit probe with /usr/bin/true: exit " + str(trial.returncode) + " ---")
+    print((trial.stdout + trial.stderr).decode(errors="replace"))
+    # Then the archived worker itself, with its stderr, on this disposable runner.
+    workers = sorted(
+        Path("/var/backups").glob("governor-api.*/rejected-libexec-governor-hostinger.py")
+    )
+    if not workers:
+        return
+    code = Path("/usr/local/libexec/governor-hostinger-diagnostic.py")
+    code.write_bytes(workers[-1].read_bytes())
+    code.chmod(0o644)
+    config = setup.BROKER.CONFIG
+    created = not config.parent.exists()
+    config.parent.mkdir(parents=True, exist_ok=True)
+    config.write_text('{"vm_id": 12345}')
+    try:
+        trial = subprocess.run(
+            [*argv, "--", "/usr/bin/python3", "-I", str(code), "--worker"],
+            input=b'{"version":1,"operation":"vm","vm_id":12345}',
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=60,
+            env=setup.BROKER.ENV,
+            check=False,
+        )
+        print("--- real worker probe: exit " + str(trial.returncode) + " ---")
+        print((trial.stdout + trial.stderr).decode(errors="replace"))
+    finally:
+        config.unlink()
+        if created:
+            config.parent.rmdir()
+        code.unlink()
+
+
+def show_failure(started, governor_io, setup):
     """Print why the broker or Governor failed. CI uses a dummy token only."""
+    probe_worker_unit(setup)
     journal = subprocess.run(
         [
             "/usr/bin/journalctl",
@@ -49,7 +129,12 @@ def show_failure(started, governor_io):
         check=False,
     )
     print("--- journal since the wizard started ---")
-    print("\n".join(journal.stdout.decode(errors="replace").splitlines()[-200:]))
+    lines = [
+        line
+        for line in journal.stdout.decode(errors="replace").splitlines()
+        if "(command continued)" not in line
+    ]
+    print("\n".join(line[:300] for line in lines[-200:]))
     for path in sorted(governor_io.rglob("*")):
         if path.name in ("stdout", "stderr") and path.is_file():
             data = path.read_bytes()
@@ -228,7 +313,7 @@ IdentitiesOnly yes
                         on_confirmation=inspected_without_writes,
                     )
                 except AssertionError:
-                    show_failure(started, files / "governor-io")
+                    show_failure(started, files / "governor-io", setup)
                     raise
                 assert b"Operation-only broker verified" in transcript
             finally:
