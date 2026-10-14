@@ -775,7 +775,8 @@ def main():
     resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
     os.umask(0o077)
     if len(sys.argv) in (3, 4) and sys.argv[1] == "bridge":
-        sys.exit(bridge(sys.argv[2], sys.argv[3] if len(sys.argv) == 4 else ""))
+        # Return the root transaction's status; entrypoint() exits with it.
+        return bridge(sys.argv[2], sys.argv[3] if len(sys.argv) == 4 else "")
 
     def expired(*_):
         raise SafeError("Privileged setup deadline reached.")
@@ -832,7 +833,7 @@ def main():
 
 def entrypoint():
     try:
-        main()
+        status = main()
     except SafeError as error:
         print(str(error), file=sys.stderr)
         sys.exit(1)
@@ -842,6 +843,8 @@ def entrypoint():
             file=sys.stderr,
         )
         sys.exit(1)
+    # Exit outside the handlers above: they would report SystemExit as a failure.
+    sys.exit(status or 0)
 
 
 if __name__ == "__main__":

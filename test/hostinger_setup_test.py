@@ -874,11 +874,26 @@ module.main()
             REMOTE.os, "umask"
         ) as umask, patch.object(
             REMOTE, "bridge", side_effect=entered
-        ), self.assertRaises(
-            SystemExit
-        ) as raised:
-            REMOTE.main()
-        self.assertEqual(raised.exception.code, 0)
+        ):
+            self.assertEqual(REMOTE.main(), 0)
+
+    def test_bridge_entrypoint_exits_with_the_root_transaction_status(self):
+        for status in (0, 1, 3):
+            stderr = io.StringIO()
+            with patch.object(
+                REMOTE.sys, "argv", ["setup", "bridge", "preflight"]
+            ), patch.object(REMOTE.resource, "setrlimit"), patch.object(
+                REMOTE.os, "umask"
+            ), patch.object(
+                REMOTE, "bridge", return_value=status
+            ), contextlib.redirect_stderr(
+                stderr
+            ), self.assertRaises(
+                SystemExit
+            ) as raised:
+                REMOTE.entrypoint()
+            self.assertEqual(raised.exception.code, status)
+            self.assertEqual(stderr.getvalue(), "")
 
     def invoke(self, mode, fingerprint=""):
         stdout, stderr = io.BytesIO(), io.BytesIO()
