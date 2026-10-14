@@ -92,7 +92,7 @@ def provider_command():
     return ["/usr/bin/sudo", "-n", "--", str(HELPER)]
 
 
-def run(argv, *, data=None, timeout=LOCAL_COMMAND_SECONDS, env=None):
+def run(argv, *, data=None, timeout=LOCAL_COMMAND_SECONDS, env=None, explain=False):
     result = subprocess.run(
         argv,
         input=data,
@@ -101,10 +101,21 @@ def run(argv, *, data=None, timeout=LOCAL_COMMAND_SECONDS, env=None):
         timeout=timeout,
         env=env,
     )
-    require(
-        result.returncode == 0, "A local setup command failed: " + Path(argv[0]).name
-    )
+    message = "A local setup command failed: " + Path(argv[0]).name
+    if result.returncode != 0 and explain:
+        message += explanation(result.stderr)
+    require(result.returncode == 0, message)
     return result.stdout
+
+
+def explanation(stderr):
+    """Return a command's last error line for commands that never hold the token."""
+    text = re.sub(r"\x1b\[[0-9;]*[A-Za-z]", "", stderr.decode(errors="replace"))
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    errors = [line for line in lines if line.startswith("error:")]
+    line = (errors or lines or [""])[-1]
+    line = "".join(char for char in line if char.isprintable())[:200]
+    return " (" + line + ")" if line else ""
 
 
 def protected(path, *, directory=False):
@@ -693,8 +704,8 @@ def apply(token, cfg, original, vm, expected_hash):
             run(["/usr/local/bin/governor", "validate-config"])
             # The daemon receives only sanitized API results. No runtime credential
             # is installed on governor.service and no command can return the token.
-            check = json.loads(
-                run(
+            try:
+                checked = run(
                     [
                         "/usr/sbin/runuser",
                         "-u",
@@ -709,8 +720,14 @@ def apply(token, cfg, original, vm, expected_hash):
                     # VM details and metrics can each consume the full command
                     # budget, plus a quick command's allowance for CLI startup.
                     timeout=CONNECTION_CHECK_SECONDS,
+                    # Governor never receives the token, so its error is safe
+                    # to show. Refuse to show it anyway if that ever changes.
+                    explain=True,
                 )
-            )
+            except SafeError as error:
+                require(token not in str(error), "Governor's connection check failed.")
+                raise
+            check = json.loads(checked)
             require(
                 check.get("vm_id") == vm["vm_id"] and check.get("cpus") == vm["cpus"],
                 "Governor cannot use the restricted Hostinger broker.",

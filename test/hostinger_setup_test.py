@@ -23,6 +23,7 @@ REMOTE = ModuleType("credential_setup_test")
 REMOTE.__file__ = str(ROOT / "tools/setup-hostinger-broker.py")
 exec(compile(SOURCE, "embedded-credential-setup", "exec"), REMOTE.__dict__)
 REAL_WAIT_FOR_DAEMON = REMOTE.wait_for_daemon
+REAL_RUN = REMOTE.run
 TOKEN = "dummy.token.for.testing"
 VM = {"id": 12345, "cpus": 8, "ipv4": [{"address": "93.184.216.34"}], "ipv6": []}
 METRICS = {"cpu_usage": {"unit": "%", "usage": {str(int(time.time()) - 1800): 12.3}}}
@@ -570,7 +571,7 @@ class TransactionTests(unittest.TestCase):
             item.start()
             self.addCleanup(item.stop)
 
-    def runner(self, argv, *, data=None, timeout=30, env=None):
+    def runner(self, argv, *, data=None, timeout=30, env=None, explain=False):
         self.calls.append((argv, data, env))
         if argv[0] == "/usr/bin/systemd-creds":
             if argv[1] == "setup":
@@ -660,6 +661,31 @@ class TransactionTests(unittest.TestCase):
         self.assertEqual(starts, 2)
         self.assertEqual(len(list(self.backups.rglob("rejected-token.cred"))), 1)
         self.assertNotIn(TOKEN, stderr.getvalue())
+
+    def test_failed_connection_check_explains_governors_error_but_never_the_token(self):
+        for stderr, expected in (
+            (
+                b"\x1b[31merror\x1b[0m: Uncaught (in promise) Error: Hostinger request "
+                b"command failed\n    at file:///src/main.ts:12:3\n",
+                "A local setup command failed: runuser (error: Uncaught (in promise) "
+                "Error: Hostinger request command failed)",
+            ),
+            (b"error: " + TOKEN.encode() + b"\n", "Governor's connection check failed."),
+        ):
+
+            def failed_check(argv, **kwargs):
+                if argv[0] != "/usr/sbin/runuser":
+                    return self.runner(argv, **kwargs)
+                failed = SimpleNamespace(returncode=1, stdout=b"", stderr=stderr)
+                with patch.object(REMOTE.subprocess, "run", return_value=failed):
+                    return REAL_RUN(argv, **kwargs)
+
+            with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(
+                REMOTE.SafeError
+            ) as raised:
+                self.invoke(failed_check)
+            self.assertEqual(str(raised.exception), expected)
+            self.assertEqual(self.config.read_bytes(), self.original)
 
     def test_migration_retires_readable_token_to_an_encrypted_backup(self):
         REMOTE.LEGACY_TOKEN.write_bytes(b"previous.raw.token\n")

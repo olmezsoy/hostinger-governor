@@ -180,20 +180,38 @@ IdentitiesOnly yes
                     assert setup.CONFIG.read_bytes() == before
                     assert not setup.ENCRYPTED.exists()
 
-                transcript = drive_wizard(
-                    tools / "setup-hostinger-broker.sh",
-                    "governor-smoke-test",
-                    token,
-                    env={
-                        **os.environ,
-                        "PATH": str(binaries) + ":/usr/bin:/bin",
-                        "TERM": "xterm",
-                    },
-                    # A successful apply finishes inside the root deadline;
-                    # preflight and inspection are quick offline.
-                    timeout=setup.ROOT_SETUP_SECONDS,
-                    on_confirmation=inspected_without_writes,
-                )
+                started = int(time.time())
+                try:
+                    transcript = drive_wizard(
+                        tools / "setup-hostinger-broker.sh",
+                        "governor-smoke-test",
+                        token,
+                        env={
+                            **os.environ,
+                            "PATH": str(binaries) + ":/usr/bin:/bin",
+                            "TERM": "xterm",
+                        },
+                        # A successful apply finishes inside the root deadline;
+                        # preflight and inspection are quick offline.
+                        timeout=setup.ROOT_SETUP_SECONDS,
+                        on_confirmation=inspected_without_writes,
+                    )
+                except AssertionError:
+                    # Show why the broker or Governor failed. CI uses a dummy token.
+                    subprocess.run(
+                        [
+                            "/usr/bin/journalctl",
+                            "--since",
+                            "@" + str(started),
+                            "--no-pager",
+                            "--output=short-precise",
+                            "--unit=governor-hostinger-request",
+                            "--unit=governor",
+                            "--identifier=sudo",
+                        ],
+                        check=False,
+                    )
+                    raise
                 assert b"Operation-only broker verified" in transcript
             finally:
                 daemon.terminate()
