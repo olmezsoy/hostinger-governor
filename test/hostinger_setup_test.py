@@ -659,7 +659,17 @@ class TransactionTests(unittest.TestCase):
         self.assertFalse(self.broker_dir.exists())
         self.assertFalse(self.encrypted.exists())
         self.assertEqual(starts, 2)
-        self.assertEqual(len(list(self.backups.rglob("rejected-token.cred"))), 1)
+        archived = {path.name for path in self.backups.rglob("rejected-*")}
+        self.assertEqual(
+            archived,
+            {
+                "rejected-hostinger-token.cred",
+                "rejected-hostinger-config.json",
+                "rejected-libexec-governor-hostinger.py",
+                "rejected-libexec-governor-hostinger",
+                "rejected-sudoers.d-governor-hostinger",
+            },
+        )
         self.assertNotIn(TOKEN, stderr.getvalue())
 
     def test_failed_connection_check_explains_governors_error_but_never_the_token(self):

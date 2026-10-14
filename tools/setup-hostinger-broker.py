@@ -405,7 +405,9 @@ def rollback(
             attempt(
                 "archive " + target.name,
                 lambda target=target: os.replace(
-                    target, backup / ("rejected-" + target.name)
+                    # The launcher and sudoers rule share a basename.
+                    target,
+                    backup / ("rejected-" + target.parent.name + "-" + target.name),
                 ),
             )
     if broker_directory_created and BROKER_DIR.exists():

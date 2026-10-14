@@ -34,6 +34,32 @@ def offline_source(source, overrides):
     )
 
 
+def show_failure(started, governor_io):
+    """Print why the broker or Governor failed. CI uses a dummy token only."""
+    journal = subprocess.run(
+        [
+            "/usr/bin/journalctl",
+            "--since",
+            "@" + str(started),
+            "--no-pager",
+            "--output=short-precise",
+        ],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        check=False,
+    )
+    print("--- journal since the wizard started ---")
+    print("\n".join(journal.stdout.decode(errors="replace").splitlines()[-200:]))
+    for path in sorted(governor_io.rglob("*")):
+        if path.name in ("stdout", "stderr") and path.is_file():
+            data = path.read_bytes()
+            if data[:2] == b"\x1f\x8b":
+                data = gzip.decompress(data)
+            if data:
+                print("--- Governor sudo " + str(path.relative_to(governor_io)) + " ---")
+                print(data[-4096:].decode(errors="replace"))
+
+
 def ssh_setup_flow(setup, root, token):
     """Real localhost SSH and sudo, including enabled stdin/output logging."""
     account = "governor-setup-smoke"
@@ -97,11 +123,16 @@ def run(argv, **kwargs):
         authorized.chmod(0o600)
         os.chown(authorized, user.pw_uid, user.pw_gid)
         (files / "sudo-io").mkdir(mode=0o700)
+        (files / "governor-io").mkdir(mode=0o700)
         rule.write_text(
             "Defaults:"
             + account
             + ' log_input,log_output,iolog_dir="'
             + str(files / "sudo-io")
+            + '"\n'
+            # Governor discards broker stderr by design; record it for failures.
+            + 'Defaults:governor log_output,iolog_dir="'
+            + str(files / "governor-io")
             + '"\n'
             + account
             + " ALL=(root) NOPASSWD: /usr/bin/python3 -I -c *\n"
@@ -197,20 +228,7 @@ IdentitiesOnly yes
                         on_confirmation=inspected_without_writes,
                     )
                 except AssertionError:
-                    # Show why the broker or Governor failed. CI uses a dummy token.
-                    subprocess.run(
-                        [
-                            "/usr/bin/journalctl",
-                            "--since",
-                            "@" + str(started),
-                            "--no-pager",
-                            "--output=short-precise",
-                            "--unit=governor-hostinger-request",
-                            "--unit=governor",
-                            "--identifier=sudo",
-                        ],
-                        check=False,
-                    )
+                    show_failure(started, files / "governor-io")
                     raise
                 assert b"Operation-only broker verified" in transcript
             finally:
