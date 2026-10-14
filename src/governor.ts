@@ -21,8 +21,10 @@ import {
   tightenCeiling,
   widen,
 } from "./credits.ts";
-import { cpuReadings, type TokenSource, vm } from "./hostinger.ts";
-import { type Plan, plan, RULES_SINCE } from "./plans.ts";
+import { cpuReadings, type HostingerSource, validateSource, vm } from "./hostinger.ts";
+import { MAX_VCPUS, type Plan, plan, RULES_SINCE } from "./plans.ts";
+import { DEFAULT_FALLBACK_CPU_PERCENT, fallbackCpuPercent } from "./fallback.ts";
+import { HOOK_TIMEOUT_SECONDS, HookRunner, validateHookTimeout } from "./hooks.ts";
 import {
   type Clock,
   type Counters,
@@ -48,7 +50,7 @@ export const STATE_FILE = `${PATHS.run}/state.json`;
 export const REQUESTS = `${PATHS.run}/requests`;
 
 export type Config = {
-  hostinger?: TokenSource & { vm_id?: number };
+  hostinger?: HostingerSource & { vm_id?: number };
   // The slice whose ceiling the governor sets; every login runs under user.slice.
   slice?: string;
   timezone?: string;
@@ -57,6 +59,9 @@ export type Config = {
   // Overrides the plan read from Hostinger's API.
   vcpus?: number;
   baseline_share?: number;
+  // Percent of one vCPU, only while the daemon is starting/stopped/failed.
+  fallback_cpu_percent?: number;
+  hook_timeout_seconds?: number;
 };
 
 export type Sample = {
@@ -117,6 +122,7 @@ type Private = {
 
 // What every consumer reads.
 export type PublicState = {
+  schemaVersion: 1;
   updatedAt: number;
   bootId: string | null;
   uptime: number | null;
@@ -202,7 +208,9 @@ async function list(dir: string): Promise<Deno.DirEntry[]> {
 }
 
 export async function loadConfig(): Promise<Config> {
-  return validateConfig(JSON.parse(await Deno.readTextFile(PATHS.config)));
+  const cfg = validateConfig(JSON.parse(await Deno.readTextFile(PATHS.config)));
+  fallbackCpuPercent(cfg, await vcpusSeen());
+  return cfg;
 }
 
 export function validateConfig(cfg: Config): Config {
@@ -219,7 +227,15 @@ export function validateConfig(cfg: Config): Config {
   if (id !== undefined && id !== null && (!Number.isSafeInteger(id) || id <= 0)) {
     throw new Error("hostinger.vm_id must be a positive integer");
   }
+  if (cfg.hostinger) {
+    validateSource(cfg.hostinger);
+    if (cfg.hostinger.request_command && !id) {
+      throw new Error("hostinger.request_command requires hostinger.vm_id");
+    }
+  }
   plan(cfg.vcpus ?? 1, undefined, cfg.baseline_share);
+  fallbackCpuPercent(cfg, cfg.vcpus ?? MAX_VCPUS);
+  if (cfg.hook_timeout_seconds !== undefined) validateHookTimeout(cfg.hook_timeout_seconds);
   if (
     cfg.tick_seconds !== undefined &&
     (!Number.isFinite(cfg.tick_seconds) || cfg.tick_seconds < 1 || cfg.tick_seconds > 300)
@@ -273,35 +289,6 @@ async function ceilingNow(slice: string): Promise<number | null> {
   return quota && quota !== "max" ? Math.round((100 * Number(quota)) / Number(period)) : null;
 }
 
-// Every executable in hooks.d, with the event in GOVERNOR_EVENT and the state on stdin.
-async function runHooks(event: string, state: PublicState) {
-  const entries: string[] = [];
-  for (const e of await list(PATHS.hooks)) {
-    if (e.isFile || e.isSymlink) entries.push(e.name);
-  }
-  for (const name of entries.sort()) {
-    try {
-      const child = new Deno.Command(`${PATHS.hooks}/${name}`, {
-        env: { GOVERNOR_EVENT: event },
-        stdin: "piped",
-        stdout: "null",
-        stderr: "piped",
-      }).spawn();
-      const w = child.stdin.getWriter();
-      await w.write(new TextEncoder().encode(JSON.stringify(state)));
-      await w.close();
-      const timer = setTimeout(() => child.kill(), 60_000);
-      const out = await child.output();
-      clearTimeout(timer);
-      if (!out.success) {
-        log(`hook ${name} (${event}) failed:`, new TextDecoder().decode(out.stderr).trim());
-      }
-    } catch (e) {
-      log(`hook ${name} (${event}) failed:`, e);
-    }
-  }
-}
-
 export type GovernorIO = {
   clock: () => Promise<Clock>;
   counters: typeof readCounters;
@@ -309,7 +296,7 @@ export type GovernorIO = {
   cap: typeof capSlice;
   ceiling: typeof ceilingNow;
   readings: typeof cpuReadings;
-  hooks: typeof runHooks;
+  hooks: (event: string, state: PublicState) => Promise<void>;
   snapshot: typeof topSnapshot;
   requestInfo: (
     path: string,
@@ -326,6 +313,7 @@ export class Governor {
   readonly io: GovernorIO;
   comparison: number | null = null;
   private liftEvidence: "unknown" | "limited" | "lifted" = "unknown";
+  private readonly hookRunner: HookRunner;
   constructor(
     readonly cfg: Config,
     readonly plan: Plan,
@@ -333,6 +321,8 @@ export class Governor {
     io: Partial<GovernorIO> = {},
   ) {
     validateConfig(cfg);
+    fallbackCpuPercent(cfg, plan.vcpus);
+    this.hookRunner = new HookRunner(PATHS.hooks, cfg.hook_timeout_seconds ?? HOOK_TIMEOUT_SECONDS);
     this.io = {
       clock: readClock,
       counters: readCounters,
@@ -340,7 +330,10 @@ export class Governor {
       cap: capSlice,
       ceiling: ceilingNow,
       readings: cpuReadings,
-      hooks: runHooks,
+      hooks: (event, state) => {
+        this.hookRunner.enqueue(event, state);
+        return Promise.resolve();
+      },
       snapshot: topSnapshot,
       requestInfo: Deno.lstat,
       requestBody: Deno.readTextFile,
@@ -424,6 +417,7 @@ export class Governor {
       demandSteal(avg(control.map((x) => x.busy)), avg(control.map((x) => x.steal))) >=
         LIMIT_PRESSING;
     return {
+      schemaVersion: 1,
       updatedAt: now,
       bootId: s.bootId ?? null,
       uptime: s.uptime ?? null,
@@ -466,6 +460,20 @@ export class Governor {
         recoveryBlocked: !!s.limit && outside >= p.limit - 0.2,
       },
     };
+  }
+
+  private notify(event: string, now: number) {
+    try {
+      void this.io.hooks(event, structuredClone(this.publicState(now))).catch(() => {
+        log(`hooks (${event}): dispatch failed`);
+      });
+    } catch {
+      log(`hooks (${event}): dispatch failed`);
+    }
+  }
+
+  closeHooks() {
+    return this.hookRunner.close();
   }
 
   enterLimit(now: number, learn: boolean) {
@@ -597,6 +605,7 @@ export class Governor {
   }
 
   async tick(clock?: Clock) {
+    const notifications: string[] = [];
     const { at: now, uptime, bootId } = clock ?? await this.io.clock();
     const s = this.s;
     const p = this.plan;
@@ -730,7 +739,7 @@ export class Governor {
         s.probe.backoffMs = BACKOFF_MS;
         s.probe.failedSf = undefined;
         log(`limit: start (margin x${s.margin.mul} +${s.margin.add})`);
-        await this.io.hooks("limit-start", this.publicState(now));
+        notifications.push("limit-start");
       } else {
         s.probe.cooldownUntil = uptime + s.probe.backoffMs;
         s.probe.backoffMs = Math.min(s.probe.backoffMs * 2, BACKOFF_MAX_MS);
@@ -788,7 +797,7 @@ export class Governor {
           );
           s.limit = undefined;
           log("limit: lifted");
-          await this.io.hooks("limit-end", this.publicState(now));
+          notifications.push("limit-end");
         } else {
           if (this.liftEvidence === "limited") {
             if (limit.entry?.learn) {
@@ -808,17 +817,21 @@ export class Governor {
       ? s.limit.ceiling
       : sliceCeiling(p, allowedCores(p, s.balance, s.margin, LAW), outside);
     s.capFailed = target !== current;
-    if (target === current) s.ceiling = target;
-    else if (await this.io.cap(this.slice, target)) {
-      s.capFailed = false;
-      if (Math.abs(target - (s.ceiling ?? 0)) >= 100 || s.limit) {
-        log(
-          `ceiling ${target}%: ${Math.round(busy * 100)}% busy, ${
-            Math.round(steal * 100)
-          }% steal, ${Math.round((100 * s.balance) / p.capacity)}% credits`,
-        );
+    try {
+      if (target === current) s.ceiling = target;
+      else if (await this.io.cap(this.slice, target)) {
+        s.capFailed = false;
+        if (Math.abs(target - (s.ceiling ?? 0)) >= 100 || s.limit) {
+          log(
+            `ceiling ${target}%: ${Math.round(busy * 100)}% busy, ${
+              Math.round(steal * 100)
+            }% steal, ${Math.round((100 * s.balance) / p.capacity)}% credits`,
+          );
+        }
+        s.ceiling = target;
       }
-      s.ceiling = target;
+    } finally {
+      for (const event of notifications) this.notify(event, now);
     }
   }
 
@@ -851,7 +864,12 @@ export async function runDaemon() {
   );
   const tickMs = (cfg.tick_seconds ?? 30) * 1000;
   let stopping = false;
-  Deno.addSignalListener("SIGTERM", () => stopping = true);
+  const stop = () => {
+    stopping = true;
+    void g.closeHooks();
+  };
+  Deno.addSignalListener("SIGTERM", stop);
+  Deno.addSignalListener("SIGINT", stop);
   while (!stopping) {
     const now = Date.now();
     try {
@@ -865,14 +883,42 @@ export async function runDaemon() {
     for (let waited = 0; waited < tickMs && !stopping; waited += 1000) await sleep(1000);
   }
   await g.save(Date.now()).catch(() => {});
+  await g.closeHooks();
+  Deno.removeSignalListener("SIGTERM", stop);
+  Deno.removeSignalListener("SIGINT", stop);
 }
 
-// A fixed recovery quota also survives a wrong baseline or an already active host limit. Outside
-// services still need to be moved under user.slice; no slice quota can constrain unrelated cgroups.
-export async function fallback() {
-  const ceiling = 20;
-  const out = await new Deno.Command("systemctl", {
-    args: ["set-property", "--runtime", "user.slice", `CPUQuota=${ceiling}%`],
-  }).output();
-  log(`fallback ceiling ${ceiling}%`, out.success ? "set" : "failed");
+export async function configuredFallbackPercent() {
+  const cfg = await loadConfig();
+  return cfg.fallback_cpu_percent ?? DEFAULT_FALLBACK_CPU_PERCENT;
+}
+
+// Invalid/missing configuration always uses the conservative default. This never
+// calls Hostinger's API or relies on a potentially stale public credit estimate.
+type FallbackIO = {
+  config?: () => Promise<Config>;
+  vcpus?: () => Promise<number>;
+  cap?: (percent: number) => Promise<boolean>;
+};
+export async function fallback(io: FallbackIO = {}) {
+  let ceiling = DEFAULT_FALLBACK_CPU_PERCENT;
+  try {
+    ceiling = fallbackCpuPercent(
+      await (io.config ?? loadConfig)(),
+      await (io.vcpus ?? vcpusSeen)(),
+    );
+  } catch {
+    log(
+      `fallback config unavailable or invalid; using ${DEFAULT_FALLBACK_CPU_PERCENT}% of one vCPU`,
+    );
+  }
+  const cap = io.cap ?? (async (percent: number) => {
+    const out = await new Deno.Command("systemctl", {
+      args: ["set-property", "--runtime", "user.slice", `CPUQuota=${percent}%`],
+    }).output();
+    return out.success;
+  });
+  const applied = await cap(ceiling);
+  log(`fallback ceiling ${ceiling}%`, applied ? "set" : "failed");
+  if (!applied) throw new Error("could not apply fallback CPU quota");
 }

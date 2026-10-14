@@ -64,6 +64,15 @@ fi
 command -v systemctl >/dev/null && [[ -f /sys/fs/cgroup/cgroup.controllers ]] ||
   { echo "needs systemd with cgroup v2" >&2; exit 1; }
 
+# Broker token-copy guard (isolated installer-test entry point).
+# Do not reintroduce a daemon-readable credential when updating a broker setup.
+if [[ -n $token_file && -f /etc/governor/config.json ]] &&
+  grep -q '"request_command"[[:space:]]*:' /etc/governor/config.json; then
+  echo "--token-file cannot be used with an existing request_command broker" >&2
+  exit 2
+fi
+# End broker token-copy guard.
+
 # Quota migration functions are also exercised with isolated files in installer tests.
 quota_only_dropin() {
   local line seen=0
@@ -153,14 +162,6 @@ systemctl set-property --runtime user.slice CPUQuota=20%
 retire_persistent_quotas
 install -m 0755 "$binary" /usr/local/bin/governor
 
-# sysstat keeps the 10-minute history `governor report` draws.
-if ! command -v sadf >/dev/null; then
-  DEBIAN_FRONTEND=noninteractive apt-get update -q >/dev/null
-  DEBIAN_FRONTEND=noninteractive apt-get install -y -q sysstat >/dev/null
-fi
-[[ -f /etc/default/sysstat ]] && sed -i 's/^ENABLED=.*/ENABLED="true"/' /etc/default/sysstat
-systemctl enable --now sysstat >/dev/null 2>&1 || true
-
 getent group governor >/dev/null || groupadd --system governor
 id governor >/dev/null 2>&1 ||
   useradd --system --gid governor --home-dir /var/lib/governor --shell /usr/sbin/nologin governor
@@ -179,6 +180,7 @@ if [[ ! -f /etc/governor/config.json ]]; then
   "timezone": "${timezone:-UTC}",
   "initial_balance": 0,
   "baseline_share": ${baseline_share:-0.6},
+  "fallback_cpu_percent": 20,
   "tick_seconds": 30
 }
 EOF
@@ -186,6 +188,21 @@ EOF
   chmod 0640 /etc/governor/config.json
 fi
 /usr/local/bin/governor validate-config
+# Fallback quota selection (isolated installer-test entry point).
+fallback_percent=$(/usr/local/bin/governor fallback --print)
+[[ $fallback_percent =~ ^[1-9][0-9]{0,4}$ ]] ||
+  { echo "invalid fallback CPU quota" >&2; exit 1; }
+# End fallback quota selection.
+# Apply the configured fallback before package installation, which may take a while.
+systemctl set-property --runtime user.slice "CPUQuota=$fallback_percent%"
+
+# sysstat keeps the 10-minute history `governor report` draws.
+if ! command -v sadf >/dev/null; then
+  DEBIAN_FRONTEND=noninteractive apt-get update -q >/dev/null
+  DEBIAN_FRONTEND=noninteractive apt-get install -y -q sysstat >/dev/null
+fi
+[[ -f /etc/default/sysstat ]] && sed -i 's/^ENABLED=.*/ENABLED="true"/' /etc/default/sysstat
+systemctl enable --now sysstat >/dev/null 2>&1 || true
 
 # The only root action the daemon needs: the ceiling on one slice.
 install -d /usr/local/libexec
@@ -204,13 +221,16 @@ printf 'governor ALL=(root) NOPASSWD: /usr/local/libexec/governor-cap *\n' > /et
 chmod 0440 /etc/sudoers.d/governor
 visudo -cf /etc/sudoers.d/governor
 
-# A runtime quota disappears on reboot. Start logins safely before the daemon runs.
+# Boot quota generation (isolated installer-test entry point).
+# Mirror the validated configuration into the boot quota without calling the API.
+# Upgrades keep the existing setting; missing configuration fields default to 20%.
+# A runtime quota disappears on reboot. Start logins with the configured fallback.
 install -d /etc/systemd/system/user.slice.d
-cat > /etc/systemd/system/user.slice.d/10-governor.conf <<'EOF'
+cat > /etc/systemd/system/user.slice.d/10-governor.conf <<EOF
 [Slice]
-CPUAccounting=yes
-CPUQuota=20%
+CPUQuota=$fallback_percent%
 EOF
+# End boot quota generation.
 
 cat > /etc/systemd/system/governor.service <<'EOF'
 [Unit]

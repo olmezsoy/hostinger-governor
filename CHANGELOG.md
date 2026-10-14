@@ -1,5 +1,67 @@
 # Changelog
 
+## v0.2.3
+
+- Address issue #1: configurable `fallback_cpu_percent`, default 20% of one vCPU. Validate it
+  against the VM size, use it before startup and after stopping, and mirror it into the boot quota
+  during installation. Invalid or unreadable configuration falls back to 20%. Recovery and probe
+  floors remain unchanged. Document outside workloads, baseline and host-limit constraints.
+- Add `schemaVersion: 1` to public state and hook snapshots without changing the persisted credit
+  schema. Existing estimates survive upgrade. Built-in readers accept legacy snapshots without the
+  field and reject unknown versions.
+- Run hooks on a bounded background FIFO, after quota application, with captured event state. Each
+  hook has its own `hook_timeout_seconds`, default 60, including time blocked on stdin. Kill its
+  ordinary process group when the parent exits, at the deadline or shutdown; failures cannot hold up
+  CPU control or later notifications. Limit payload/backlog memory and log drops without logging
+  hook output.
+- Add an operation-only `hostinger.request_command` adapter. A separate broker can return VM details
+  and CPU readings without giving Governor a bearer token. Validate the versioned protocol, enforce
+  response and lifetime limits, redact command errors and refuse ambiguous token sources.
+- Add `governor check-hostinger` for read-only connection checks and a restricted Linux/systemd
+  reference broker with encrypted worker-only credentials, fixed GET endpoints, VM authorization,
+  request limits and a separate provider identity. Existing token options remain supported.
+- Add a generic SSH setup wizard with hidden token entry, VPS verification, confirmation before
+  installation and rollback tests. Provision the isolated worker and retire an installer-managed raw
+  token into a verified encrypted backup. Refuse to copy a raw token over a broker installation.
+  Share successful metrics across authorized request windows so connection checks do not consume the
+  daemon's next request. Report temporary busy/cooldown refusals without accepting arbitrary error
+  text. Add a dummy-token Linux integration test for the real credential/sudo/systemd path.
+- Keep setup tokens out of sudo's logged stdin with a private FIFO bridge. Share API transport,
+  security limits and validation with the bundled broker. Attempt every rollback step independently,
+  preserve recovery files on incomplete rollback and verify fresh service state after recovery.
+  Cover early failures, partial publication, failed restores and hidden-input/confirmation behavior.
+  Extend the Linux test to localhost SSH, enabled sudo I/O logging, journal inspection, separate key
+  ownership and a readable canary proving `ProtectHome`. Bound the worker's full lifecycle below the
+  25-second caller deadline.
+- Report unsupported public schemas cleanly from `status`, `report` and `exec`. Run child CLI tests
+  with explicit permissions and keep writable test data separate from tracked fixtures.
+- Verify setup against the new daemon's publication, not its predecessor's shutdown state. Record
+  rollback intent before file changes so interrupts cannot skip restores. Test the real freshness
+  check, FIFO safety refusals, stalled receivers and environment cleanup. Reuse broker VM validation
+  and request construction, name setup deadlines, and document root authority and manual rotation.
+  The Linux integration test now drives the actual Bash wizard through localhost SSH; offline
+  adapters are installed after loading unchanged modules, without slicing source text.
+- Size setup's stop and fresh-state waits from Governor's longest tick (a history request plus a
+  limit test) and systemd's stop timeout, so a limit test in progress cannot roll back a good
+  install. Rollback cancels the overall setup deadline and relies on its own step deadlines.
+- Remove obsolete `CPUAccounting=yes` from the generated boot drop-in. Fail startup if systemd
+  cannot apply the fallback, instead of starting without that cap.
+
+Upgrade with the installer. Existing configuration and v0.2 estimates are kept. The default
+fallback, credit rules and report formats are unchanged. Choosing a larger fallback is an explicit
+availability tradeoff, not an automatic safety guarantee. A stale status file alone does not apply
+the fallback.
+
+Hooks no longer log stdout/stderr. Each event captures state at notification time, and the FIFO
+holds at most 16 waiting events with payloads limited to 1 MiB. Overflows are logged and dropped;
+delivery is best-effort. Hooks that start background work must wait for those children, since the
+runner now kills remaining ordinary children when the parent exits. Move daemonized work to a
+separate supervised service before upgrading.
+
+Editing `fallback_cpu_percent` changes runtime behavior after a restart. Re-run the matching
+installer to update the early-boot quota too. Broker setup is optional and separate from the regular
+installer; upgrades do not automatically migrate or revoke existing tokens.
+
 ## v0.2.2
 
 - Retire inherited, quota-only `user.slice` drop-ins into recoverable backups before installation.

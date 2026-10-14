@@ -5,9 +5,10 @@
 //   governor report [hours] [--format text|html|json]  read-only vitals (default 12 hours)
 //   governor limit on|off           tell it what hPanel or Hostinger support says (root only)
 //   governor seed <core-seconds>    set the credit balance, for example when moving from another tool
-//   governor fallback               run by systemd as root when the daemon stops
+//   governor fallback [--print]     apply fallback as root, or print the configured quota
 //   governor version
 import {
+  configuredFallbackPercent,
   fallback,
   loadConfig,
   type PublicState,
@@ -20,17 +21,25 @@ import { reportOptions } from "./resource.ts";
 import { configureDocker, enrollService } from "./workloads.ts";
 import { readClock } from "./sample.ts";
 import { execOptions, scopeArgs, waitForAccepting } from "./exec.ts";
+import { BROKER_CAPABILITY, CHECK_WINDOW_MS, cpuReadings, vm } from "./hostinger.ts";
 
-export const VERSION = "0.2.2";
+export const VERSION = "0.2.3";
 const STALE_MS = 5 * 60_000;
+class UnsupportedStateSchema extends Error {
+  constructor() {
+    super("governor public state schema is unsupported; upgrade this reader");
+  }
+}
 
 async function state(): Promise<PublicState | null> {
   try {
     const s = JSON.parse(await Deno.readTextFile(STATE_FILE)) as PublicState;
+    if (s.schemaVersion !== undefined && s.schemaVersion !== 1) throw new UnsupportedStateSchema();
     const clock = await readClock();
     const age = s.uptime === null ? Infinity : clock.uptime - s.uptime;
     return s.bootId === clock.bootId && age >= 0 && age <= STALE_MS ? s : null;
-  } catch {
+  } catch (error) {
+    if (error instanceof UnsupportedStateSchema) throw error;
     return null;
   }
 }
@@ -51,101 +60,130 @@ async function ask(body: Record<string, unknown>) {
 
 const usage = (): never => {
   console.error(
-    "usage: governor run | status [--json] | report [hours] [--format text|html|json] | limit on|off | seed <core-seconds> | exec [--wait <seconds>] -- <command> | enroll-service <unit> | configure-docker | version",
+    "usage: governor run | status [--json] | report [hours] [--format text|html|json] | check-hostinger | limit on|off | seed <core-seconds> | exec [--wait <seconds>] -- <command> | enroll-service <unit> | configure-docker | version",
   );
   Deno.exit(2);
 };
 
 const [cmd, ...args] = Deno.args;
-switch (cmd) {
-  case "run":
-    await runDaemon();
-    break;
-  case "validate-config":
-    await loadConfig();
-    console.log("config valid");
-    break;
-  case "enroll-service":
-    if (args.length !== 1) usage();
-    await enrollService(args[0]);
-    break;
-  case "configure-docker":
-    if (args.length) usage();
-    await configureDocker();
-    break;
-  case "status": {
-    const s = await state();
-    if (!s) {
-      console.error("governor is not running (no fresh state)");
-      Deno.exit(3);
-    }
-    if (args.includes("--json")) console.log(JSON.stringify(s));
-    else {
-      const clock = (ms: number) => new Date(ms).toISOString().slice(11, 16) + "Z";
+try {
+  switch (cmd) {
+    case "run":
+      await runDaemon();
+      break;
+    case "validate-config":
+      await loadConfig();
+      console.log("config valid");
+      break;
+    case "check-hostinger": {
+      if (args.length === 1 && args[0] === "--help") {
+        console.log(
+          `governor check-hostinger: read VM details and CPU metrics; ${BROKER_CAPABILITY}`,
+        );
+        break;
+      }
+      if (args.length) usage();
+      const h = (await loadConfig()).hostinger;
+      if (!h?.vm_id) throw new Error("hostinger.vm_id is not configured");
+      const details = await vm(h, h.vm_id);
+      const now = Date.now();
+      const readings = await cpuReadings(h, h.vm_id, now - CHECK_WINDOW_MS, now);
       console.log(
-        [
-          `${s.plan.name} · ceiling ${s.ceiling}% · ${
-            s.limit ? "LIMITED by Hostinger" : "not limited"
-          }`,
-          ...creditLines(s, clock),
-        ].join("\n"),
+        JSON.stringify({ vm_id: h.vm_id, cpus: details.cpus, cpu_samples: readings.length }),
       );
+      break;
     }
-    break;
-  }
-  case "report": {
-    const options = (() => {
-      try {
-        return reportOptions(args);
-      } catch {
-        return usage();
+    case "enroll-service":
+      if (args.length !== 1) usage();
+      await enrollService(args[0]);
+      break;
+    case "configure-docker":
+      if (args.length) usage();
+      await configureDocker();
+      break;
+    case "status": {
+      const s = await state();
+      if (!s) {
+        console.error("governor is not running (no fresh state)");
+        Deno.exit(3);
       }
-    })();
-    const s = await state();
-    console.log(await report(s, options.hours, Date.now(), options.format));
-    break;
-  }
-  case "limit":
-    if (args[0] !== "on" && args[0] !== "off") usage();
-    await ask({ action: `limit-${args[0]}` });
-    break;
-  case "seed":
-    if (args[0] === undefined || !Number.isFinite(Number(args[0])) || Number(args[0]) < 0) usage();
-    await ask({ action: "seed", balance: Number(args[0]) });
-    break;
-  case "exec": {
-    const options = (() => {
-      try {
-        return execOptions(args);
-      } catch {
-        return usage();
+      if (args.includes("--json")) console.log(JSON.stringify(s));
+      else {
+        const clock = (ms: number) => new Date(ms).toISOString().slice(11, 16) + "Z";
+        console.log(
+          [
+            `${s.plan.name} · ceiling ${s.ceiling}% · ${
+              s.limit ? "LIMITED by Hostinger" : "not limited"
+            }`,
+            ...creditLines(s, clock),
+          ].join("\n"),
+        );
       }
-    })();
-    if (
-      !await waitForAccepting(options.waitSeconds, {
-        state,
-        now: () => performance.now(),
-        sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
-      })
-    ) {
-      console.error("governor is not accepting work");
-      Deno.exit(3);
+      break;
     }
-    const out = await new Deno.Command("systemd-run", {
-      args: scopeArgs(options.command, Deno.uid() === 0),
-      stdin: "inherit",
-      stdout: "inherit",
-      stderr: "inherit",
-    }).spawn().status;
-    Deno.exit(out.code);
-    break;
+    case "report": {
+      const options = (() => {
+        try {
+          return reportOptions(args);
+        } catch {
+          return usage();
+        }
+      })();
+      const s = await state();
+      console.log(await report(s, options.hours, Date.now(), options.format));
+      break;
+    }
+    case "limit":
+      if (args[0] !== "on" && args[0] !== "off") usage();
+      await ask({ action: `limit-${args[0]}` });
+      break;
+    case "seed":
+      if (args[0] === undefined || !Number.isFinite(Number(args[0])) || Number(args[0]) < 0) {
+        usage();
+      }
+      await ask({ action: "seed", balance: Number(args[0]) });
+      break;
+    case "exec": {
+      const options = (() => {
+        try {
+          return execOptions(args);
+        } catch {
+          return usage();
+        }
+      })();
+      if (
+        !await waitForAccepting(options.waitSeconds, {
+          state,
+          now: () => performance.now(),
+          sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+        })
+      ) {
+        console.error("governor is not accepting work");
+        Deno.exit(3);
+      }
+      const out = await new Deno.Command("systemd-run", {
+        args: scopeArgs(options.command, Deno.uid() === 0),
+        stdin: "inherit",
+        stdout: "inherit",
+        stderr: "inherit",
+      }).spawn().status;
+      Deno.exit(out.code);
+      break;
+    }
+    case "fallback":
+      if (!args.length) await fallback();
+      else if (args.length === 1 && args[0] === "--print") {
+        console.log(await configuredFallbackPercent());
+      } else usage();
+      break;
+    case "version":
+      console.log(VERSION);
+      break;
+    default:
+      usage();
   }
-  case "fallback":
-    await fallback();
-    break;
-  case "version":
-    console.log(VERSION);
-    break;
-  default:
-    usage();
+} catch (error) {
+  if (!(error instanceof UnsupportedStateSchema)) throw error;
+  console.error(error.message);
+  Deno.exit(3);
 }

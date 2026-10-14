@@ -107,6 +107,96 @@ Deno.test("rebuilding reserve is visible without claiming a Hostinger limit", as
   assertEquals(f.g.publicState(start).credits.rebuilding, null);
 });
 
+Deno.test("public state identifies its schema independently of persisted accounting", () => {
+  const f = fixture();
+  const state = f.g.publicState(start);
+  assertEquals(state.schemaVersion, 1);
+  assertEquals(f.g.s.schema, 2);
+});
+
+Deno.test("a pending limit-start hook cannot delay the ceiling update or tick", async () => {
+  const f = fixture();
+  await f.g.tick();
+  await f.advance(30, 0.25, 0.5);
+  await f.advance(30, 0.25, 0.5);
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => release = resolve);
+  let started = false;
+  let hookCeiling = 0;
+  let hookLimitCeiling = 0;
+  f.g.io.hooks = async (_event, state) => {
+    started = true;
+    hookCeiling = state.ceiling;
+    hookLimitCeiling = state.limit!.ceiling;
+    await gate;
+  };
+  const tick = f.advance(30, 0.25, 0.5);
+  let timer!: ReturnType<typeof setTimeout>;
+  const result = await Promise.race([
+    tick.then(() => "completed"),
+    new Promise<string>((resolve) => timer = setTimeout(() => resolve("blocked"), 30)),
+  ]);
+  clearTimeout(timer);
+  const ceilingBeforeRelease = f.cap;
+  release();
+  await tick;
+  assert(started);
+  assertEquals(result, "completed");
+  assertEquals(ceilingBeforeRelease, f.g.s.limit!.ceiling);
+  assertEquals(hookCeiling, hookLimitCeiling);
+});
+
+Deno.test("invalid fallback settings are rejected during configuration validation", () => {
+  for (const value of [0, 19, 20.5, -1, NaN, Infinity, "150"]) {
+    assertThrows(() => validateConfig(JSON.parse(JSON.stringify({ fallback_cpu_percent: value }))));
+  }
+});
+
+Deno.test("hook dispatch failure cannot fail CPU control or mutate the governor state", async () => {
+  const f = fixture();
+  await f.g.tick();
+  f.g.io.hooks = (_event, state) => {
+    state.credits.margin.mul = 999;
+    if (state.limit) state.limit.ceiling = 800;
+    return Promise.reject(new Error("unavailable notification destination"));
+  };
+  await f.advance(30, 0.25, 0.5);
+  await f.advance(30, 0.25, 0.5);
+  await f.advance(30, 0.25, 0.5);
+  assertEquals(f.g.s.margin.mul, 1.05);
+  assertEquals(f.cap, f.g.s.limit!.ceiling);
+  assert(f.cap <= 210);
+});
+
+Deno.test("a pending limit-end hook cannot delay resuming the ceiling", async () => {
+  const f = fixture();
+  await f.g.tick();
+  f.g.enterLimit(start, false);
+  f.g.s.balance = p.recovered;
+  f.g.limitGone = () => Promise.resolve(true);
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => release = resolve);
+  let stateCeiling = 0;
+  f.g.io.hooks = async (event, state) => {
+    assertEquals(event, "limit-end");
+    assertEquals(state.limit, null);
+    stateCeiling = state.ceiling;
+    await gate;
+  };
+  const tick = f.advance();
+  let timer!: ReturnType<typeof setTimeout>;
+  const result = await Promise.race([
+    tick.then(() => "completed"),
+    new Promise<string>((resolve) => timer = setTimeout(() => resolve("blocked"), 30)),
+  ]);
+  clearTimeout(timer);
+  release();
+  await tick;
+  assertEquals(result, "completed");
+  assertEquals(stateCeiling, f.cap);
+  assertEquals(f.g.s.limit, undefined);
+});
+
 Deno.test("compatible upgrades preserve the balance and rebuilding progress", async () => {
   const f = fixture();
   await f.g.tick();
@@ -305,6 +395,40 @@ Deno.test("the actual burn-test method tolerates normal steal and rejects failed
   assertEquals(await limited.limitGone(), false);
 });
 
+Deno.test("setup's limit-test budget covers the probe and the lift test", async () => {
+  // tools/setup-hostinger-broker.py sizes its service waits from this shared value.
+  const contract = JSON.parse(await Deno.readTextFile("test/fixtures/hostinger-protocol.json"));
+  const f = fixture();
+  let probeMs = 0;
+  const probing = new Governor({}, p, undefined, {
+    ...f.io,
+    pause: (ms) => {
+      probeMs += ms;
+      return Promise.resolve();
+    },
+    steal: (ms) => {
+      probeMs += ms;
+      return Promise.resolve(0);
+    },
+  });
+  await probing.probe(0.5, 200);
+  assertEquals(probeMs, contract.governor_limit_test_ms);
+  let liftMs = 0;
+  const lifting = new Governor({}, p, undefined, {
+    ...f.io,
+    pause: (ms) => {
+      liftMs += ms;
+      return Promise.resolve();
+    },
+    demand: (ms) => {
+      liftMs += ms;
+      return f.io.demand(ms);
+    },
+  });
+  await lifting.limitGone();
+  assert(liftMs < contract.governor_limit_test_ms);
+});
+
 Deno.test("partially started burners are cleaned up if a later spawn fails", async () => {
   const f = fixture();
   let started = 0;
@@ -405,6 +529,13 @@ Deno.test("configuration rejects invalid VM ids, quotas, clocks, and baselines",
   assertThrows(() => validateConfig({ tick_seconds: -30 }));
   assertThrows(() => validateConfig({ initial_balance: Infinity }));
   assertThrows(() => validateConfig({ baseline_share: 1 }));
+  assertThrows(() => validateConfig({ hostinger: { request_command: ["/usr/bin/broker"] } }));
+  assertEquals(
+    validateConfig({
+      hostinger: { vm_id: 123, request_command: ["/usr/bin/sudo", "-n", "/usr/bin/broker"] },
+    }).hostinger?.vm_id,
+    123,
+  );
   assertEquals(plan(8, undefined, 0.3).baseline, 2.4);
 });
 
