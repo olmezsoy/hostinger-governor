@@ -7,7 +7,12 @@ permissions:
   contents: read
 jobs:
   check:
-    runs-on: ubuntu-latest
+    # Verification only: 22.04 runs systemd 249, before the keep-caps seccomp path of systemd 255.
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, ubuntu-22.04]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -16,7 +21,9 @@ jobs:
         with:
           deno-version: v2.9.7
       - run: deno task check
+        if: matrix.os == 'ubuntu-24.04'
       - run: python3 -m unittest discover -s test -p '*_test.py'
+        if: matrix.os == 'ubuntu-24.04'
       - run: bash -n install.sh
       - run: deno task compile
       - run: |
@@ -33,7 +40,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-24.04, ubuntu-22.04]
+        os: [ubuntu-latest, ubuntu-24.04, ubuntu-22.04]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -47,9 +54,19 @@ jobs:
       - run: |
           uname -r
           systemctl --version | head -n 1
+          sudo --version | head -n 1
           mdwe() { sudo systemd-run --quiet --wait --pipe -p MemoryDenyWriteExecute=yes "$@"; }
           if mdwe "$PWD/dist/governor-jit" version; then echo "plain build ran under MDWE"; else
             echo "plain build failed under MDWE: $?"
           fi
           [[ $(mdwe "$PWD/dist/governor" version) == 0.2.3 ]]
           echo "jitless build ran under MDWE"
+          # A User= unit, like governor.service: does MDWE bring NoNewPrivileges, which blocks sudo?
+          unit() { mdwe -p User=runner "$@"; }
+          unit sh -c 'grep NoNewPrivs /proc/self/status
+            if sudo -n true; then echo sudo-ok; else echo sudo-refused; fi'
+          if unit "$PWD/dist/governor-jit" version; then echo "plain build ran as runner"; else
+            echo "plain build failed as runner: $?"
+          fi
+          [[ $(unit "$PWD/dist/governor" version) == 0.2.3 ]]
+          echo "jitless build ran as runner"
