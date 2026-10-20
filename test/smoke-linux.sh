@@ -4,13 +4,23 @@ set -euo pipefail
 [[ ${GITHUB_ACTIONS:-} == true && ${RUNNER_ENVIRONMENT:-} == github-hosted && $(uname -s) == Linux ]] ||
   { echo "smoke test requires a disposable GitHub-hosted Linux runner" >&2; exit 2; }
 binary=${1:?pass the compiled Linux binary}
+broker_smoke=${GOVERNOR_SMOKE_BROKER:-true}
+[[ $broker_smoke == true || $broker_smoke == false ]] ||
+  { echo "GOVERNOR_SMOKE_BROKER must be true or false" >&2; exit 2; }
+version=$(sed -n 's/^export const VERSION = "\([^"]*\)";$/\1/p' src/main.ts)
+[[ -n $version ]] || { echo "cannot read VERSION from src/main.ts" >&2; exit 2; }
 container=""
+mkdir -p test/.tmp
+fixture_dir=$(mktemp -d test/.tmp/governor-smoke.XXXXXX)
+jit_binary="$fixture_dir/governor-jit"
+mdwe_dropin=/etc/systemd/system/governor.service.d/80-memory-deny-write-execute.conf
 cleanup() {
+  rm -rf -- "$fixture_dir"
   if [[ -n $container ]]; then sudo docker stop "$container" >/dev/null || true; fi
   sudo systemctl disable --now governor-smoke.service >/dev/null 2>&1 || true
   sudo systemctl stop governor-smoke@check.service >/dev/null 2>&1 || true
   sudo systemctl stop governor-hostinger-request.service >/dev/null 2>&1 || true
-  sudo rm -f /etc/systemd/system/governor-smoke.service \
+  sudo rm -f "$mdwe_dropin" /etc/systemd/system/governor-smoke.service \
     /etc/systemd/system/governor-smoke.service.d/50-governor.conf \
     /etc/systemd/system/governor-smoke@.service \
     /etc/systemd/system/governor-smoke@.service.d/50-governor.conf \
@@ -21,17 +31,60 @@ cleanup() {
 }
 trap cleanup EXIT
 
+wait_for_governor() {
+  for ((attempt=0; attempt<20; attempt++)); do
+    if sudo governor status --json >/dev/null 2>&1; then return; fi
+    sleep 1
+  done
+  sudo governor status --json
+}
+
+# Require the next daemon to publish, rather than accepting its predecessor's state.
+stop_and_discard_state() {
+  sudo systemctl stop governor.service
+  sudo rm -f /run/governor/state.json
+}
+
+assert_schema_v1() {
+  python3 -c 'import json,sys; assert json.load(sys.stdin)["schemaVersion"] == 1'
+}
+
+run_under_mdwe() {
+  local account=$1
+  shift
+  sudo systemd-run --quiet --wait --pipe --collect -p MemoryDenyWriteExecute=yes -p LimitCORE=0 \
+    -p "User=$account" /usr/local/bin/governor "$@"
+}
+
+# The current source built with V8's JIT must still install and control the ceiling.
+deno task compile:jit-fixture -o "$jit_binary"
+sudo bash install.sh --binary "$jit_binary"
+wait_for_governor
+sudo governor exec --wait 5 -- /usr/bin/true
+[[ $(governor version) == "$version" ]]
+if run_under_mdwe root version >"$fixture_dir/mdwe-jit.log" 2>&1; then
+  echo "JIT-enabled binary unexpectedly ran under MemoryDenyWriteExecute=yes" >&2
+  exit 1
+fi
+grep -Eq 'Check failed:|Fatal process out of memory:' "$fixture_dir/mdwe-jit.log" ||
+  { cat "$fixture_dir/mdwe-jit.log" >&2; echo "negative control failed for an unexpected reason" >&2; exit 1; }
+echo "MDWE negative control passed: the JIT-enabled binary aborted"
+stop_and_discard_state
+
 sudo systemctl set-property user.slice CPUQuota=780%
 sudo bash install.sh --binary "$binary"
 [[ ! -f /etc/systemd/system.control/user.slice.d/50-CPUQuota.conf ]]
 [[ ! -f /etc/systemd/system/user.slice.d/50-CPUQuota.conf ]]
 [[ -f /etc/systemd/system/user.slice.d/10-governor.conf ]]
-for ((attempt=0; attempt<20; attempt++)); do
-  if sudo governor status --json >/dev/null 2>&1; then break; fi
-  sleep 1
+wait_for_governor
+sudo governor status --json | assert_schema_v1
+# One-shot readers need no sudo inside their unit, including on older systemd.
+for account in root "$(id -un)"; do
+  [[ $(run_under_mdwe "$account" version) == "$version" ]]
+  run_under_mdwe "$account" status --json | assert_schema_v1
+  run_under_mdwe "$account" report 1 |
+    python3 -c 'import sys; assert "Estimated CPU credit bank" in sys.stdin.read()'
 done
-sudo governor status --json | python3 -c 'import json,sys; assert json.load(sys.stdin)["schemaVersion"] == 1'
-[[ $(governor version) == 0.2.3 ]]
 governor report --format html | python3 -c 'import sys; report=sys.stdin.read(); assert "<table>" in report; assert "Estimated CPU credit bank" in report; assert "Server vitals</h3>" in report'
 governor report --format json | python3 -c 'import json,sys; report=json.load(sys.stdin); assert report["schema"] == 1; assert report["credits"]["balance"] >= 0; assert report["sections"]'
 if governor seed 34560; then echo "consumer control unexpectedly succeeded" >&2; exit 1; fi
@@ -82,9 +135,29 @@ sudo systemctl stop governor.service
 read -r quota period < /sys/fs/cgroup/user.slice/cpu.max
 (( quota * 100 / period == 150 ))
 sudo systemctl start governor.service
-if ! command -v /usr/sbin/sshd >/dev/null; then
-  sudo apt-get update -q >/dev/null
-  sudo apt-get install -y -q openssh-server >/dev/null
+systemd_version=$(systemctl --version | sed -n '1s/^systemd \([0-9]*\).*/\1/p')
+[[ $systemd_version =~ ^[0-9]+$ ]] || { echo "cannot read the systemd version" >&2; exit 1; }
+if ((systemd_version >= 255)); then
+  # Follow the README's opt-in and verification steps.
+  sudo install -d /etc/systemd/system/governor.service.d
+  printf '[Service]\nMemoryDenyWriteExecute=yes\n' | sudo tee "$mdwe_dropin" >/dev/null
+  sudo systemctl daemon-reload
+  stop_and_discard_state
+  sudo systemctl start governor.service
+  sudo governor exec --wait 60 -- /usr/bin/true
+  [[ $(systemctl show governor.service --property=MemoryDenyWriteExecute --value) == yes ]]
+  grep -qx $'NoNewPrivs:\t0' "/proc/$(systemctl show governor.service --property=MainPID --value)/status"
+  echo "Daemon MDWE opt-in passed on systemd $systemd_version"
+else
+  echo "Daemon MDWE opt-in skipped: systemd $systemd_version implies NoNewPrivileges"
 fi
-sudo --preserve-env=GITHUB_ACTIONS,RUNNER_ENVIRONMENT python3 test/broker-linux.py
-echo "Linux smoke test passed: service, schema, ownership, fallback upgrade, scopes, service routing, Docker routing"
+if [[ $broker_smoke == true ]]; then
+  if ! command -v /usr/sbin/sshd >/dev/null; then
+    sudo apt-get update -q >/dev/null
+    sudo apt-get install -y -q openssh-server >/dev/null
+  fi
+  sudo --preserve-env=GITHUB_ACTIONS,RUNNER_ENVIRONMENT python3 test/broker-linux.py
+else
+  echo "Broker integration disabled for this runner"
+fi
+echo "Linux smoke test passed: JIT-enabled installation, MDWE negative control, MDWE one-shot commands, schema, ownership, fallback upgrade, scopes, service routing, Docker routing, daemon MDWE opt-in on systemd 255+"

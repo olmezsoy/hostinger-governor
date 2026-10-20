@@ -95,14 +95,65 @@ The installer verifies the release checksum and installs:
 - `/etc/governor/config.json`;
 - `sysstat`, for report history.
 
+Release binaries and `deno task compile` embed V8's `--jitless` flag, so they run without allocating
+executable memory at runtime. A service that directly runs `governor status` or `governor report`
+can set `MemoryDenyWriteExecute=yes`. For a one-shot report:
+
+```sh
+sudo systemd-run --wait --pipe -p MemoryDenyWriteExecute=yes /usr/local/bin/governor report 1
+```
+
+The installer leaves daemon hardening opt-in because `governor.service` needs sudo for CPU ceilings
+and optional broker requests. **The daemon opt-in requires systemd v255 or later.** Before v255,
+including Ubuntu 22.04 and Debian 12, systemd implies `NoNewPrivileges=yes` for `User=` services
+with this setting, which prevents sudo. CI tests the opt-in on Linux 6.8 and later.
+
+Check `systemctl --version`, then create a dedicated drop-in:
+
+```sh
+sudo systemctl edit governor.service --drop-in=80-memory-deny-write-execute.conf
+```
+
+Add:
+
+```ini
+[Service]
+MemoryDenyWriteExecute=yes
+```
+
+Restart without the previous daemon's public state, then check that the new daemon accepts work
+after setting its CPU ceiling. A plain restart could pass on the state the old daemon wrote while
+stopping. This removes only the runtime snapshot; credit estimates in `/var/lib/governor` are kept.
+
+```sh
+sudo systemctl stop governor.service
+sudo rm -f /run/governor/state.json
+sudo systemctl start governor.service
+sudo governor exec --wait 60 -- /usr/bin/true
+grep NoNewPrivs "/proc/$(systemctl show governor.service --property=MainPID --value)/status"
+```
+
+The last command must print `NoNewPrivs: 0`.
+
+Hooks and other processes the daemon starts, including its sudo helpers, inherit the restriction.
+Jobs started with `governor exec` run under their caller's settings instead. Hooks that start JIT
+runtimes such as Node.js or Java will fail unless those runtimes use a compatible execution mode.
+Remove this drop-in before installing or rolling back to a binary built with JIT enabled:
+
+```sh
+sudo rm /etc/systemd/system/governor.service.d/80-memory-deny-write-execute.conf
+sudo systemctl daemon-reload
+sudo systemctl restart governor.service
+```
+
 Running the installer again updates the governor and revokes the old consumer group's request
 access. The first v0.2 startup discards the v0.1 estimate, which may have been inflated.
 `--uninstall` removes the daemon and its boot quota and lifts the ceiling. Workload routing
 configured separately is kept; remove those service drop-ins or restore Docker's backup if you want
 to undo that routing.
 
-For guided operation-only API setup after installing v0.2.3, run
-`bash tools/setup-hostinger-broker.sh <SSH-destination>` from a checkout of that release. It
+For guided operation-only API setup after installing Governor, run
+`bash tools/setup-hostinger-broker.sh <SSH-destination>` from a checkout of the matching release. It
 verifies the VPS, hides token input, asks before changing the server and restores the original
 configuration if setup fails. See
 [the setup requirements and migration notes](docs/hostinger-credentials.md#guided-setup).
@@ -372,8 +423,21 @@ negative PIDs for hook process-group cleanup. Tests also invoke Bash and the Den
 widen the daemon's sudo grants. Child CLI tests use explicit permissions, not unrestricted
 `deno eval`. Writable test data stays in ignored `test/.tmp` directories and each test removes its
 own directory. Tracked `test/fixtures` remains read-only. The Linux smoke test only runs on
-disposable GitHub-hosted runners. It tests the real localhost SSH, sudo, credential and systemd flow
-with an offline API fixture and a dummy token, including sudo I/O logs and the journal.
+disposable GitHub-hosted runners. `deno task smoke:linux <binary>` builds a JIT-enabled copy of the
+current source in its own temporary directory and removes it on exit. This fixture verifies
+installation and CPU control, then must abort under MDWE as a negative control. The jitless binary
+must run `version`, `status --json` and `report 1` under MDWE as root and a regular user. On systemd
+255+, the smoke test also applies the daemon drop-in and checks work admission before broker tests.
+
+| Runner       | Architecture     | Broker coverage                                                                                                |
+| ------------ | ---------------- | -------------------------------------------------------------------------------------------------------------- |
+| Ubuntu 22.04 | x86_64           | Skipped; systemd 249 lacks encrypted credentials.                                                              |
+| Ubuntu 24.04 | x86_64 and ARM64 | Full localhost SSH, sudo I/O logging, credential and systemd flow with an offline API fixture and dummy token. |
+| Ubuntu 26.04 | x86_64           | Production sudo grant with sudo-rs; full broker integration is not run.                                        |
+
+The release workflow also runs on pull requests. It builds both Linux packages and runs the full
+Ubuntu 24.04 x86_64 smoke test before publication. Only a `v*` tag can execute the publish step; the
+other CI matrix jobs are separate checks.
 
 The supplied second-by-second simulator runs the real governor against seeded workloads:
 

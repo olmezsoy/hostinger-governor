@@ -4,8 +4,11 @@
     "rules:check": "deno run --allow-net=www.hostinger.com --allow-read=rules tools/rules-watch.ts check",
     "rules:accept": "deno run --allow-net=www.hostinger.com --allow-read=rules --allow-write=rules tools/rules-watch.ts accept",
     "sim": "deno run --allow-env=GOVERNOR_CONFIG test/sim.ts",
-    "check": "deno fmt --check && deno lint && deno check src/main.ts && deno task test && bash -n install.sh test/smoke-linux.sh tools/rules-heartbeat.sh tools/setup-hostinger-broker.sh",
-    "compile": "deno compile --allow-all -o dist/governor src/main.ts"
+    "check": "deno fmt --check && deno lint && deno check src/main.ts tools/compile.ts && deno task test && bash -n install.sh test/smoke-linux.sh tools/rules-heartbeat.sh tools/setup-hostinger-broker.sh",
+    "compile:jitless": "deno run --allow-run tools/compile.ts jitless",
+    "compile:jit-fixture": "deno run --allow-run tools/compile.ts jit-fixture",
+    "compile": "deno task compile:jitless",
+    "smoke:linux": "bash test/smoke-linux.sh"
   },
   "fmt": { "lineWidth": 100 },
   "imports": { "@std/assert": "jsr:@std/assert@^1.0.14" }

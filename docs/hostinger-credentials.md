@@ -8,7 +8,7 @@ option needs the broker-capable Governor build; it is not available in v0.2.2.
 
 ## Guided setup
 
-Install v0.2.3 first. From a checked-out copy of the same release on your computer, run:
+Install v0.2.3 or later first. From a checkout of that release on your computer, run:
 
 ```sh
 bash tools/setup-hostinger-broker.sh <SSH-destination>
