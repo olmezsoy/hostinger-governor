@@ -23,7 +23,7 @@ import { readClock } from "./sample.ts";
 import { execOptions, scopeArgs, waitForAccepting } from "./exec.ts";
 import { BROKER_CAPABILITY, CHECK_WINDOW_MS, cpuReadings, vm } from "./hostinger.ts";
 
-export const VERSION = "0.2.3";
+export const VERSION = "0.2.4";
 const STALE_MS = 5 * 60_000;
 class UnsupportedStateSchema extends Error {
   constructor() {

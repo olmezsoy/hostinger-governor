@@ -7,15 +7,19 @@ permissions:
   contents: read
 jobs:
   check:
+    name: check (${{ matrix.runner }})
     strategy:
       fail-fast: false
       matrix:
         include:
           - runner: ubuntu-24.04
             broker: true
-          # systemd 249 needs coverage; encrypted broker credentials require systemd 250+.
           - runner: ubuntu-22.04
             broker: false
+          - runner: ubuntu-26.04
+            broker: false
+          - runner: ubuntu-24.04-arm
+            broker: true
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -28,8 +32,10 @@ jobs:
       - run: python3 -m unittest discover -s test -p '*_test.py'
       - run: bash -n install.sh
       - run: deno task compile
-      - name: Build JIT-enabled installer compatibility fixture
-        run: deno compile --allow-all -o test/.tmp/governor-jit src/main.ts
-      - run: bash test/smoke-linux.sh dist/governor test/.tmp/governor-jit
+      - name: Linux smoke test, including daemon MDWE opt-in on systemd 255+
+        run: deno task smoke:linux dist/governor
         env:
           GOVERNOR_SMOKE_BROKER: ${{ matrix.broker }}
+      - name: Production broker sudo grant on sudo-rs
+        if: matrix.runner == 'ubuntu-26.04'
+        run: sudo --preserve-env=GITHUB_ACTIONS,RUNNER_ENVIRONMENT python3 test/broker-sudo-linux.py
