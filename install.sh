@@ -256,6 +256,7 @@ Restart=always
 RestartSec=5
 ProtectHome=read-only
 PrivateTmp=yes
+MemoryDenyWriteExecute=yes
 
 [Install]
 WantedBy=multi-user.target

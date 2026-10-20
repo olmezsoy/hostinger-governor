@@ -95,6 +95,20 @@ The installer verifies the release checksum and installs:
 - `/etc/governor/config.json`;
 - `sysstat`, for report history.
 
+Release binaries and `deno task compile` embed V8's `--jitless` flag, so they run without allocating
+executable memory at runtime. The installer enables this hardening setting in `governor.service`:
+
+```ini
+[Service]
+MemoryDenyWriteExecute=yes
+```
+
+Services that call Governor can use the same setting. For a one-shot report:
+
+```sh
+sudo systemd-run --wait --pipe -p MemoryDenyWriteExecute=yes /usr/local/bin/governor report 1
+```
+
 Running the installer again updates the governor and revokes the old consumer group's request
 access. The first v0.2 startup discards the v0.1 estimate, which may have been inflated.
 `--uninstall` removes the daemon and its boot quota and lifts the ceiling. Workload routing
@@ -372,8 +386,10 @@ negative PIDs for hook process-group cleanup. Tests also invoke Bash and the Den
 widen the daemon's sudo grants. Child CLI tests use explicit permissions, not unrestricted
 `deno eval`. Writable test data stays in ignored `test/.tmp` directories and each test removes its
 own directory. Tracked `test/fixtures` remains read-only. The Linux smoke test only runs on
-disposable GitHub-hosted runners. It tests the real localhost SSH, sudo, credential and systemd flow
-with an offline API fixture and a dummy token, including sudo I/O logs and the journal.
+disposable GitHub-hosted runners. It checks the daemon, `governor version` and `governor report 1`
+with `MemoryDenyWriteExecute=yes` before a release can publish. It also tests the real localhost
+SSH, sudo, credential and systemd flow with an offline API fixture and a dummy token, including sudo
+I/O logs and the journal.
 
 The supplied second-by-second simulator runs the real governor against seeded workloads:
 

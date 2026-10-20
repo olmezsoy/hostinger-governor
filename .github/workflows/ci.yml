@@ -18,5 +18,5 @@ jobs:
       - run: deno task check
       - run: python3 -m unittest discover -s test -p '*_test.py'
       - run: bash -n install.sh
-      - run: deno compile --allow-all -o dist/governor src/main.ts
+      - run: deno task compile
       - run: bash test/smoke-linux.sh dist/governor

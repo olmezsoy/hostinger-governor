@@ -31,7 +31,11 @@ for ((attempt=0; attempt<20; attempt++)); do
   sleep 1
 done
 sudo governor status --json | python3 -c 'import json,sys; assert json.load(sys.stdin)["schemaVersion"] == 1'
-[[ $(governor version) == 0.2.3 ]]
+[[ $(systemctl show governor.service --property=MemoryDenyWriteExecute --value) == yes ]]
+# Exercise the embedded runtime flag for one-shot commands as well as the daemon.
+[[ $(sudo systemd-run --quiet --wait --pipe -p MemoryDenyWriteExecute=yes /usr/local/bin/governor version) == 0.2.3 ]]
+sudo systemd-run --quiet --wait --pipe -p MemoryDenyWriteExecute=yes /usr/local/bin/governor report 1 |
+  python3 -c 'import sys; report=sys.stdin.read(); assert "Estimated CPU credit bank" in report; assert "Server vitals" in report'
 governor report --format html | python3 -c 'import sys; report=sys.stdin.read(); assert "<table>" in report; assert "Estimated CPU credit bank" in report; assert "Server vitals</h3>" in report'
 governor report --format json | python3 -c 'import json,sys; report=json.load(sys.stdin); assert report["schema"] == 1; assert report["credits"]["balance"] >= 0; assert report["sections"]'
 if governor seed 34560; then echo "consumer control unexpectedly succeeded" >&2; exit 1; fi
@@ -87,4 +91,4 @@ if ! command -v /usr/sbin/sshd >/dev/null; then
   sudo apt-get install -y -q openssh-server >/dev/null
 fi
 sudo --preserve-env=GITHUB_ACTIONS,RUNNER_ENVIRONMENT python3 test/broker-linux.py
-echo "Linux smoke test passed: service, schema, ownership, fallback upgrade, scopes, service routing, Docker routing"
+echo "Linux smoke test passed: hardened service and one-shot commands, schema, ownership, fallback upgrade, scopes, service routing, Docker routing"

@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+- Fix issue #3: embed V8's `--jitless` flag in release, CI and local compiled binaries so the
+  runtime no longer needs executable memory for JIT compilation. Governor has no WebAssembly
+  dependencies. Enable `MemoryDenyWriteExecute=yes` in the installed systemd service and document
+  its use for one-shot reports. Gate CI and release publication on daemon startup and one-shot
+  `governor version` and `governor report 1` checks under this restriction.
+
 ## v0.2.3
 
 - Address issue #1: configurable `fallback_cpu_percent`, default 20% of one vCPU. Validate it
