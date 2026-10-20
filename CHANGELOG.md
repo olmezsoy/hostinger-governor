@@ -5,14 +5,15 @@
 - Fix issue #3: embed V8's `--jitless` flag in release, CI and local compiled binaries so the
   runtime no longer needs executable memory for JIT compilation. Governor has no WebAssembly
   dependencies.
-- Document an optional daemon MDWE drop-in for systemd v255+ with Linux 6.3+ kernel support,
-  including sudo, JIT hooks and rollback requirements. Test quota control and broker integration
-  with the daemon opt-in enabled. The installer keeps the setting opt-in for older hosts.
+- Document an optional daemon MDWE drop-in for systemd v255+, including sudo, JIT hooks and rollback
+  requirements. Its restart check discards the previous daemon's public state, so it cannot pass
+  before the new daemon sets its ceiling. CI follows those steps, then runs quota control and broker
+  integration with the opt-in enabled. The installer keeps the setting opt-in for older hosts.
 - Require `version`, `status --json` and `report 1` to run under MDWE as root and a regular user.
   Install a JIT-enabled build of the current source, verify CPU control, and require that build to
   abort under MDWE as a negative control. This does not test a historical release binary.
-- Share build commands through named tasks and keep the JIT fixture in a temporary directory that
-  the smoke test removes on exit.
+- Share build commands through named tasks that compile with the Deno running the task. Keep the JIT
+  fixture in a temporary directory that the smoke test removes on exit.
 - Cover Ubuntu 22.04, 24.04 and 26.04, plus native ARM64 execution on 24.04. Check the production
   broker sudo grant with sudo-rs separately from full broker integration on 24.04. Run release
   packaging and its 24.04 smoke gate on pull requests, with publication restricted to version tags.

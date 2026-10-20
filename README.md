@@ -104,12 +104,11 @@ sudo systemd-run --wait --pipe -p MemoryDenyWriteExecute=yes /usr/local/bin/gove
 ```
 
 The installer leaves daemon hardening opt-in because `governor.service` needs sudo for CPU ceilings
-and optional broker requests. **The daemon opt-in requires systemd v255 or later and kernel MDWE
-support, introduced in Linux 6.3.** Before v255, including Ubuntu 22.04 and Debian 12, systemd
-implements the restriction using seccomp and implies `NoNewPrivileges=yes` for `User=` services,
-which prevents sudo. Newer systemd also falls back to seccomp on kernels without MDWE support.
+and optional broker requests. **The daemon opt-in requires systemd v255 or later.** Before v255,
+including Ubuntu 22.04 and Debian 12, systemd implies `NoNewPrivileges=yes` for `User=` services
+with this setting, which prevents sudo. CI tests the opt-in on Linux 6.8 and later.
 
-Check `systemctl --version` and `uname -r`, then create a dedicated drop-in:
+Check `systemctl --version`, then create a dedicated drop-in:
 
 ```sh
 sudo systemctl edit governor.service --drop-in=80-memory-deny-write-execute.conf
@@ -122,16 +121,24 @@ Add:
 MemoryDenyWriteExecute=yes
 ```
 
-Restart and check that the daemon still accepts work after setting its CPU ceiling:
+Restart without the previous daemon's public state, then check that the new daemon accepts work
+after setting its CPU ceiling. A plain restart could pass on the state the old daemon wrote while
+stopping. This removes only the runtime snapshot; credit estimates in `/var/lib/governor` are kept.
 
 ```sh
-sudo systemctl restart governor.service
-sudo governor exec --wait 10 -- /usr/bin/true
+sudo systemctl stop governor.service
+sudo rm -f /run/governor/state.json
+sudo systemctl start governor.service
+sudo governor exec --wait 60 -- /usr/bin/true
+grep NoNewPrivs "/proc/$(systemctl show governor.service --property=MainPID --value)/status"
 ```
 
-Hooks and child commands inherit the restriction. Hooks that start JIT runtimes such as Node.js or
-Java will fail unless those runtimes use a compatible execution mode. Remove this drop-in before
-installing or rolling back to a binary built with JIT enabled:
+The last command must print `NoNewPrivs: 0`.
+
+Hooks and other processes the daemon starts, including its sudo helpers, inherit the restriction.
+Jobs started with `governor exec` run under their caller's settings instead. Hooks that start JIT
+runtimes such as Node.js or Java will fail unless those runtimes use a compatible execution mode.
+Remove this drop-in before installing or rolling back to a binary built with JIT enabled:
 
 ```sh
 sudo rm /etc/systemd/system/governor.service.d/80-memory-deny-write-execute.conf

@@ -12,14 +12,15 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # full: broker integration; sudo-grant: production broker grant only; none: skipped.
           - runner: ubuntu-24.04
-            broker: true
+            broker: full
           - runner: ubuntu-22.04
-            broker: false
+            broker: none
           - runner: ubuntu-26.04
-            broker: false
+            broker: sudo-grant
           - runner: ubuntu-24.04-arm
-            broker: true
+            broker: full
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -31,11 +32,11 @@ jobs:
       - run: deno task check
       - run: python3 -m unittest discover -s test -p '*_test.py'
       - run: bash -n install.sh
-      - run: deno task compile
-      - name: Linux smoke test, including daemon MDWE opt-in on systemd 255+
+      - run: deno task compile:jitless
+      - name: Linux smoke test
         run: deno task smoke:linux dist/governor
         env:
-          GOVERNOR_SMOKE_BROKER: ${{ matrix.broker }}
-      - name: Production broker sudo grant on sudo-rs
-        if: matrix.runner == 'ubuntu-26.04'
+          GOVERNOR_SMOKE_BROKER: ${{ matrix.broker == 'full' }}
+      - name: Production broker sudo grant
+        if: matrix.broker == 'sudo-grant'
         run: sudo --preserve-env=GITHUB_ACTIONS,RUNNER_ENVIRONMENT python3 test/broker-sudo-linux.py
