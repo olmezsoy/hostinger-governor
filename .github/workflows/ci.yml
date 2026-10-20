@@ -19,4 +19,37 @@ jobs:
       - run: python3 -m unittest discover -s test -p '*_test.py'
       - run: bash -n install.sh
       - run: deno task compile
-      - run: bash test/smoke-linux.sh dist/governor
+      - run: |
+          PS4='+ ${LINENO}: ' bash -x test/smoke-linux.sh dist/governor
+      # Verification only: record which MemoryDenyWriteExecute path ran and the daemon's own log.
+      - name: Governor journal
+        if: always()
+        run: |
+          uname -r
+          systemctl --version | head -n 1
+          sudo journalctl -u governor.service --no-pager -o cat | tail -n 80
+  # Verification only: compare a plain and a jitless build under both MemoryDenyWriteExecute paths.
+  mdwe-probe:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, ubuntu-22.04]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: denoland/setup-deno@22d081ff2d3a40755e97629de92e3bcbfa7cf2ed # v2.0.5
+        with:
+          deno-version: v2.9.7
+      - run: deno task compile
+      - run: deno compile --allow-all -o dist/governor-jit src/main.ts
+      - run: |
+          uname -r
+          systemctl --version | head -n 1
+          mdwe() { sudo systemd-run --quiet --wait --pipe -p MemoryDenyWriteExecute=yes "$@"; }
+          if mdwe "$PWD/dist/governor-jit" version; then echo "plain build ran under MDWE"; else
+            echo "plain build failed under MDWE: $?"
+          fi
+          [[ $(mdwe "$PWD/dist/governor" version) == 0.2.3 ]]
+          echo "jitless build ran under MDWE"
