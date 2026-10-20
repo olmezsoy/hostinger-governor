@@ -4,6 +4,10 @@ set -euo pipefail
 [[ ${GITHUB_ACTIONS:-} == true && ${RUNNER_ENVIRONMENT:-} == github-hosted && $(uname -s) == Linux ]] ||
   { echo "smoke test requires a disposable GitHub-hosted Linux runner" >&2; exit 2; }
 binary=${1:?pass the compiled Linux binary}
+jit_binary=${2:?pass a JIT-enabled binary to test installer compatibility}
+broker_smoke=${GOVERNOR_SMOKE_BROKER:-true}
+[[ $broker_smoke == true || $broker_smoke == false ]] ||
+  { echo "GOVERNOR_SMOKE_BROKER must be true or false" >&2; exit 2; }
 container=""
 cleanup() {
   if [[ -n $container ]]; then sudo docker stop "$container" >/dev/null || true; fi
@@ -21,21 +25,42 @@ cleanup() {
 }
 trap cleanup EXIT
 
+wait_for_governor() {
+  for ((attempt=0; attempt<20; attempt++)); do
+    if sudo governor status --json >/dev/null 2>&1; then return; fi
+    sleep 1
+  done
+  sudo governor status --json
+}
+
+hardened_governor() {
+  local account=$1
+  shift
+  sudo systemd-run --quiet --wait --pipe -p MemoryDenyWriteExecute=yes \
+    -p "User=$account" /usr/local/bin/governor "$@"
+}
+
+# The same installer must support older releases and custom builds with V8's JIT.
+sudo bash install.sh --binary "$jit_binary"
+wait_for_governor
+sudo governor exec --wait 5 -- /usr/bin/true
+sudo systemctl stop governor.service
+# Require the new daemon to publish, rather than accepting its predecessor's state.
+sudo rm -f /run/governor/state.json
+
 sudo systemctl set-property user.slice CPUQuota=780%
 sudo bash install.sh --binary "$binary"
 [[ ! -f /etc/systemd/system.control/user.slice.d/50-CPUQuota.conf ]]
 [[ ! -f /etc/systemd/system/user.slice.d/50-CPUQuota.conf ]]
 [[ -f /etc/systemd/system/user.slice.d/10-governor.conf ]]
-for ((attempt=0; attempt<20; attempt++)); do
-  if sudo governor status --json >/dev/null 2>&1; then break; fi
-  sleep 1
-done
+wait_for_governor
 sudo governor status --json | python3 -c 'import json,sys; assert json.load(sys.stdin)["schemaVersion"] == 1'
-[[ $(systemctl show governor.service --property=MemoryDenyWriteExecute --value) == yes ]]
-# Exercise the embedded runtime flag for one-shot commands as well as the daemon.
-[[ $(sudo systemd-run --quiet --wait --pipe -p MemoryDenyWriteExecute=yes /usr/local/bin/governor version) == 0.2.3 ]]
-sudo systemd-run --quiet --wait --pipe -p MemoryDenyWriteExecute=yes /usr/local/bin/governor report 1 |
-  python3 -c 'import sys; report=sys.stdin.read(); assert "Estimated CPU credit bank" in report; assert "Server vitals" in report'
+# One-shot readers need no sudo inside their unit, including on older systemd.
+for account in root "$(id -un)"; do
+  [[ $(hardened_governor "$account" version) == 0.2.3 ]]
+  hardened_governor "$account" report 1 |
+    python3 -c 'import sys; assert "Estimated CPU credit bank" in sys.stdin.read()'
+done
 governor report --format html | python3 -c 'import sys; report=sys.stdin.read(); assert "<table>" in report; assert "Estimated CPU credit bank" in report; assert "Server vitals</h3>" in report'
 governor report --format json | python3 -c 'import json,sys; report=json.load(sys.stdin); assert report["schema"] == 1; assert report["credits"]["balance"] >= 0; assert report["sections"]'
 if governor seed 34560; then echo "consumer control unexpectedly succeeded" >&2; exit 1; fi
@@ -86,9 +111,13 @@ sudo systemctl stop governor.service
 read -r quota period < /sys/fs/cgroup/user.slice/cpu.max
 (( quota * 100 / period == 150 ))
 sudo systemctl start governor.service
-if ! command -v /usr/sbin/sshd >/dev/null; then
-  sudo apt-get update -q >/dev/null
-  sudo apt-get install -y -q openssh-server >/dev/null
+if [[ $broker_smoke == true ]]; then
+  if ! command -v /usr/sbin/sshd >/dev/null; then
+    sudo apt-get update -q >/dev/null
+    sudo apt-get install -y -q openssh-server >/dev/null
+  fi
+  sudo --preserve-env=GITHUB_ACTIONS,RUNNER_ENVIRONMENT python3 test/broker-linux.py
+else
+  echo "Broker integration disabled for this runner; encrypted credentials are tested on Ubuntu 24.04"
 fi
-sudo --preserve-env=GITHUB_ACTIONS,RUNNER_ENVIRONMENT python3 test/broker-linux.py
-echo "Linux smoke test passed: hardened service and one-shot commands, schema, ownership, fallback upgrade, scopes, service routing, Docker routing"
+echo "Linux smoke test passed: JIT-enabled installation, service, hardened one-shot commands, schema, ownership, fallback upgrade, scopes, service routing, Docker routing"

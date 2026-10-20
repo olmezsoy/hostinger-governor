@@ -6,7 +6,7 @@ permissions:
   contents: write
 jobs:
   release:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -20,7 +20,7 @@ jobs:
         run: |
           mkdir dist
           for target in x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu; do
-            deno compile --allow-all --v8-flags=--jitless \
+            deno task compile:binary \
               --target "$target" -o "dist/governor-$target" src/main.ts
           done
           cp install.sh dist/
@@ -28,8 +28,10 @@ jobs:
           cp tools/hostinger-broker.py dist/
           cp tools/setup-hostinger-broker.sh tools/setup-hostinger-broker.py dist/
           (cd dist && sha256sum governor-* install.sh resource-report.html hostinger-broker.py setup-hostinger-broker.sh setup-hostinger-broker.py > SHA256SUMS)
+      - name: Build JIT-enabled installer compatibility fixture
+        run: deno compile --allow-all -o test/.tmp/governor-jit src/main.ts
       - name: Linux smoke test
-        run: bash test/smoke-linux.sh dist/governor-x86_64-unknown-linux-gnu
+        run: bash test/smoke-linux.sh dist/governor-x86_64-unknown-linux-gnu test/.tmp/governor-jit
       - name: Publish
         env:
           GH_TOKEN: ${{ github.token }}

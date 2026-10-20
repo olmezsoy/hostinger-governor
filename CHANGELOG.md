@@ -3,10 +3,19 @@
 ## Unreleased
 
 - Fix issue #3: embed V8's `--jitless` flag in release, CI and local compiled binaries so the
-  runtime no longer needs executable memory for JIT compilation. Governor has no WebAssembly
-  dependencies. Enable `MemoryDenyWriteExecute=yes` in the installed systemd service and document
-  its use for one-shot reports. Gate CI and release publication on daemon startup and one-shot
-  `governor version` and `governor report 1` checks under this restriction.
+  runtime no longer needs executable memory for JIT compilation. Share the compile flags through one
+  task. Governor has no WebAssembly dependencies.
+- Gate CI and release publication on `governor version` and `governor report 1` running with
+  `MemoryDenyWriteExecute=yes` as root and a regular user. Document this setting for read-only
+  callers. Leave daemon hardening to the operator because it can block the sudo calls used for CPU
+  ceilings and broker requests, and JIT runtimes invoked by hooks.
+- Pin release builds and broker integration to Ubuntu 24.04. Run daemon and hardened one-shot smoke
+  tests on Ubuntu 22.04 too, including installation of a JIT-enabled binary to cover compatibility
+  with older releases and custom builds.
+
+Upgrade by running the installer again. Existing configuration and v0.2 credit estimates are kept.
+Read-only services can keep `MemoryDenyWriteExecute=yes` with the new binary. Disable any
+operator-added restriction before rolling back to an older JIT-enabled binary.
 
 ## v0.2.3
 
