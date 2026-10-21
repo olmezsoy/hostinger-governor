@@ -170,6 +170,41 @@ configuration if setup fails. See
 A fresh install starts the estimate at zero because the real balance is unknown. It grows from
 observed CPU use. Only root can seed a known balance; API history never seeds it automatically.
 
+To run one control pass immediately, as root:
+
+```sh
+sudo governor tick
+```
+
+The command talks to the running daemon over its private `/run/governor/tick.sock` Unix socket. It
+processes queued `limit` and `seed` requests, runs the same control pass as a timed tick, and
+returns successfully only after `/var/lib/governor/persist.json` and `/run/governor/state.json` are
+written. Calls run in sequence. Timed ticks keep their configured interval; an on-demand pass does
+not restart the timer. A pass less than `min(5 seconds, tick_seconds / 2)` after the last measured
+pass reuses its measurements while applying queued commands, setting the quota and writing state.
+Its CPU use accumulates into the next sample. This prevents tiny, noisy intervals from tightening a
+recovery quota or triggering a limit probe. API checks and limit probes run when a fresh sample is
+available and can take time. Hooks continue in the background.
+
+Verification scripts can check a limit without sleeping until the next tick:
+
+```sh
+sudo governor limit on
+sudo governor tick
+governor status --json
+sudo governor limit off
+sudo governor tick
+governor status --json
+```
+
+`tick` exits nonzero if the daemon is unavailable, control or state writing fails, or no reply
+arrives within 120 seconds. A timeout does not cancel an already requested pass. Both the CLI and
+daemon must support `tick`; restart the daemon after upgrading the binary.
+
+If the control socket cannot start or stops accepting connections, the daemon logs the failure and
+continues its timed passes. Fix the socket problem and restart the daemon to restore on-demand
+ticks.
+
 Public `/run/governor/state.json` and `governor status --json` include `"schemaVersion": 1`. Hook
 snapshots use the same version. This describes the public format, not the persisted credit estimate
 or the resource report's separate `schema` field. Consumers should reject unsupported versions and

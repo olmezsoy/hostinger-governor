@@ -89,6 +89,15 @@ governor report --format html | python3 -c 'import sys; report=sys.stdin.read();
 governor report --format json | python3 -c 'import json,sys; report=json.load(sys.stdin); assert report["schema"] == 1; assert report["credits"]["balance"] >= 0; assert report["sections"]'
 if governor seed 34560; then echo "consumer control unexpectedly succeeded" >&2; exit 1; fi
 if sudo -u governor governor limit off; then echo "daemon control unexpectedly succeeded" >&2; exit 1; fi
+if governor tick; then echo "consumer tick unexpectedly succeeded" >&2; exit 1; fi
+if sudo -u governor governor tick; then echo "daemon tick CLI unexpectedly succeeded" >&2; exit 1; fi
+# Use the production cadence and require synchronous state publication and real cgroup control.
+sudo governor limit on
+sudo governor tick
+governor status --json | python3 -c 'import json,sys; s=json.load(sys.stdin); assert s["limit"] is not None; assert not s["accepting"]; quota,period=open("/sys/fs/cgroup/user.slice/cpu.max").read().split(); assert int(quota)*100//int(period) == s["ceiling"]'
+sudo governor limit off
+sudo governor tick
+governor status --json | python3 -c 'import json,sys; s=json.load(sys.stdin); assert s["limit"] is None; assert s["accepting"]; quota,period=open("/sys/fs/cgroup/user.slice/cpu.max").read().split(); assert int(quota)*100//int(period) == s["ceiling"]'
 if sudo -u governor sudo -n /usr/local/libexec/governor-cap 200 system.slice; then
   echo "cap helper accepted system.slice" >&2; exit 1
 fi
@@ -114,6 +123,7 @@ sudo docker stop "$container" >/dev/null
 container=""
 
 sudo systemctl stop governor.service
+if sudo governor tick; then echo "stopped daemon tick unexpectedly succeeded" >&2; exit 1; fi
 sudo systemctl daemon-reload
 read -r quota period < /sys/fs/cgroup/user.slice/cpu.max
 (( quota * 100 / period == 20 ))

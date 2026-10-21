@@ -1,95 +1,8 @@
 import { assert, assertEquals, assertRejects, assertThrows } from "@std/assert";
-import { compareReadings, Governor, type GovernorIO, validateConfig } from "../src/governor.ts";
-import { plan, RULES_SINCE } from "../src/plans.ts";
-import { liftConfirmed } from "../src/credits.ts";
-
-const p = plan(8);
-const start = RULES_SINCE + 10_800_000;
-function fixture(config = {}) {
-  let at = start;
-  let uptime = 100_000;
-  let bootId = "boot-a";
-  let counters = { busy: 0, steal: 0, total: 1000 };
-  let usage = 0;
-  let cap = 200;
-  let attempts = 0;
-  let failAPI = false;
-  let failCap = false;
-  let owner = 0;
-  let mode = 0o644;
-  let symlink = false;
-  let request = { action: "seed", balance: p.capacity };
-  const io: GovernorIO = {
-    clock: () => Promise.resolve({ at, uptime, bootId }),
-    counters: () => Promise.resolve({ ...counters }),
-    usage: (_slice, at) => Promise.resolve({ at, total: usage, usage: {} }),
-    cap: (_slice, n) => {
-      if (!failCap) cap = n;
-      return Promise.resolve(!failCap);
-    },
-    ceiling: () => Promise.resolve(cap),
-    readings: () => {
-      attempts++;
-      if (failAPI) return Promise.reject(new Error("API outage"));
-      return Promise.resolve([{ at: start - 10_800_000, v: 0 }, { at: start, v: 0 }]);
-    },
-    hooks: () => Promise.resolve(),
-    snapshot: () => Promise.resolve(),
-    requestInfo: () =>
-      Promise.resolve({ uid: owner, mode, isFile: !symlink, isSymlink: symlink, size: 100 }),
-    requestBody: () => Promise.resolve(JSON.stringify(request)),
-    pause: () => Promise.resolve(),
-    steal: () => Promise.resolve(0),
-    demand: () => Promise.resolve({ busy: 4.7 / p.vcpus, steal: 0.06, seconds: 25 }),
-    burner: () => ({
-      status: Promise.resolve({ success: false, code: 124, signal: null }),
-      kill: () => {},
-    }),
-  };
-  const g = new Governor(config, p, undefined, io);
-  return {
-    g,
-    io,
-    get cap() {
-      return cap;
-    },
-    get attempts() {
-      return attempts;
-    },
-    apiFails() {
-      failAPI = true;
-    },
-    capFails() {
-      failCap = true;
-    },
-    request(action: string, uid = 0, permissions = 0o644, link = false) {
-      owner = uid;
-      mode = permissions;
-      symlink = link;
-      request = { action, balance: p.capacity };
-      return g.request("/fixture/request", at);
-    },
-    advance(seconds = 30, busy = 0, steal = 0, managed = busy * p.vcpus, wallSeconds = seconds) {
-      at += wallSeconds * 1000;
-      uptime += seconds * 1000;
-      counters.total += 1000;
-      counters.busy += busy * 1000;
-      counters.steal += steal * 1000;
-      usage += managed * seconds * 1_000_000;
-      return g.tick();
-    },
-    reboot() {
-      at += 10_800_000;
-      uptime = 5000;
-      bootId = "boot-b";
-      counters = { busy: 0, steal: 0, total: 1000 };
-      usage = 0;
-    },
-    resetCounters() {
-      counters = { busy: 0, steal: 0, total: 1000 };
-    },
-  };
-}
+import { compareReadings, Governor, validateConfig } from "../src/governor.ts";
+import { plan } from "../src/plans.ts";
+import { creditStep, liftConfirmed } from "../src/credits.ts";
+import { fixture, p, start } from "./governor-fixture.ts";
 
 Deno.test("rebuilding reserve is visible without claiming a Hostinger limit", async () => {
   const f = fixture();
@@ -113,6 +26,108 @@ Deno.test("public state identifies its schema independently of persisted account
   assertEquals(state.schemaVersion, 1);
   assertEquals(f.g.s.schema, 2);
 });
+
+Deno.test("back-to-back ticks preserve credits and apply queued control changes", async () => {
+  const f = fixture();
+  await f.g.tick();
+  await f.advance();
+  await f.request("seed");
+  const baseline = structuredClone(f.g.s);
+  await f.g.tick();
+  await f.g.tick();
+  assertEquals(f.g.s.balance, p.capacity);
+  assertEquals(f.g.s.samples, baseline.samples);
+  assertEquals(f.g.s.cpuPrev, baseline.cpuPrev);
+  assertEquals(f.g.s.usagePrev, baseline.usagePrev);
+  assertEquals(f.g.s.rebuilding, null);
+  await f.request("limit-on");
+  await f.g.tick();
+  assertEquals(f.cap, f.g.s.limit!.ceiling);
+  assertEquals(f.g.publicState(start).accepting, false);
+  await f.request("limit-off");
+  await f.g.tick();
+  assertEquals(f.g.s.balance, p.recovered);
+  assertEquals(f.g.publicState(start).accepting, true);
+  await f.advance();
+  assertEquals(f.g.s.samples.length, baseline.samples.length + 1);
+  assertEquals(f.g.s.samples.at(-1)!.seconds, 30);
+});
+
+Deno.test("unchanged CPU counters preserve the full accounting interval", async () => {
+  const f = fixture();
+  await f.g.tick();
+  await f.request("seed");
+  const baseline = structuredClone(f.g.s);
+  await f.g.tick({ at: start + 5, uptime: 100_005, bootId: "boot-a" });
+  assertEquals(f.g.s.balance, p.capacity);
+  assertEquals(f.g.s.uptime, baseline.uptime);
+  assertEquals(f.g.s.cpuPrev, baseline.cpuPrev);
+  await f.advance(30, 0.8);
+  assert(f.g.s.balance < p.capacity);
+  assertEquals(f.g.s.samples.at(-1)!.seconds, 30);
+});
+
+Deno.test("short samples cannot permanently tighten a recovery ceiling", async () => {
+  const f = fixture();
+  await f.g.tick();
+  f.g.enterLimit(start, false);
+  await f.advance();
+  const before = structuredClone(f.g.s);
+  assertEquals(before.limit!.ceiling, 210);
+  // Four busy jiffies in a 20 ms interval on eight CPUs look like two outside cores.
+  await f.advance(0.02, 0.25, 0, 0, 0.02, 16);
+  assertEquals(f.g.s.limit!.ceiling, before.limit!.ceiling);
+  assertEquals(f.g.s.samples, before.samples);
+  assertEquals(f.g.s.cpuPrev, before.cpuPrev);
+  await f.advance(29.98, 0, 0, 0, 29.98, 23984);
+  assertEquals(f.g.s.limit!.ceiling, before.limit!.ceiling);
+  assertEquals(f.g.s.samples.at(-1)!.seconds, 30);
+  assertEquals(f.g.s.samples.at(-1)!.busy, 4 / 24000);
+  assertEquals(
+    f.g.s.balance,
+    creditStep(p, before.balance, 4 / 24000 * p.vcpus, 30, before.margin, true),
+  );
+});
+
+Deno.test("a window holding only a test sample cannot tighten a recovery ceiling", async () => {
+  const f = fixture({ tick_seconds: 300 });
+  await f.g.tick();
+  f.g.enterLimit(start, false);
+  f.g.s.limit!.testAt = Infinity;
+  await f.advance(300);
+  const ceiling = f.g.s.limit!.ceiling;
+  // At long ticks the sample after a lift test can be the only one in the five-minute window.
+  f.g.s.tested = true;
+  await f.advance(301);
+  assertEquals(f.g.s.samples.at(-1)!.test, true);
+  assertEquals(f.g.s.limit!.ceiling, ceiling);
+});
+
+for (const tickSeconds of [1, 10, 30, 300]) {
+  Deno.test(`minimum sample interval scales with ${tickSeconds}s ticks and preserves CPU use`, async () => {
+    const f = fixture({ tick_seconds: tickSeconds });
+    await f.g.tick();
+    f.g.s.balance = 5000;
+    const before = structuredClone(f.g.s);
+    const seconds = Math.min(5, tickSeconds / 2);
+    await f.advance(seconds - 0.01, 0.25, 0, 2, seconds - 0.01, (seconds - 0.01) * 800);
+    assertEquals(f.g.s.balance, before.balance);
+    assertEquals(f.g.s.cpuPrev, before.cpuPrev);
+    assertEquals(f.g.s.usagePrev, before.usagePrev);
+    assertEquals(f.g.s.samples.length, 0);
+    await f.advance(0.01, 0.5, 0, 4, 0.01, 8);
+    assertEquals(f.g.s.samples.length, 1);
+    const sample = f.g.s.samples[0];
+    assertEquals(sample.seconds, seconds);
+    assertEquals(
+      f.g.s.balance,
+      creditStep(p, before.balance, sample.busy * p.vcpus, seconds, before.margin, true),
+    );
+    await f.advance(tickSeconds);
+    assertEquals(f.g.s.samples.length, 2);
+    assertEquals(f.g.s.samples[1].seconds, tickSeconds);
+  });
+}
 
 Deno.test("a pending limit-start hook cannot delay the ceiling update or tick", async () => {
   const f = fixture();
