@@ -1,10 +1,10 @@
 # Changelog
 
-## Unreleased
+## v0.2.5
 
-- Add root-only `governor tick` to run one control pass through the running daemon and wait for
-  persisted and public state writes. Serialize requests with timed passes without postponing their
-  timer. Report unavailable daemons, failed passes and timeouts to callers.
+- Address issue #5: add root-only `governor tick` to run one control pass through the running daemon
+  and wait for persisted and public state writes. Serialize requests with timed passes without
+  postponing their timer. Report unavailable daemons, failed passes and timeouts to callers.
 - Fold intervals shorter than `min(5 seconds, tick_seconds / 2)` into the next sample so counter
   noise cannot tighten recovery quotas. Apply queued commands and publish state on every pass. Keep
   timed control running if the optional control socket fails. Cover synchronous completion,
