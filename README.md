@@ -180,11 +180,11 @@ The command talks to the running daemon over its private `/run/governor/tick.soc
 processes queued `limit` and `seed` requests, runs the same control pass as a timed tick, and
 returns successfully only after `/var/lib/governor/persist.json` and `/run/governor/state.json` are
 written. Calls run in sequence. Timed ticks keep their configured interval; an on-demand pass does
-not restart the timer. Passes less than `min(5 seconds, tick_seconds / 2)` apart reuse the previous
-measurements while applying queued commands, setting the quota and writing state. Their CPU use
-accumulates into the next sample. This prevents tiny, noisy intervals from tightening a recovery
-quota or triggering a limit probe. API checks and limit probes run when a fresh sample is available
-and can take time. Hooks continue in the background.
+not restart the timer. A pass less than `min(5 seconds, tick_seconds / 2)` after the last measured
+pass reuses its measurements while applying queued commands, setting the quota and writing state.
+Its CPU use accumulates into the next sample. This prevents tiny, noisy intervals from tightening a
+recovery quota or triggering a limit probe. API checks and limit probes run when a fresh sample is
+available and can take time. Hooks continue in the background.
 
 Verification scripts can check a limit without sleeping until the next tick:
 

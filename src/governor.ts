@@ -413,8 +413,10 @@ export class Governor {
       count: recent.length,
       busy: avg(recent.map((x) => x.busy)),
       steal: recent.length >= 3 ? avg(recent.map((x) => x.steal)) : 0,
-      outside: recent.length
-        ? Math.max(latest?.test ? 0 : latest?.outside ?? 0, avg(recent.map((x) => x.outside ?? 0)))
+      // Assume the startup default only before anything is measured. A window holding only test
+      // samples has no outside estimate; a default here would tighten recovery ceilings.
+      outside: latest
+        ? Math.max(latest.test ? 0 : latest.outside ?? 0, avg(recent.map((x) => x.outside ?? 0)))
         : DEFAULT_OUTSIDE_CORES,
     };
   }

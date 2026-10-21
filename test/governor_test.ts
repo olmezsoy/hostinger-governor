@@ -89,6 +89,20 @@ Deno.test("short samples cannot permanently tighten a recovery ceiling", async (
   );
 });
 
+Deno.test("a window holding only a test sample cannot tighten a recovery ceiling", async () => {
+  const f = fixture({ tick_seconds: 300 });
+  await f.g.tick();
+  f.g.enterLimit(start, false);
+  f.g.s.limit!.testAt = Infinity;
+  await f.advance(300);
+  const ceiling = f.g.s.limit!.ceiling;
+  // At long ticks the sample after a lift test can be the only one in the five-minute window.
+  f.g.s.tested = true;
+  await f.advance(301);
+  assertEquals(f.g.s.samples.at(-1)!.test, true);
+  assertEquals(f.g.s.limit!.ceiling, ceiling);
+});
+
 for (const tickSeconds of [1, 10, 30, 300]) {
   Deno.test(`minimum sample interval scales with ${tickSeconds}s ticks and preserves CPU use`, async () => {
     const f = fixture({ tick_seconds: tickSeconds });
