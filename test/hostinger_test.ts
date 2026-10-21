@@ -15,17 +15,7 @@ import {
 } from "../src/hostinger.ts";
 import { MAX_VCPUS } from "../src/plans.ts";
 import { testDirectory } from "./temp.ts";
-
-const cliArguments = (mode: "connection" | "unsupported", args: string[]) => [
-  "run",
-  "--allow-env=GOVERNOR_CONFIG",
-  `--allow-read=src,test/fixtures${mode === "connection" ? ",test/.tmp" : ""}`,
-  ...(mode === "connection" ? ["--allow-run=/bin/bash"] : []),
-  "--",
-  "test/fixtures/cli-harness.ts",
-  mode,
-  ...args,
-];
+import { cliArguments } from "./cli.ts";
 
 Deno.test("TypeScript broker protocol bounds match the shared contract fixture", async () => {
   const contract = JSON.parse(await Deno.readTextFile("test/fixtures/hostinger-protocol.json"));

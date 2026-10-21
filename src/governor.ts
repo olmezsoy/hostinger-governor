@@ -173,6 +173,11 @@ const BACKOFF_MAX_MS = 3_600_000;
 const HOT_BUSY = 0.6;
 const HOT_STEAL = 0.05;
 const TOP_EVERY_MS = 5 * 60_000;
+const DEFAULT_TICK_SECONDS = 30;
+const MAX_MIN_SAMPLE_MS = 5000;
+const DEFAULT_OUTSIDE_CORES = 0.4;
+
+type ControlMeasurements = { count: number; busy: number; steal: number; outside: number };
 
 const log = (...parts: unknown[]) => console.log(parts.map(String).join(" "));
 const avg = (xs: number[]) => xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : 0;
@@ -321,6 +326,7 @@ export class Governor {
     readonly plan: Plan,
     saved?: Private,
     io: Partial<GovernorIO> = {},
+    readonly paths: Pick<typeof PATHS, "run" | "lib"> = PATHS,
   ) {
     validateConfig(cfg);
     fallbackCpuPercent(cfg, plan.vcpus);
@@ -376,7 +382,7 @@ export class Governor {
       if (saved.limit && Number.isFinite(saved.limit.since)) {
         this.s.limit = {
           since: saved.limit.since,
-          ceiling: recoveryCeiling(plan, 0.4),
+          ceiling: recoveryCeiling(plan, DEFAULT_OUTSIDE_CORES),
           heldFrom: 0,
           startedAt: 0,
         };
@@ -398,6 +404,24 @@ export class Governor {
 
   controlSamples(window: number) {
     return this.recent(window).filter((x) => !x.test);
+  }
+
+  private controlMeasurements(): ControlMeasurements {
+    const recent = this.controlSamples(STEAL_WINDOW_MS);
+    const latest = this.s.samples.at(-1);
+    return {
+      count: recent.length,
+      busy: avg(recent.map((x) => x.busy)),
+      steal: recent.length >= 3 ? avg(recent.map((x) => x.steal)) : 0,
+      outside: recent.length
+        ? Math.max(latest?.test ? 0 : latest?.outside ?? 0, avg(recent.map((x) => x.outside ?? 0)))
+        : DEFAULT_OUTSIDE_CORES,
+    };
+  }
+
+  private targetCeiling(outside: number) {
+    return this.s.limit?.ceiling ??
+      sliceCeiling(this.plan, allowedCores(this.plan, this.s.balance, this.s.margin, LAW), outside);
   }
 
   publicState(now: number): PublicState {
@@ -619,17 +643,14 @@ export class Governor {
     const usage = await this.io.usage(this.slice, uptime).catch(() => undefined);
     const reset = s.bootId !== bootId || before === undefined || uptime < before || !prev ||
       counters.total < prev.total || counters.busy < prev.busy || counters.steal < prev.steal;
-    if (!reset && (uptime === before || counters.total === prev.total)) {
-      // Back-to-back on-demand passes can arrive within one kernel counter interval. Apply
-      // administrative changes without resetting credits or discarding the accounting baseline.
-      const recent = this.controlSamples(STEAL_WINDOW_MS);
-      const latest = s.samples.at(-1);
-      const outside = recent.length
-        ? Math.max(latest?.test ? 0 : latest?.outside ?? 0, avg(recent.map((x) => x.outside ?? 0)))
-        : 0.4;
-      const target = s.limit?.ceiling ??
-        sliceCeiling(p, allowedCores(p, s.balance, s.margin, LAW), outside);
-      await this.applyCeiling(target, await this.io.ceiling(this.slice));
+    const minSampleMs = Math.min(
+      MAX_MIN_SAMPLE_MS,
+      (this.cfg.tick_seconds ?? DEFAULT_TICK_SECONDS) * 1000 / 2,
+    );
+    if (!reset && (uptime - before < minSampleMs || counters.total === prev.total)) {
+      // Reuse stable measurements for closely spaced passes. Keep all accounting baselines so
+      // the next sample includes the entire interval, including CPU consumed by these passes.
+      await this.applyCeiling(await this.io.ceiling(this.slice), this.controlMeasurements());
       return;
     }
     if (reset) {
@@ -667,7 +688,7 @@ export class Governor {
     s.usagePrev = undefined;
     if (usage) s.usagePrev = usage;
     if (reset) {
-      const target = s.limit?.ceiling ?? sliceCeiling(p, allowedCores(p, s.balance, s.margin), 0.4);
+      const target = this.targetCeiling(DEFAULT_OUTSIDE_CORES);
       s.capFailed = true;
       if (!await this.io.cap(this.slice, target)) throw new Error("startup ceiling not set");
       s.capFailed = false;
@@ -698,11 +719,13 @@ export class Governor {
       uptime - (s.topAt ?? -Infinity) >= TOP_EVERY_MS
     ) {
       s.topAt = uptime;
-      await this.io.snapshot(`${PATHS.lib}/top`, now).catch((e) => log("top snapshot failed:", e));
+      await this.io.snapshot(`${this.paths.lib}/top`, now).catch((e) =>
+        log("top snapshot failed:", e)
+      );
     }
 
     const busyCores = sample.busy * p.vcpus;
-    const observed = seconds <= 2 * (this.cfg.tick_seconds ?? 30);
+    const observed = seconds <= 2 * (this.cfg.tick_seconds ?? DEFAULT_TICK_SECONDS);
     const earning = observed && !s.noEarn &&
       !(s.limit && demandSteal(sample.busy, sample.steal) >= LIMIT_PRESSING);
     s.earning = earning;
@@ -729,13 +752,8 @@ export class Governor {
       }
     }
 
-    const recent = this.controlSamples(STEAL_WINDOW_MS);
-    const steal = recent.length >= 3 ? avg(recent.map((x) => x.steal)) : 0;
-    const busy = avg(recent.map((x) => x.busy));
-    const outside = Math.max(
-      sample.test ? 0 : sample.outside ?? 0,
-      avg(recent.map((x) => x.outside ?? 0)),
-    );
+    const control = this.controlMeasurements();
+    const { count, busy, steal, outside } = control;
     const current = await this.io.ceiling(this.slice);
 
     const sfNow = demandSteal(busy, steal);
@@ -744,7 +762,7 @@ export class Governor {
     const failed = uptime < s.probe.cooldownUntil ? s.probe.failedSf : undefined;
     const jumped = failed !== undefined && sfNow >= Math.max(2 * failed, failed + 0.15);
     if (
-      !s.limit && recent.length >= 3 && sfNow >= LIMIT_STEAL &&
+      !s.limit && count >= 3 && sfNow >= LIMIT_STEAL &&
       steal * p.vcpus >= 0.02 &&
       (uptime >= s.probe.cooldownUntil || sfNow >= LIMIT_EVIDENT || jumped)
     ) {
@@ -828,26 +846,24 @@ export class Governor {
       }
     }
 
-    const target = s.limit
-      ? s.limit.ceiling
-      : sliceCeiling(p, allowedCores(p, s.balance, s.margin, LAW), outside);
     try {
-      await this.applyCeiling(target, current);
+      await this.applyCeiling(current, control);
     } finally {
       for (const event of notifications) this.notify(event, now);
     }
   }
 
-  private async applyCeiling(target: number, current: number | null) {
+  private async applyCeiling(
+    current: number | null,
+    { busy, steal, outside }: ControlMeasurements,
+  ) {
     const s = this.s;
+    const target = this.targetCeiling(outside);
     s.capFailed = target !== current;
     if (target === current) s.ceiling = target;
     else if (await this.io.cap(this.slice, target)) {
       s.capFailed = false;
       if (Math.abs(target - (s.ceiling ?? 0)) >= 100 || s.limit) {
-        const recent = this.controlSamples(STEAL_WINDOW_MS);
-        const busy = avg(recent.map((x) => x.busy));
-        const steal = recent.length >= 3 ? avg(recent.map((x) => x.steal)) : 0;
         log(
           `ceiling ${target}%: ${Math.round(busy * 100)}% busy, ${
             Math.round(steal * 100)
@@ -859,18 +875,33 @@ export class Governor {
   }
 
   async takeRequests(now: number) {
-    for (const e of await list(REQUESTS)) {
+    const requests = `${this.paths.run}/requests`;
+    for (const e of await list(requests)) {
       if (!e.isFile || e.name.startsWith(".")) continue;
-      const path = `${REQUESTS}/${e.name}`;
+      const path = `${requests}/${e.name}`;
       await this.request(path, now).catch((err) => log("bad request:", err));
       await Deno.remove(path).catch(() => {});
     }
   }
 
   async save(now: number) {
-    await writeJson(`${PATHS.lib}/persist.json`, this.s, 0o600);
-    await writeJson(STATE_FILE, this.publicState(now), 0o644);
+    await writeJson(`${this.paths.lib}/persist.json`, this.s, 0o600);
+    await writeJson(`${this.paths.run}/state.json`, this.publicState(now), 0o644);
   }
+}
+
+export async function controlPass(g: Governor) {
+  try {
+    await g.takeRequests(Date.now());
+    await g.tick();
+    await g.save(Date.now());
+  } catch (e) {
+    log("tick failed:", e);
+    await g.save(Date.now()).catch(() => {});
+    throw e;
+  }
+  // capSlice already logged why. Report failure to a waiting caller without repeating saves.
+  if (g.s.capFailed) throw new Error("CPU ceiling was not applied");
 }
 
 export async function runDaemon() {
@@ -896,20 +927,11 @@ export async function runDaemon() {
   try {
     await controlLoop({
       path: TICK_SOCKET,
-      tickMs: (cfg.tick_seconds ?? 30) * 1000,
+      tickMs: (cfg.tick_seconds ?? DEFAULT_TICK_SECONDS) * 1000,
       signal: controller.signal,
-      pass: async () => {
+      pass: () => {
         ranPass = true;
-        try {
-          await g.takeRequests(Date.now());
-          await g.tick();
-          await g.save(Date.now());
-          if (g.s.capFailed) throw new Error("CPU ceiling was not applied");
-        } catch (e) {
-          log("tick failed:", e);
-          await g.save(Date.now()).catch(() => {});
-          throw e;
-        }
+        return controlPass(g);
       },
     });
   } finally {

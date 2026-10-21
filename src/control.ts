@@ -1,6 +1,24 @@
 // Each "tick\n" request runs one pass. The private Unix socket admits root and the daemon user.
 // Timed and requested passes share this loop so accounting and state writes never overlap.
-export class TickError extends Error {}
+const TICK_ERRORS = {
+  root: "governor tick requires root",
+  unavailable: "cannot reach governor; is the daemon running with tick support?",
+  failed: "governor tick failed; see journalctl -u governor.service",
+  timeout: "governor tick timed out; the pass may still finish",
+  disconnected: "governor disconnected before confirming the tick",
+};
+
+export class TickError extends Error {
+  constructor(readonly code: keyof typeof TICK_ERRORS) {
+    super(TICK_ERRORS[code]);
+  }
+}
+
+const HANDSHAKE_TIMEOUT_MS = 1000;
+const REPLY_TIMEOUT_MS = 120_000;
+const MAX_REPLY_BYTES = 256;
+const OK_REPLY = "ok\n";
+const FAILED_REPLY = "failed\n";
 
 const TICK = new TextEncoder().encode("tick\n");
 
@@ -20,7 +38,7 @@ function close(resource: { close(): void }) {
 
 async function isTick(conn: Deno.UnixConn): Promise<boolean> {
   const bytes = new Uint8Array(TICK.length);
-  const timer = setTimeout(() => close(conn), 1000);
+  const timer = setTimeout(() => close(conn), HANDSHAKE_TIMEOUT_MS);
   try {
     for (let offset = 0; offset < bytes.length;) {
       const n = await conn.read(bytes.subarray(offset));
@@ -33,12 +51,12 @@ async function isTick(conn: Deno.UnixConn): Promise<boolean> {
   }
 }
 
-export async function requestTick(path: string, timeoutMs = 120_000): Promise<void> {
+export async function requestTick(path: string, timeoutMs = REPLY_TIMEOUT_MS): Promise<void> {
   let conn: Deno.UnixConn;
   try {
     conn = await Deno.connect({ transport: "unix", path });
   } catch {
-    throw new TickError("cannot reach governor; is the daemon running with tick support?");
+    throw new TickError("unavailable");
   }
   let expired = false;
   const timer = setTimeout(() => {
@@ -47,35 +65,30 @@ export async function requestTick(path: string, timeoutMs = 120_000): Promise<vo
   }, timeoutMs);
   try {
     await writeAll(conn, TICK);
-    const buffer = new Uint8Array(256);
+    const buffer = new Uint8Array(MAX_REPLY_BYTES);
     let reply = "";
-    while (reply.length < 256) {
+    while (reply.length < MAX_REPLY_BYTES) {
       const n = await conn.read(buffer);
       if (n === null) break;
       reply += new TextDecoder().decode(buffer.subarray(0, n));
     }
-    if (reply !== "ok\n") {
-      throw new TickError("governor tick failed; see journalctl -u governor.service");
+    if (reply !== OK_REPLY) {
+      throw new TickError("failed");
     }
   } catch (error) {
-    if (expired) throw new TickError("governor tick timed out; the pass may still finish");
+    if (expired) throw new TickError("timeout");
     if (error instanceof TickError) throw error;
-    throw new TickError("governor disconnected before confirming the tick");
+    throw new TickError("disconnected");
   } finally {
     clearTimeout(timer);
     close(conn);
   }
 }
 
-export async function controlLoop(options: {
-  path: string;
-  tickMs: number;
-  signal: AbortSignal;
-  // Resolves only after both persisted and public state have been written. Logs failures itself.
-  pass: () => Promise<void>;
-}): Promise<void> {
-  const { path, tickMs, signal, pass } = options;
-  if (signal.aborted) return;
+async function openSocket(
+  path: string,
+  listen: (path: string) => Deno.UnixListener,
+): Promise<Deno.UnixListener> {
   // A crash can leave the socket behind in systemd's preserved runtime directory.
   try {
     const info = await Deno.lstat(path);
@@ -101,19 +114,55 @@ export async function controlLoop(options: {
   const oldMask = Deno.umask(0o177);
   let listener: Deno.UnixListener;
   try {
-    listener = Deno.listen({ transport: "unix", path });
+    listener = listen(path);
   } finally {
     Deno.umask(oldMask);
   }
-  const stop = () => close(listener);
-  signal.addEventListener("abort", stop, { once: true });
-  let pending: Promise<Deno.UnixConn | null> | undefined;
-  const accept = () =>
-    listener.accept().catch((error) => {
-      if (signal.aborted) return null;
-      throw error;
+  return listener;
+}
+
+type Accepted = { conn: Deno.UnixConn } | { error: unknown };
+
+export async function controlLoop(options: {
+  path: string;
+  tickMs: number;
+  signal: AbortSignal;
+  // Resolves only after both persisted and public state have been written. Logs failures itself.
+  pass: () => Promise<void>;
+  onSocketError?: (error: unknown) => void;
+  listen?: (path: string) => Deno.UnixListener;
+}): Promise<void> {
+  const { path, tickMs, signal, pass } = options;
+  if (signal.aborted) return;
+  const report = options.onSocketError ??
+    ((error: unknown) =>
+      console.error("on-demand ticks unavailable; timed control continues:", error));
+  let listener: Deno.UnixListener | undefined;
+  let ownsSocket = false;
+  let pending: Promise<Accepted> | undefined;
+  const stopped = Promise.withResolvers<null>();
+  const stop = () => {
+    if (listener) close(listener);
+    stopped.resolve(null);
+  };
+  const removeSocket = async () => {
+    if (!ownsSocket) return;
+    ownsSocket = false;
+    await Deno.remove(path).catch((error) => {
+      if (!(error instanceof Deno.errors.NotFound)) report(error);
     });
+  };
+  signal.addEventListener("abort", stop, { once: true });
   try {
+    try {
+      listener = await openSocket(
+        path,
+        options.listen ?? ((path) => Deno.listen({ transport: "unix", path })),
+      );
+      ownsSocket = true;
+    } catch (error) {
+      report(error);
+    }
     let nextTimed = performance.now();
     while (!signal.aborted) {
       if (performance.now() >= nextTimed) {
@@ -122,26 +171,41 @@ export async function controlLoop(options: {
         nextTimed = performance.now() + tickMs;
         continue;
       }
-      pending ??= accept();
+      if (listener) {
+        const active = listener;
+        pending ??= Promise.resolve().then(() => active.accept()).then(
+          (conn): Accepted => ({ conn }),
+          (error): Accepted => ({ error }),
+        );
+      }
       let timer: ReturnType<typeof setTimeout> | undefined;
-      const conn = await Promise.race([
-        pending,
+      const result = await Promise.race([
+        ...(pending ? [pending] : []),
+        stopped.promise,
         new Promise<undefined>((resolve) => {
           timer = setTimeout(() => resolve(undefined), Math.max(0, nextTimed - performance.now()));
         }),
       ]).finally(() => clearTimeout(timer));
-      if (conn === undefined) continue;
+      if (result === undefined) continue;
+      if (result === null) break;
       pending = undefined;
-      if (conn === null) break;
+      if ("error" in result) {
+        if (!signal.aborted) report(result.error);
+        if (listener) close(listener);
+        listener = undefined;
+        await removeSocket();
+        continue;
+      }
+      const { conn } = result;
       try {
         if (signal.aborted) break;
         if (!await isTick(conn)) continue;
         if (signal.aborted) break;
-        let reply = "ok\n";
+        let reply = OK_REPLY;
         try {
           await pass();
         } catch {
-          reply = "failed\n";
+          reply = FAILED_REPLY;
         }
         await writeAll(conn, new TextEncoder().encode(reply));
       } catch {
@@ -153,9 +217,8 @@ export async function controlLoop(options: {
   } finally {
     signal.removeEventListener("abort", stop);
     stop();
-    (await pending?.catch(() => null))?.close();
-    await Deno.remove(path).catch((error) => {
-      if (!(error instanceof Deno.errors.NotFound)) throw error;
-    });
+    const accepted = await pending;
+    if (accepted && "conn" in accepted) close(accepted.conn);
+    await removeSocket();
   }
 }

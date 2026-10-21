@@ -180,8 +180,11 @@ The command talks to the running daemon over its private `/run/governor/tick.soc
 processes queued `limit` and `seed` requests, runs the same control pass as a timed tick, and
 returns successfully only after `/var/lib/governor/persist.json` and `/run/governor/state.json` are
 written. Calls run in sequence. Timed ticks keep their configured interval; an on-demand pass does
-not restart the timer. Normal CPU measurements, API calls and limit probes still run, so a pass can
-take time. Hooks continue in the background.
+not restart the timer. Passes less than `min(5 seconds, tick_seconds / 2)` apart reuse the previous
+measurements while applying queued commands, setting the quota and writing state. Their CPU use
+accumulates into the next sample. This prevents tiny, noisy intervals from tightening a recovery
+quota or triggering a limit probe. API checks and limit probes run when a fresh sample is available
+and can take time. Hooks continue in the background.
 
 Verification scripts can check a limit without sleeping until the next tick:
 
@@ -197,6 +200,10 @@ governor status --json
 `tick` exits nonzero if the daemon is unavailable, control or state writing fails, or no reply
 arrives within 120 seconds. A timeout does not cancel an already requested pass. Both the CLI and
 daemon must support `tick`; restart the daemon after upgrading the binary.
+
+If the control socket cannot start or stops accepting connections, the daemon logs the failure and
+continues its timed passes. Fix the socket problem and restart the daemon to restore on-demand
+ticks.
 
 Public `/run/governor/state.json` and `governor status --json` include `"schemaVersion": 1`. Hook
 snapshots use the same version. This describes the public format, not the persisted credit estimate

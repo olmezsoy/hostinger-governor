@@ -1,5 +1,6 @@
 import { assert, assertEquals } from "@std/assert";
 import { testDirectory } from "./temp.ts";
+import { cliArguments } from "./cli.ts";
 
 Deno.test("control socket completion, scheduling, failures and lifecycle", async () => {
   const dir = await testDirectory("tick-");
@@ -9,7 +10,7 @@ Deno.test("control socket completion, scheduling, failures and lifecycle", async
     const out = await new Deno.Command(Deno.execPath(), {
       args: [
         "test",
-        "--allow-env=GOVERNOR_TICK_TEST_DIR",
+        "--allow-env=GOVERNOR_CONFIG,GOVERNOR_TICK_TEST_DIR",
         "--allow-sys=umask",
         `--allow-net=unix:${absolute}/tick.sock`,
         `--allow-read=${dir}`,
@@ -38,14 +39,7 @@ Deno.test("tick CLI requires root and rejects arguments", async () => {
     ] as const
   ) {
     const out = await new Deno.Command(Deno.execPath(), {
-      args: [
-        "run",
-        "--allow-env=GOVERNOR_CONFIG",
-        "--allow-read=src,test/fixtures",
-        "test/fixtures/cli-harness.ts",
-        "tick-consumer",
-        ...args,
-      ],
+      args: cliArguments("tick-consumer", [...args]),
       stdout: "piped",
       stderr: "piped",
     }).output();

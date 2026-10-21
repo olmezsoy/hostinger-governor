@@ -5,9 +5,16 @@
 - Add root-only `governor tick` to run one control pass through the running daemon and wait for
   persisted and public state writes. Serialize requests with timed passes without postponing their
   timer. Report unavailable daemons, failed passes and timeouts to callers.
-- Preserve CPU accounting when consecutive passes see the same kernel counter interval. Cover
-  synchronous completion, concurrent requests, timed ticks and failures, plus real limit/quota
-  verification at the production cadence in the Linux smoke test.
+- Fold intervals shorter than `min(5 seconds, tick_seconds / 2)` into the next sample so counter
+  noise cannot tighten recovery quotas. Apply queued commands and publish state on every pass. Keep
+  timed control running if the optional control socket fails. Cover synchronous completion,
+  concurrent requests, timed ticks and failures, plus real limit/quota verification at the
+  production cadence in the Linux smoke test. Test the real control pass through the socket,
+  including state-write and quota failures.
+
+Upgrade by running the installer again, or restart the daemon after replacing the binary. Both the
+CLI and running daemon need the new binary for `governor tick`. Existing configuration and credit
+estimates are kept.
 
 ## v0.2.4
 

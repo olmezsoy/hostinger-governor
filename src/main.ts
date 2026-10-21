@@ -58,7 +58,7 @@ async function ask(body: Record<string, unknown>) {
   });
   await Deno.chmod(`${REQUESTS}/.${name}`, 0o644);
   await Deno.rename(`${REQUESTS}/.${name}`, `${REQUESTS}/${name}`);
-  console.log("sent; the governor applies it within one tick");
+  console.log("sent; applies within one tick; run sudo governor tick to apply and wait now");
 }
 
 const usage = (): never => {
@@ -76,7 +76,7 @@ try {
       break;
     case "tick":
       if (args.length) usage();
-      if (Deno.uid() !== 0) throw new TickError("governor tick requires root");
+      if (Deno.uid() !== 0) throw new TickError("root");
       await requestTick(TICK_SOCKET);
       console.log("tick complete; state written");
       break;
