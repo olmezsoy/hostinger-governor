@@ -25,6 +25,7 @@ import { cpuReadings, type HostingerSource, validateSource, vm } from "./hosting
 import { MAX_VCPUS, type Plan, plan, RULES_SINCE } from "./plans.ts";
 import { DEFAULT_FALLBACK_CPU_PERCENT, fallbackCpuPercent } from "./fallback.ts";
 import { HOOK_TIMEOUT_SECONDS, HookRunner, validateHookTimeout } from "./hooks.ts";
+import { controlLoop } from "./control.ts";
 import {
   type Clock,
   type Counters,
@@ -48,6 +49,7 @@ export const PATHS = {
 };
 export const STATE_FILE = `${PATHS.run}/state.json`;
 export const REQUESTS = `${PATHS.run}/requests`;
+export const TICK_SOCKET = `${PATHS.run}/tick.sock`;
 
 export type Config = {
   hostinger?: HostingerSource & { vm_id?: number };
@@ -615,8 +617,21 @@ export class Governor {
     const beforeAt = s.at;
     const oldUsage = s.usagePrev;
     const usage = await this.io.usage(this.slice, uptime).catch(() => undefined);
-    const reset = s.bootId !== bootId || before === undefined || uptime <= before || !prev ||
-      counters.total <= prev.total || counters.busy < prev.busy || counters.steal < prev.steal;
+    const reset = s.bootId !== bootId || before === undefined || uptime < before || !prev ||
+      counters.total < prev.total || counters.busy < prev.busy || counters.steal < prev.steal;
+    if (!reset && (uptime === before || counters.total === prev.total)) {
+      // Back-to-back on-demand passes can arrive within one kernel counter interval. Apply
+      // administrative changes without resetting credits or discarding the accounting baseline.
+      const recent = this.controlSamples(STEAL_WINDOW_MS);
+      const latest = s.samples.at(-1);
+      const outside = recent.length
+        ? Math.max(latest?.test ? 0 : latest?.outside ?? 0, avg(recent.map((x) => x.outside ?? 0)))
+        : 0.4;
+      const target = s.limit?.ceiling ??
+        sliceCeiling(p, allowedCores(p, s.balance, s.margin, LAW), outside);
+      await this.applyCeiling(target, await this.io.ceiling(this.slice));
+      return;
+    }
     if (reset) {
       if (s.bootId !== undefined || prev) {
         s.balance = 0;
@@ -816,22 +831,30 @@ export class Governor {
     const target = s.limit
       ? s.limit.ceiling
       : sliceCeiling(p, allowedCores(p, s.balance, s.margin, LAW), outside);
-    s.capFailed = target !== current;
     try {
-      if (target === current) s.ceiling = target;
-      else if (await this.io.cap(this.slice, target)) {
-        s.capFailed = false;
-        if (Math.abs(target - (s.ceiling ?? 0)) >= 100 || s.limit) {
-          log(
-            `ceiling ${target}%: ${Math.round(busy * 100)}% busy, ${
-              Math.round(steal * 100)
-            }% steal, ${Math.round((100 * s.balance) / p.capacity)}% credits`,
-          );
-        }
-        s.ceiling = target;
-      }
+      await this.applyCeiling(target, current);
     } finally {
       for (const event of notifications) this.notify(event, now);
+    }
+  }
+
+  private async applyCeiling(target: number, current: number | null) {
+    const s = this.s;
+    s.capFailed = target !== current;
+    if (target === current) s.ceiling = target;
+    else if (await this.io.cap(this.slice, target)) {
+      s.capFailed = false;
+      if (Math.abs(target - (s.ceiling ?? 0)) >= 100 || s.limit) {
+        const recent = this.controlSamples(STEAL_WINDOW_MS);
+        const busy = avg(recent.map((x) => x.busy));
+        const steal = recent.length >= 3 ? avg(recent.map((x) => x.steal)) : 0;
+        log(
+          `ceiling ${target}%: ${Math.round(busy * 100)}% busy, ${
+            Math.round(steal * 100)
+          }% steal, ${Math.round((100 * s.balance) / this.plan.capacity)}% credits`,
+        );
+      }
+      s.ceiling = target;
     }
   }
 
@@ -862,30 +885,39 @@ export async function runDaemon() {
       Math.round((100 * g.s.balance) / p.capacity)
     }% credits`,
   );
-  const tickMs = (cfg.tick_seconds ?? 30) * 1000;
-  let stopping = false;
+  const controller = new AbortController();
+  let ranPass = false;
   const stop = () => {
-    stopping = true;
+    controller.abort();
     void g.closeHooks();
   };
   Deno.addSignalListener("SIGTERM", stop);
   Deno.addSignalListener("SIGINT", stop);
-  while (!stopping) {
-    const now = Date.now();
-    try {
-      await g.takeRequests(now);
-      await g.tick();
-      await g.save(now);
-    } catch (e) {
-      log("tick failed:", e);
-      await g.save(Date.now()).catch(() => {});
-    }
-    for (let waited = 0; waited < tickMs && !stopping; waited += 1000) await sleep(1000);
+  try {
+    await controlLoop({
+      path: TICK_SOCKET,
+      tickMs: (cfg.tick_seconds ?? 30) * 1000,
+      signal: controller.signal,
+      pass: async () => {
+        ranPass = true;
+        try {
+          await g.takeRequests(Date.now());
+          await g.tick();
+          await g.save(Date.now());
+          if (g.s.capFailed) throw new Error("CPU ceiling was not applied");
+        } catch (e) {
+          log("tick failed:", e);
+          await g.save(Date.now()).catch(() => {});
+          throw e;
+        }
+      },
+    });
+  } finally {
+    if (ranPass) await g.save(Date.now()).catch(() => {});
+    await g.closeHooks();
+    Deno.removeSignalListener("SIGTERM", stop);
+    Deno.removeSignalListener("SIGINT", stop);
   }
-  await g.save(Date.now()).catch(() => {});
-  await g.closeHooks();
-  Deno.removeSignalListener("SIGTERM", stop);
-  Deno.removeSignalListener("SIGINT", stop);
 }
 
 export async function configuredFallbackPercent() {

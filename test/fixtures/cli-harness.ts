@@ -2,6 +2,7 @@
 // permissions are explicit; unlike `deno eval`, this does not imply full access.
 import { STATE_FILE } from "../../src/governor.ts";
 const mode = Deno.args.shift();
+if (mode === "tick-consumer") Deno.uid = () => 1000;
 const original = Deno.readTextFile;
 Deno.readTextFile = (...args) => {
   if (mode === "connection" && String(args[0]) === "/proc/stat") {

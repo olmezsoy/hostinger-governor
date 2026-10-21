@@ -114,6 +114,46 @@ Deno.test("public state identifies its schema independently of persisted account
   assertEquals(f.g.s.schema, 2);
 });
 
+Deno.test("back-to-back ticks preserve credits and apply queued control changes", async () => {
+  const f = fixture();
+  await f.g.tick();
+  await f.advance();
+  await f.request("seed");
+  const baseline = structuredClone(f.g.s);
+  await f.g.tick();
+  await f.g.tick();
+  assertEquals(f.g.s.balance, p.capacity);
+  assertEquals(f.g.s.samples, baseline.samples);
+  assertEquals(f.g.s.cpuPrev, baseline.cpuPrev);
+  assertEquals(f.g.s.usagePrev, baseline.usagePrev);
+  assertEquals(f.g.s.rebuilding, null);
+  await f.request("limit-on");
+  await f.g.tick();
+  assertEquals(f.cap, f.g.s.limit!.ceiling);
+  assertEquals(f.g.publicState(start).accepting, false);
+  await f.request("limit-off");
+  await f.g.tick();
+  assertEquals(f.g.s.balance, p.recovered);
+  assertEquals(f.g.publicState(start).accepting, true);
+  await f.advance();
+  assertEquals(f.g.s.samples.length, baseline.samples.length + 1);
+  assertEquals(f.g.s.samples.at(-1)!.seconds, 30);
+});
+
+Deno.test("unchanged CPU counters preserve the full accounting interval", async () => {
+  const f = fixture();
+  await f.g.tick();
+  await f.request("seed");
+  const baseline = structuredClone(f.g.s);
+  await f.g.tick({ at: start + 5, uptime: 100_005, bootId: "boot-a" });
+  assertEquals(f.g.s.balance, p.capacity);
+  assertEquals(f.g.s.uptime, baseline.uptime);
+  assertEquals(f.g.s.cpuPrev, baseline.cpuPrev);
+  await f.advance(30, 0.8);
+  assert(f.g.s.balance < p.capacity);
+  assertEquals(f.g.s.samples.at(-1)!.seconds, 30);
+});
+
 Deno.test("a pending limit-start hook cannot delay the ceiling update or tick", async () => {
   const f = fixture();
   await f.g.tick();

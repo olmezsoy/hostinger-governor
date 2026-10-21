@@ -1,6 +1,7 @@
 // governor: keeps a Hostinger VPS's CPU credits from running out while spending them on work.
 //
 //   governor run                    the daemon (systemd runs it as the governor user)
+//   governor tick                   run one pass now and wait for its state writes (root only)
 //   governor status [--json]        the state every consumer reads; exit 3 if the daemon is not running
 //   governor report [hours] [--format text|html|json]  read-only vitals (default 12 hours)
 //   governor limit on|off           tell it what hPanel or Hostinger support says (root only)
@@ -15,7 +16,9 @@ import {
   REQUESTS,
   runDaemon,
   STATE_FILE,
+  TICK_SOCKET,
 } from "./governor.ts";
+import { requestTick, TickError } from "./control.ts";
 import { creditLines, report } from "./report.ts";
 import { reportOptions } from "./resource.ts";
 import { configureDocker, enrollService } from "./workloads.ts";
@@ -60,7 +63,7 @@ async function ask(body: Record<string, unknown>) {
 
 const usage = (): never => {
   console.error(
-    "usage: governor run | status [--json] | report [hours] [--format text|html|json] | check-hostinger | limit on|off | seed <core-seconds> | exec [--wait <seconds>] -- <command> | enroll-service <unit> | configure-docker | version",
+    "usage: governor run | tick | status [--json] | report [hours] [--format text|html|json] | check-hostinger | limit on|off | seed <core-seconds> | exec [--wait <seconds>] -- <command> | enroll-service <unit> | configure-docker | version",
   );
   Deno.exit(2);
 };
@@ -70,6 +73,12 @@ try {
   switch (cmd) {
     case "run":
       await runDaemon();
+      break;
+    case "tick":
+      if (args.length) usage();
+      if (Deno.uid() !== 0) throw new TickError("governor tick requires root");
+      await requestTick(TICK_SOCKET);
+      console.log("tick complete; state written");
       break;
     case "validate-config":
       await loadConfig();
@@ -183,6 +192,10 @@ try {
       usage();
   }
 } catch (error) {
+  if (error instanceof TickError) {
+    console.error(error.message);
+    Deno.exit(1);
+  }
   if (!(error instanceof UnsupportedStateSchema)) throw error;
   console.error(error.message);
   Deno.exit(3);

@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+- Add root-only `governor tick` to run one control pass through the running daemon and wait for
+  persisted and public state writes. Serialize requests with timed passes without postponing their
+  timer. Report unavailable daemons, failed passes and timeouts to callers.
+- Preserve CPU accounting when consecutive passes see the same kernel counter interval. Cover
+  synchronous completion, concurrent requests, timed ticks and failures, plus real limit/quota
+  verification at the production cadence in the Linux smoke test.
+
 ## v0.2.4
 
 - Fix issue #3: embed V8's `--jitless` flag in release, CI and local compiled binaries so the

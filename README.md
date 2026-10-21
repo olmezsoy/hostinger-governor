@@ -170,6 +170,34 @@ configuration if setup fails. See
 A fresh install starts the estimate at zero because the real balance is unknown. It grows from
 observed CPU use. Only root can seed a known balance; API history never seeds it automatically.
 
+To run one control pass immediately, as root:
+
+```sh
+sudo governor tick
+```
+
+The command talks to the running daemon over its private `/run/governor/tick.sock` Unix socket. It
+processes queued `limit` and `seed` requests, runs the same control pass as a timed tick, and
+returns successfully only after `/var/lib/governor/persist.json` and `/run/governor/state.json` are
+written. Calls run in sequence. Timed ticks keep their configured interval; an on-demand pass does
+not restart the timer. Normal CPU measurements, API calls and limit probes still run, so a pass can
+take time. Hooks continue in the background.
+
+Verification scripts can check a limit without sleeping until the next tick:
+
+```sh
+sudo governor limit on
+sudo governor tick
+governor status --json
+sudo governor limit off
+sudo governor tick
+governor status --json
+```
+
+`tick` exits nonzero if the daemon is unavailable, control or state writing fails, or no reply
+arrives within 120 seconds. A timeout does not cancel an already requested pass. Both the CLI and
+daemon must support `tick`; restart the daemon after upgrading the binary.
+
 Public `/run/governor/state.json` and `governor status --json` include `"schemaVersion": 1`. Hook
 snapshots use the same version. This describes the public format, not the persisted credit estimate
 or the resource report's separate `schema` field. Consumers should reject unsupported versions and
