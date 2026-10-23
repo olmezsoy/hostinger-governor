@@ -102,6 +102,44 @@ Deno.test("article text keeps the article and drops scripts, comments, navigatio
   assert(!/Updated/.test(text));
 });
 
+Deno.test("article text keeps no markup from split comments or a tag cut off at the end", () => {
+  const split = articleText(page({ extra: "<p>Kept.</p><!-<!-- -->- a > hidden 99% -->" })).text;
+  assert(split.includes("Kept."));
+  assert(!split.includes("99%"), "a comment rejoined by removing another one was kept");
+  const cut =
+    articleText(page({ extra: '<p>Last words.</p><div title="Was this article helpful">' }))
+      .text;
+  assert(cut.endsWith("\nLast words."), cut);
+});
+
+Deno.test("a less-than comparison keeps the rest of the article and its facts", async () => {
+  for (const comparison of ["< 20%", "<20%", "<= 20%"]) {
+    const html = page().replace(
+      "<h2>Did this article answer your question?",
+      `<p>Credit balance ${comparison} of capacity.</p><p>Later baseline vCPU words.</p>` +
+        "<h2>Did this article answer your question?",
+    );
+    const article = articleText(html);
+    assert(article.text.includes(`Credit balance ${comparison} of capacity.`), article.text);
+    assert(article.text.endsWith("\nLater baseline vCPU words."), article.text);
+    assertEquals(missingFacts((await record(article)).facts), []);
+  }
+});
+
+Deno.test("comment reconstruction is bounded without limiting independent comments", () => {
+  const nested = (n: number) => "<!-".repeat(n) + "<!-- -->" + "- -->".repeat(n);
+  const expected = articleText(page()).text;
+  assertEquals(articleText(page({ extra: nested(31) })).text, expected);
+  assertEquals(articleText(page({ extra: "<!-- hidden -->".repeat(100) })).text, expected);
+  const error = assertThrows(
+    () => articleText(page({ extra: nested(4_000) })),
+    Unreadable,
+    "comments",
+  );
+  assertEquals(error.category, "not-article");
+  assertEquals(unreadable(error).healthy, false);
+});
+
 Deno.test("the relative 'Updated' label and the modified timestamp do not count as changes", async () => {
   const a = await live();
   const b = await live({ updated: "Updated 6 days ago", modified: "2026-10-10T09:00:00+00:00" });
@@ -168,6 +206,27 @@ Deno.test("rewording without new numbers is reported as such", async () => {
   assertEquals(r.title, "Hostinger CPU credit article reworded; rule numbers unchanged");
   assert(r.body.includes("> A new filler paragraph with no rule in it."), r.body);
   assert(r.body.includes("(1 new, 0 reviewed lines gone or changed)"), r.body);
+});
+
+Deno.test("markup the page decodes to is quoted as text, not HTML", async () => {
+  const a = await live();
+  const b = await live({
+    extra: "<p>Hidden by &lt;!-- a comment, or run by &lt;script&gt;.</p>",
+    modified: "2026-10-10 \\ x | y&#10;| z",
+  });
+  const r = report(a.rec, b.rec, b.article.text)!;
+  assert(r.body.includes("> Hidden by &lt;!-- a comment, or run by &lt;script&gt;."), r.body);
+  assert(
+    r.body.includes(
+      "| Article modified | 2026-10-09T14:26:10+00:00 | 2026-10-10 \\\\ x \\| y \\| z |",
+    ),
+    r.body,
+  );
+  const first = await record(
+    articleText(page().replace("on every plan. Filler", "on every plan &lt;b&gt;. Filler")),
+  );
+  const asked = report(undefined, first, "")!;
+  assert(asked.body.includes("“The baseline is 60% on every plan &lt;b&gt;.”"), asked.body);
 });
 
 Deno.test("without a record the report asks for one and shows what it would record", async () => {
