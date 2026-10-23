@@ -112,6 +112,34 @@ Deno.test("article text keeps no markup from split comments or a tag cut off at 
   assert(cut.endsWith("\nLast words."), cut);
 });
 
+Deno.test("a less-than comparison keeps the rest of the article and its facts", async () => {
+  for (const comparison of ["< 20%", "<20%", "<= 20%"]) {
+    const html = page().replace(
+      "<h2>Did this article answer your question?",
+      `<p>Credit balance ${comparison} of capacity.</p><p>Later baseline vCPU words.</p>` +
+        "<h2>Did this article answer your question?",
+    );
+    const article = articleText(html);
+    assert(article.text.includes(`Credit balance ${comparison} of capacity.`), article.text);
+    assert(article.text.endsWith("\nLater baseline vCPU words."), article.text);
+    assertEquals(missingFacts((await record(article)).facts), []);
+  }
+});
+
+Deno.test("comment reconstruction is bounded without limiting independent comments", () => {
+  const nested = (n: number) => "<!-".repeat(n) + "<!-- -->" + "- -->".repeat(n);
+  const expected = articleText(page()).text;
+  assertEquals(articleText(page({ extra: nested(31) })).text, expected);
+  assertEquals(articleText(page({ extra: "<!-- hidden -->".repeat(100) })).text, expected);
+  const error = assertThrows(
+    () => articleText(page({ extra: nested(4_000) })),
+    Unreadable,
+    "comments",
+  );
+  assertEquals(error.category, "not-article");
+  assertEquals(unreadable(error).healthy, false);
+});
+
 Deno.test("the relative 'Updated' label and the modified timestamp do not count as changes", async () => {
   const a = await live();
   const b = await live({ updated: "Updated 6 days ago", modified: "2026-10-10T09:00:00+00:00" });

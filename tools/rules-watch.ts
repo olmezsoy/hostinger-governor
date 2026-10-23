@@ -89,6 +89,7 @@ function decode(s: string): string {
 // Markup that never carries article text, page furniture included.
 const DROP =
   /<(script|style|noscript|svg|template|iframe|nav|aside|form|button|select)\b[\s\S]*?<\/\1\s*>/gi;
+const MAX_COMMENT_PASSES = 32;
 const BLOCK =
   /<\/?(?:p|div|section|article|main|header|footer|h[1-6]|ul|ol|li|table|thead|tbody|tfoot|tr|blockquote|pre|figure|figcaption|dl|dt|dd|details|summary|hr)\b[^>]*>|<br\s*\/?>/gi;
 // Relative edit ages can be stale in cached HTML; they do not identify a content revision.
@@ -110,11 +111,16 @@ export function articleText(html: string): Article {
       }
     }
   };
-  // Removing a comment can join the halves of another, so repeat until none is left.
+  // Removing a comment can join the halves of another. Bound the passes so malformed HTML cannot
+  // force quadratic work before the article's text can be validated.
   let s = html;
-  for (let before = ""; s !== before;) {
-    before = s;
-    s = s.replace(/<!--[\s\S]*?-->/g, "");
+  for (let pass = 0;; pass++) {
+    const stripped = s.replace(/<!--[\s\S]*?-->/g, "");
+    if (stripped === s) break;
+    if (pass === MAX_COMMENT_PASSES) {
+      throw new Unreadable("not-article", "HTML comments exceed the reconstruction limit");
+    }
+    s = stripped;
   }
   s = s.replace(DROP, "\n");
   const heading = s.search(/<h1\b[^>]*>(?:(?!<\/h1>)[\s\S])*?CPU credits/i);
@@ -125,10 +131,11 @@ export function articleText(html: string): Article {
   // Source line breaks are only whitespace, except inside <pre>.
   s = s.replace(/<pre\b[\s\S]*?<\/pre>/gi, (pre) => pre.replace(/\r?\n/g, "<br>"))
     .replace(/\s+/g, " ");
-  // Tags, and a tag the end of the article cut off. The decoded text may still contain markup
-  // (&lt;script&gt;), so the report escapes whatever it quotes.
+  // Tags, including one the end of the article cut off. A '<' followed by a comparison is text.
+  // The decoded text may still contain markup (&lt;script&gt;), so the report escapes its quotes.
   const text = decode(
-    s.replace(/<\/t[dh]\s*>/gi, " | ").replace(BLOCK, "\n").replace(/<[^>]*(?:>|$)/g, ""),
+    s.replace(/<\/t[dh]\s*>/gi, " | ").replace(BLOCK, "\n")
+      .replace(/<(?:\/?[a-z]|[!?])[^>]*(?:>|$)/gi, ""),
   ).normalize("NFC").split("\n").map(tidy).filter(Boolean).join("\n");
   return {
     text,
