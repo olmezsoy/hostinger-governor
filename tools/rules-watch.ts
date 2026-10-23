@@ -121,7 +121,7 @@ export function articleText(html: string): Article {
     .replace(/\s+/g, " ");
   const text = decode(
     s.replace(/<\/t[dh]\s*>/gi, " | ").replace(BLOCK, "\n").replace(/<[^>]*>/g, ""),
-  ).normalize("NFC").split("\n").map(tidy).filter(Boolean).join("\n");
+  ).replace(/[<>]/g, "").normalize("NFC").split("\n").map(tidy).filter(Boolean).join("\n");
   return {
     text,
     modified: meta("article:modified_time") ?? meta("og:updated_time"),

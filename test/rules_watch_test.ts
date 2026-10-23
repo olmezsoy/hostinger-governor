@@ -102,6 +102,12 @@ Deno.test("article text keeps the article and drops scripts, comments, navigatio
   assert(!/Updated/.test(text));
 });
 
+Deno.test("decoded HTML entities cannot reintroduce markup into article text", () => {
+  const { text } = articleText(page({ extra: "<p>&lt;script&gt;alert(1)&lt;/script&gt;</p>" }));
+  assert(!text.includes("<script"), text);
+  assert(!/[<>]/.test(text), text);
+});
+
 Deno.test("the relative 'Updated' label and the modified timestamp do not count as changes", async () => {
   const a = await live();
   const b = await live({ updated: "Updated 6 days ago", modified: "2026-10-10T09:00:00+00:00" });
