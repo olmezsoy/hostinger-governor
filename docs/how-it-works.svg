@@ -2,7 +2,7 @@
   aria-labelledby="title" aria-describedby="desc">
   <title id="title">How hostinger-governor works</title>
   <desc
-    id="desc">Hostinger holds the CPU credit bank, and the VPS cannot read its balance. Every 30 seconds by default, governor.service reads CPU and steal from the kernel, keeps a cautious estimate of the bank, and sets one shared CPU quota on user.slice: every login, governor exec jobs, and services or Docker you enroll. Everything else is measured, not capped. An API check every 30 minutes, unless limited, never changes the estimate. Spending: every vCPU while the estimate is high, then a glide onto a 20% floor; with no governor, the same load empties the bank and Hostinger limits the VPS. After a reboot, an install or a limit, the estimate starts at 0, so the ceiling starts under the baseline. When steal follows demand during a 20-second probe at 0.2 vCPU, or reaches 60% of demand, the governor treats the VPS as limited: it holds user.slice below the host limit, down to 0.2 vCPU, until a lift test passes. A saved limit resumes on start. While the daemon is not running, systemd holds user.slice, SSH included, at 0.2 vCPU by default.</desc>
+    id="desc">Hostinger holds the CPU credit bank, and the VPS cannot read its balance. Every 30 seconds by default, governor.service reads CPU and steal from the kernel, keeps a cautious estimate of the bank, and sets one shared CPU quota on user.slice: every login, governor exec jobs, and services or Docker you enroll. Everything else is measured, not capped. An API check every 30 minutes, unless limited, never changes the estimate. Spending: every vCPU while the estimate is high, then a glide onto a 20% floor; with no governor, the same load empties the bank and Hostinger limits the VPS. After a reboot, an install or a limit, the estimate starts at 0, so the ceiling starts under the baseline. When steal follows demand during a 20-second probe at 0.2 vCPU, or reaches 60% of demand, the governor treats the VPS as limited: it holds user.slice below the host limit, down to 0.2 vCPU, until a lift test passes. If the probe does not confirm a limit, the governor stays in Spending and retries later. A saved limit resumes on start. While the daemon is not running, systemd holds user.slice, SSH included, at 0.2 vCPU by default.</desc>
   <style>
   svg {
     --bg: #ffffff;
@@ -230,11 +230,12 @@
 
   <rect class="card" x="24" y="44" width="560" height="140" rx="10" />
   <text class="h" x="44" y="68">CPU credit bank</text>
-  <rect class="track" x="44" y="80" width="520" height="12" rx="6" />
-  <line class="threshold" x1="148" y1="76" x2="148" y2="96" />
-  <text class="tick" x="44" y="110">0</text>
-  <text class="tick" x="148" y="110" text-anchor="middle">20%</text>
-  <text class="tick" x="564" y="110" text-anchor="end">100%</text>
+  <rect class="track" x="44" y="78" width="520" height="22" rx="11" />
+  <text class="s b" x="304" y="93" text-anchor="middle">balance unknown</text>
+  <line class="threshold" x1="148" y1="74" x2="148" y2="102" />
+  <text class="tick" x="44" y="116">0</text>
+  <text class="tick" x="148" y="116" text-anchor="middle">20%</text>
+  <text class="tick" x="564" y="116" text-anchor="end">100%</text>
   <text x="44" y="132">A limit starts at 0 and lifts at 20%. 100% is 3 h of full CPU.</text>
   <text x="44" y="152">Earns the baseline, 60% of the vCPUs, every second.</text>
   <text class="orange" x="44" y="172">While work presses on the limit, nothing is earned.</text>
@@ -387,10 +388,12 @@
   <text class="s" x="428" y="762" text-anchor="middle">skipped if steal reaches</text>
   <text class="s" x="428" y="778" text-anchor="middle">60% of demand;</text>
   <text class="s" x="428" y="794" text-anchor="middle">runs limit-start hooks</text>
-  <text class="s" x="428" y="826" text-anchor="middle">Steal stays: neighbours.</text>
-  <path class="arrow muted" d="M476 838H352" marker-end="url(#muted)" />
-  <text class="s" x="428" y="856" text-anchor="middle">probe again in 10 min,</text>
-  <text class="s" x="428" y="872" text-anchor="middle">doubling to 1 h</text>
+  <path class="arrow muted" d="M344 802H484Q494 802 494 812V872Q494 882 484 882H346"
+    marker-end="url(#muted)" />
+  <text class="s b" x="420" y="822" text-anchor="middle">No limit confirmed</text>
+  <text class="s" x="420" y="838" text-anchor="middle">neighbours suspected</text>
+  <text class="s" x="420" y="854" text-anchor="middle">retry in 10 min,</text>
+  <text class="s" x="420" y="870" text-anchor="middle">doubling to 1 h</text>
   <text class="b" x="428" y="904" text-anchor="middle">Lift test passes</text>
   <path class="arrow blue" d="M504 918H352" marker-end="url(#blue)" />
   <text class="s" x="428" y="938" text-anchor="middle">runs limit-end hooks</text>
