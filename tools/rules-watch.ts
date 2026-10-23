@@ -110,7 +110,13 @@ export function articleText(html: string): Article {
       }
     }
   };
-  let s = html.replace(/<!--[\s\S]*?-->/g, "").replace(DROP, "\n");
+  // Removing a comment can join the halves of another, so repeat until none is left.
+  let s = html;
+  for (let before = ""; s !== before;) {
+    before = s;
+    s = s.replace(/<!--[\s\S]*?-->/g, "");
+  }
+  s = s.replace(DROP, "\n");
   const heading = s.search(/<h1\b[^>]*>(?:(?!<\/h1>)[\s\S])*?CPU credits/i);
   if (heading < 0) throw new Unreadable("no-heading", "the page has no CPU credits heading");
   s = s.slice(heading);
@@ -119,8 +125,10 @@ export function articleText(html: string): Article {
   // Source line breaks are only whitespace, except inside <pre>.
   s = s.replace(/<pre\b[\s\S]*?<\/pre>/gi, (pre) => pre.replace(/\r?\n/g, "<br>"))
     .replace(/\s+/g, " ");
+  // Tags, and a tag the end of the article cut off. The decoded text may still contain markup
+  // (&lt;script&gt;), so the report escapes whatever it quotes.
   const text = decode(
-    s.replace(/<\/t[dh]\s*>/gi, " | ").replace(BLOCK, "\n").replace(/<[^>]*>/g, ""),
+    s.replace(/<\/t[dh]\s*>/gi, " | ").replace(BLOCK, "\n").replace(/<[^>]*(?:>|$)/g, ""),
   ).normalize("NFC").split("\n").map(tidy).filter(Boolean).join("\n");
   return {
     text,
@@ -410,7 +418,11 @@ const FACT_ROWS: [name: string, key: string, show: (f: Facts) => string][] = [
 ];
 
 const DIAGNOSTIC = new Set(["baseline mentions", "limit mentions", "earning formula"]);
-const cell = (s: string) => s.replace(/\|/g, "\\|");
+const ESCAPES: Record<string, string> = { "&": "&amp;", "<": "&lt;", ">": "&gt;" };
+// HTML in page text quoted in the issue shows as text: it cannot hide or restyle the rest of the
+// report.
+const literal = (s: string) => s.replace(/[&<>]/g, (c) => ESCAPES[c]);
+const cell = (s: string) => literal(s).replace(/\s+/g, " ").replace(/[\\|]/g, "\\$&");
 const bullets = (xs: string[]) => xs.map((x) => `- ${x}`).join("\n");
 const few = (xs: string[]) =>
   xs.length > 3 ? `${xs.slice(0, 3).join(", ")} and more` : xs.join(", ");
@@ -457,7 +469,9 @@ export function report(
       [
         "| | Reviewed | Live |",
         "|---|---|---|",
-        `| Article modified | ${reviewed.modified ?? "unknown"} | ${live.modified ?? "unknown"} |`,
+        `| Article modified | ${cell(reviewed.modified ?? "unknown")} | ${
+          cell(live.modified ?? "unknown")
+        } |`,
         ...rows.map((r) =>
           `| ${r.name} | ${cell(r.was ?? "")} | ${r.changed ? `**${cell(r.now)}**` : cell(r.now)} |`
         ),
@@ -470,7 +484,7 @@ export function report(
       [
         "| | Live |",
         "|---|---|",
-        `| Article modified | ${live.modified ?? "unknown"} |`,
+        `| Article modified | ${cell(live.modified ?? "unknown")} |`,
         ...rows.map((r) => `| ${r.name} | ${cell(r.now)} |`),
       ].join("\n"),
     );
@@ -495,7 +509,7 @@ export function report(
     const fresh = lines.filter((_, i) => !known.has(live.lines[i]));
     const gone = reviewed.lines.filter((l) => !current.has(l)).length;
     const shown = fresh.slice(0, 15).map((l) =>
-      `> ${l.length > 300 ? `${l.slice(0, 300)}\u2026` : l}`
+      `> ${literal(l.length > 300 ? `${l.slice(0, 300)}\u2026` : l)}`
     );
     parts.push(
       `**New or changed lines** (${fresh.length} new, ${gone} reviewed line${
@@ -505,7 +519,7 @@ export function report(
       }${fresh.length > shown.length ? `\n\n_and ${fresh.length - shown.length} more_` : ""}`,
     );
   } else {
-    const quoted = Object.entries(live.quotes).map(([k, q]) => `- ${k}: \u201c${q}\u201d`);
+    const quoted = Object.entries(live.quotes).map(([k, q]) => `- ${k}: \u201c${literal(q)}\u201d`);
     if (quoted.length) parts.push(`**Sentences the numbers come from:**\n${quoted.join("\n")}`);
   }
   parts.push(
