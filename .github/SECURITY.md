@@ -33,15 +33,18 @@ unless you ask me not to.
 
 These boundaries matter most:
 
-- **The daemon's privileges.** `governor.service` runs as the unprivileged `governor` user. Its only
-  sudo rule runs `/usr/local/libexec/governor-cap`, which sets `CPUQuota` on `user.slice` and
-  nothing else. Anything that lets the `governor` user or another local user do more is in scope.
+- **The daemon's privileges.** `governor.service` runs as the unprivileged `governor` user. The base
+  installation grants sudo only for `/usr/local/libexec/governor-cap`, which sets `CPUQuota` on
+  `user.slice` and nothing else. The optional broker adds the restricted grant described below.
+  Anything that lets the `governor` user or another local user exceed these boundaries is in scope.
 - **Root-only controls.** `governor limit`, `seed` and `tick` must stay root-only. The daemon
   accepts request files in `/run/governor/requests` only when root owns them, and its control socket
   admits only root and the daemon's user.
 - **Hostinger credentials.** The installer's token file is readable only by root and the `governor`
-  group. The optional `request_command` broker keeps the token away from the daemon. See
-  [Hostinger credential isolation](../docs/hostinger-credentials.md).
+  group. The optional `request_command` broker adds a no-argument sudo grant for
+  `/usr/local/libexec/governor-hostinger`. Its fixed launcher starts an isolated worker that can
+  fetch only the configured VM's details and recent CPU metrics, keeping the token away from the
+  daemon. See [Hostinger credential isolation](../docs/hostinger-credentials.md).
 - **Hooks.** Hooks run as the `governor` user with public state on stdin. The daemon doesn't log
   their output.
 - **Installer and releases.** The installer checks downloads against the release's `SHA256SUMS` and

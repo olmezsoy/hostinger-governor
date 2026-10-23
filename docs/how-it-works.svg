@@ -139,6 +139,8 @@
   }
   .arrow.loop {
     stroke: var(--muted);
+    stroke-linecap: round;
+    stroke-linejoin: round;
   }
   .head.ink {
     fill: var(--ink);
@@ -218,10 +220,6 @@
       orient="auto-start-reverse">
       <path class="head muted" d="M0 0L10 5L0 10z" />
     </marker>
-    <marker id="loop" viewBox="0 0 10 10" refX="5" refY="5" markerWidth="5" markerHeight="5"
-      orient="auto">
-      <path class="head muted" d="M0 0L10 5L0 10z" />
-    </marker>
   </defs>
 
   <rect class="bg" width="880" height="1096" rx="12" />
@@ -295,7 +293,8 @@
 
   <rect class="gov" x="24" y="420" width="832" height="182" rx="10" />
   <text class="mono b" x="44" y="447">governor.service</text>
-  <path class="arrow loop" d="M196.6 438.3A6 6 0 1 0 197 446" marker-end="url(#loop)" />
+  <path class="arrow loop"
+    d="M198 442a6 6 0 1 1-6-6c1.7 0 3.3.7 4.5 1.8L198 439.5M198 435.5v4h-4" />
   <text class="m" x="208" y="447">one pass every 30 s by default</text>
 
   <circle class="badge" cx="53" cy="476" r="9" />
