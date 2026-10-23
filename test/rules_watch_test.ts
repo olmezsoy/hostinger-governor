@@ -161,6 +161,18 @@ Deno.test("a rule change is reported with old and new numbers and the changed li
   assertEquals(r.fingerprint, b.rec.sha256.slice(0, 16));
 });
 
+Deno.test("report table cells escape backslashes before pipes", async () => {
+  const { article, rec } = await live();
+  const reviewed = { ...rec, modified: String.raw`old\|value` };
+  const current = {
+    ...rec,
+    modified: String.raw`new\|value`,
+    sha256: "f".repeat(64),
+  };
+  const r = report(reviewed, current, article.text)!;
+  assert(r.body.includes(String.raw`| Article modified | old\\\|value | new\\\|value |`), r.body);
+});
+
 Deno.test("rewording without new numbers is reported as such", async () => {
   const a = await live();
   const b = await live({ extra: "<p>A new filler paragraph with no rule in it.</p>" });

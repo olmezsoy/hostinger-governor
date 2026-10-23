@@ -410,7 +410,7 @@ const FACT_ROWS: [name: string, key: string, show: (f: Facts) => string][] = [
 ];
 
 const DIAGNOSTIC = new Set(["baseline mentions", "limit mentions", "earning formula"]);
-const cell = (s: string) => s.replace(/\|/g, "\\|");
+const cell = (s: string) => s.replace(/\\/g, "\\\\").replace(/\|/g, "\\|");
 const bullets = (xs: string[]) => xs.map((x) => `- ${x}`).join("\n");
 const few = (xs: string[]) =>
   xs.length > 3 ? `${xs.slice(0, 3).join(", ")} and more` : xs.join(", ");
@@ -457,7 +457,9 @@ export function report(
       [
         "| | Reviewed | Live |",
         "|---|---|---|",
-        `| Article modified | ${reviewed.modified ?? "unknown"} | ${live.modified ?? "unknown"} |`,
+        `| Article modified | ${cell(reviewed.modified ?? "unknown")} | ${
+          cell(live.modified ?? "unknown")
+        } |`,
         ...rows.map((r) =>
           `| ${r.name} | ${cell(r.was ?? "")} | ${r.changed ? `**${cell(r.now)}**` : cell(r.now)} |`
         ),
@@ -470,7 +472,7 @@ export function report(
       [
         "| | Live |",
         "|---|---|",
-        `| Article modified | ${live.modified ?? "unknown"} |`,
+        `| Article modified | ${cell(live.modified ?? "unknown")} |`,
         ...rows.map((r) => `| ${r.name} | ${cell(r.now)} |`),
       ].join("\n"),
     );
