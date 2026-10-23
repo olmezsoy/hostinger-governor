@@ -102,6 +102,15 @@ Deno.test("article text keeps the article and drops scripts, comments, navigatio
   assert(!/Updated/.test(text));
 });
 
+Deno.test("removing a comment cannot reintroduce a comment around hidden article text", () => {
+  const { text } = articleText(
+    page({ extra: "<p>Visible <!<!-- removed -->--<h1>hidden data</h1> --> still visible</p>" }),
+  );
+  assert(text.includes("Visible"));
+  assert(text.includes("still visible"));
+  assert(!text.includes("hidden data"));
+});
+
 Deno.test("the relative 'Updated' label and the modified timestamp do not count as changes", async () => {
   const a = await live();
   const b = await live({ updated: "Updated 6 days ago", modified: "2026-10-10T09:00:00+00:00" });

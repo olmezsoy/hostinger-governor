@@ -110,7 +110,13 @@ export function articleText(html: string): Article {
       }
     }
   };
-  let s = html.replace(/<!--[\s\S]*?-->/g, "").replace(DROP, "\n");
+  let s = html;
+  let previous: string;
+  do {
+    previous = s;
+    s = s.replace(/<!--[\s\S]*?-->/g, "");
+  } while (s !== previous);
+  s = s.replace(DROP, "\n");
   const heading = s.search(/<h1\b[^>]*>(?:(?!<\/h1>)[\s\S])*?CPU credits/i);
   if (heading < 0) throw new Unreadable("no-heading", "the page has no CPU credits heading");
   s = s.slice(heading);
