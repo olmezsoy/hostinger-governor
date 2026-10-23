@@ -1,0 +1,30 @@
+name: Accessibility barrier
+description: Something in the output, reports, docs or setup is hard or impossible for you to use.
+labels: ["accessibility"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        You don't need to tell me about any disability. The [accessibility page](https://github.com/olmezsoy/hostinger-governor/blob/main/.github/ACCESSIBILITY.md) lists known barriers and workarounds.
+  - type: textarea
+    id: barrier
+    attributes:
+      label: What happened
+      description: What you were trying to do, and what happened instead.
+    validations:
+      required: true
+  - type: input
+    id: command
+    attributes:
+      label: Command or file
+      description: For example `governor report --format html`, or the diagram in the README.
+  - type: input
+    id: version
+    attributes:
+      label: Governor version
+      description: The output of `governor version`, if it applies.
+  - type: textarea
+    id: setup
+    attributes:
+      label: Your setup
+      description: Operating system, terminal or browser, shell, and any assistive technology with its version.

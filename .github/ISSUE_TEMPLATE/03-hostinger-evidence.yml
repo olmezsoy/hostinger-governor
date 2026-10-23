@@ -1,0 +1,35 @@
+name: Hostinger rules evidence
+description: Share what Hostinger support confirmed, or what a real limit and recovery looked like.
+body:
+  - type: markdown
+    attributes:
+      value: |
+        The governor's rules come from Hostinger's help article, which contradicts itself in places. Support answers and real episodes help check them. See [Baseline verification](https://github.com/olmezsoy/hostinger-governor#baseline-verification).
+  - type: dropdown
+    id: plan
+    attributes:
+      label: Hostinger plan
+      options:
+        - KVM 1
+        - KVM 2
+        - KVM 4
+        - KVM 8
+        - Another plan
+    validations:
+      required: true
+  - type: textarea
+    id: support
+    attributes:
+      label: What Hostinger support said
+      description: Quote the answer and give its date. Remove ticket numbers and personal details.
+  - type: textarea
+    id: observations
+    attributes:
+      label: Recovery observations
+      description: Lines from `journalctl -u governor.service | grep "recovery observation"`, with the governor version and `baseline_share` you used.
+      render: text
+  - type: textarea
+    id: notes
+    attributes:
+      label: Anything else
+      description: When limits happened, what the server was doing, and hPanel readings if you have them.
