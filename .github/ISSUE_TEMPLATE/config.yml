@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Report a security vulnerability
+    url: https://github.com/olmezsoy/hostinger-governor/security/advisories/new
+    about: Report it privately. Please don't open a public issue.
+  - name: Hostinger plan, billing or account questions
+    url: https://www.hostinger.com/support/
+    about: The governor can't change your plan or bill. Hostinger support can.

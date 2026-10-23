@@ -1,0 +1,430 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="880" height="1096" viewBox="0 0 880 1096" role="img"
+  aria-labelledby="title" aria-describedby="desc">
+  <title id="title">How hostinger-governor works</title>
+  <desc
+    id="desc">Hostinger holds the CPU credit bank, and the VPS cannot read its balance. Every 30 seconds by default, governor.service reads CPU and steal from the kernel, keeps a cautious estimate of the bank, and sets one shared CPU quota on user.slice: every login, governor exec jobs, and services or Docker you enroll. Everything else is measured, not capped. An API check every 30 minutes, unless limited, never changes the estimate. Spending: every vCPU while the estimate is high, then a glide onto a 20% floor; with no governor, the same load empties the bank and Hostinger limits the VPS. After a reboot, an install or a limit, the estimate starts at 0, so the ceiling starts under the baseline. When steal follows demand during a 20-second probe at 0.2 vCPU, or reaches 60% of demand, the governor treats the VPS as limited: it holds user.slice below the host limit, down to 0.2 vCPU, until a lift test passes. If the probe does not confirm a limit, the governor stays in Spending and retries later. A saved limit resumes on start. While the daemon is not running, systemd holds user.slice, SSH included, at 0.2 vCPU by default.</desc>
+  <style>
+  svg {
+    --bg: #ffffff;
+    --zone: #f6f8fa;
+    --card: #ffffff;
+    --border: #d1d9e0;
+    --line: #818b98;
+    --ink: #1f2328;
+    --muted: #59636e;
+    --blue: #0969da;
+    --blue-soft: #f1f8ff;
+    --on-blue: #ffffff;
+    --orange: #bc4c00;
+    --orange-soft: #fff1e5;
+    --track: #eaeef2;
+    --grid: #d1d9e0;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans", Helvetica, Arial,
+      "Liberation Sans", sans-serif;
+  }
+  @media (prefers-color-scheme: dark) {
+    svg {
+      --bg: #0d1117;
+      --zone: #151b23;
+      --card: #0d1117;
+      --border: #3d444d;
+      --line: #656c76;
+      --ink: #f0f6fc;
+      --muted: #9198a1;
+      --blue: #4493f8;
+      --blue-soft: #0f1b2d;
+      --on-blue: #0d1117;
+      --orange: #db6d28;
+      --orange-soft: #24170e;
+      --track: #262c36;
+      --grid: #3d444d;
+    }
+  }
+  .bg {
+    fill: var(--bg);
+  }
+  .zone {
+    fill: var(--zone);
+  }
+  .card {
+    fill: var(--card);
+    stroke: var(--line);
+  }
+  .group {
+    fill: none;
+    stroke: var(--line);
+  }
+  .gov,
+  .slice {
+    fill: var(--blue-soft);
+    stroke: var(--blue);
+    stroke-width: 1.5;
+  }
+  .lid {
+    fill: var(--blue);
+  }
+  .outside,
+  .api {
+    fill: var(--card);
+    stroke: var(--muted);
+    stroke-dasharray: 5 4;
+  }
+  .limited {
+    fill: var(--orange-soft);
+    stroke: var(--orange);
+    stroke-width: 1.5;
+  }
+  .idle {
+    fill: var(--zone);
+    stroke: var(--muted);
+    stroke-width: 1.5;
+  }
+  .chip {
+    fill: var(--card);
+    stroke: var(--border);
+  }
+  .pill {
+    fill: var(--bg);
+    stroke: var(--line);
+  }
+  .track {
+    fill: var(--track);
+    stroke: var(--line);
+  }
+  .badge {
+    fill: var(--blue);
+  }
+  .boundary {
+    stroke: var(--muted);
+    stroke-dasharray: 6 5;
+  }
+  .rule {
+    stroke: var(--border);
+  }
+  .grid {
+    stroke: var(--grid);
+  }
+  .threshold {
+    stroke: var(--muted);
+    stroke-dasharray: 4 3;
+  }
+  .series {
+    fill: none;
+    stroke: var(--blue);
+    stroke-width: 2;
+    stroke-linejoin: round;
+    stroke-linecap: round;
+  }
+  .series.other {
+    stroke: var(--muted);
+    stroke-dasharray: 5 3;
+    stroke-linecap: butt;
+  }
+  .arrow {
+    fill: none;
+    stroke-width: 1.5;
+  }
+  .arrow.ink {
+    stroke: var(--ink);
+  }
+  .arrow.blue {
+    stroke: var(--blue);
+  }
+  .arrow.orange {
+    stroke: var(--orange);
+  }
+  .arrow.muted {
+    stroke: var(--muted);
+    stroke-dasharray: 5 4;
+  }
+  .arrow.loop {
+    stroke: var(--muted);
+    stroke-linecap: round;
+    stroke-linejoin: round;
+  }
+  .head.ink {
+    fill: var(--ink);
+  }
+  .head.blue {
+    fill: var(--blue);
+  }
+  .head.orange {
+    fill: var(--orange);
+  }
+  .head.muted {
+    fill: var(--muted);
+  }
+  text {
+    fill: var(--ink);
+    font-size: 13px;
+  }
+  .tag {
+    fill: var(--muted);
+    font-size: 12px;
+    font-weight: 600;
+    letter-spacing: 0.08em;
+  }
+  .h {
+    font-size: 15px;
+    font-weight: 600;
+  }
+  .h4 {
+    font-size: 14px;
+    font-weight: 600;
+  }
+  .b {
+    font-weight: 600;
+  }
+  .m {
+    fill: var(--muted);
+  }
+  .s {
+    fill: var(--muted);
+    font-size: 12.5px;
+  }
+  .mono {
+    font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono",
+      monospace;
+  }
+  .num {
+    fill: var(--on-blue);
+    font-size: 11.5px;
+    font-weight: 700;
+  }
+  .tick {
+    fill: var(--muted);
+    font-size: 12px;
+    font-variant-numeric: tabular-nums;
+  }
+  .blue {
+    fill: var(--blue);
+  }
+  .orange {
+    fill: var(--orange);
+  }
+  </style>
+  <defs>
+    <marker id="ink" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8"
+      orient="auto-start-reverse">
+      <path class="head ink" d="M0 0L10 5L0 10z" />
+    </marker>
+    <marker id="blue" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8"
+      orient="auto-start-reverse">
+      <path class="head blue" d="M0 0L10 5L0 10z" />
+    </marker>
+    <marker id="orange" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8"
+      orient="auto-start-reverse">
+      <path class="head orange" d="M0 0L10 5L0 10z" />
+    </marker>
+    <marker id="muted" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8"
+      orient="auto-start-reverse">
+      <path class="head muted" d="M0 0L10 5L0 10z" />
+    </marker>
+  </defs>
+
+  <rect class="bg" width="880" height="1096" rx="12" />
+
+  <!-- Hostinger's side: the real bank and the API. -->
+  <path class="zone" d="M12 0H868A12 12 0 0 1 880 12V208H0V12A12 12 0 0 1 12 0Z" />
+  <text class="tag" x="24" y="30">HOSTINGER</text>
+
+  <rect class="card" x="24" y="44" width="560" height="140" rx="10" />
+  <text class="h" x="44" y="68">CPU credit bank</text>
+  <rect class="track" x="44" y="78" width="520" height="22" rx="11" />
+  <text class="s b" x="304" y="93" text-anchor="middle">balance unknown</text>
+  <line class="threshold" x1="148" y1="74" x2="148" y2="102" />
+  <text class="tick" x="44" y="116">0</text>
+  <text class="tick" x="148" y="116" text-anchor="middle">20%</text>
+  <text class="tick" x="564" y="116" text-anchor="end">100%</text>
+  <text x="44" y="132">A limit starts at 0 and lifts at 20%. 100% is 3 h of full CPU.</text>
+  <text x="44" y="152">Earns the baseline, 60% of the vCPUs, every second.</text>
+  <text class="orange" x="44" y="172">While work presses on the limit, nothing is earned.</text>
+
+  <rect class="card" x="608" y="44" width="248" height="140" rx="10" />
+  <text class="h" x="628" y="68">VPS API</text>
+  <text x="628" y="92">vCPU count, read at start</text>
+  <text x="628" y="112">CPU use in 30-minute buckets</text>
+  <text class="b" x="628" y="152">No balance</text>
+
+  <!-- Nothing about the balance crosses this line. -->
+  <line class="boundary" x1="24" y1="208" x2="856" y2="208" />
+  <rect class="pill" x="200" y="196" width="240" height="24" rx="12" />
+  <text class="m" x="320" y="212.5" text-anchor="middle">The VPS cannot read the balance</text>
+
+  <text class="tag" x="24" y="242">YOUR VPS</text>
+
+  <path class="arrow orange" d="M112 184V254" marker-end="url(#orange)" />
+  <text class="orange" x="120" y="242">steal: CPU held back by a limit or neighbours</text>
+  <path class="arrow ink" d="M574 256V186" marker-end="url(#ink)" />
+  <text x="582" y="242">billed: all CPU used</text>
+
+  <!-- What the kernel reports, and what runs. -->
+  <rect class="card" x="24" y="256" width="176" height="124" rx="10" />
+  <text class="h4" x="40" y="280">Kernel counters</text>
+  <text x="40" y="302">busy and steal time</text>
+  <text x="40" y="320">user.slice CPU usage</text>
+  <text x="40" y="338">uptime and boot id</text>
+
+  <rect class="group" x="236" y="256" width="540" height="124" rx="12" />
+  <path class="arrow ink" d="M236 318H202" marker-end="url(#ink)" />
+
+  <rect class="slice" x="248" y="268" width="320" height="100" rx="8" />
+  <path class="lid" d="M256 268H560A8 8 0 0 1 568 276V274H248V276A8 8 0 0 1 256 268Z" />
+  <text x="264" y="296">
+    <tspan class="mono b">user.slice</tspan>
+    <tspan class="m" dx="10">one shared ceiling</tspan>
+  </text>
+  <rect class="chip" x="264" y="308" width="92" height="20" rx="10" />
+  <text class="s" x="310" y="322" text-anchor="middle">every login</text>
+  <rect class="chip" x="362" y="308" width="132" height="20" rx="10" />
+  <text class="s" x="428" y="322" text-anchor="middle">governor exec jobs</text>
+  <rect class="chip" x="264" y="334" width="206" height="20" rx="10" />
+  <text class="s" x="367" y="348" text-anchor="middle">services and Docker you enroll</text>
+
+  <rect class="outside" x="580" y="268" width="184" height="100" rx="8" />
+  <text class="h4" x="596" y="292">Outside the slice</text>
+  <text class="s" x="596" y="312">everything else, Docker</text>
+  <text class="s" x="596" y="330">by default: measured,</text>
+  <text class="b" x="596" y="350">not capped</text>
+
+  <!-- The daemon. -->
+  <path class="arrow ink" d="M112 380V418" marker-end="url(#ink)" />
+  <path class="arrow blue" d="M520 420V370" marker-end="url(#blue)" />
+  <text class="blue" x="528" y="404">sudo governor-cap sets CPUQuota</text>
+
+  <rect class="gov" x="24" y="420" width="832" height="182" rx="10" />
+  <text class="mono b" x="44" y="447">governor.service</text>
+  <path class="arrow loop"
+    d="M198 442a6 6 0 1 1-6-6c1.7 0 3.3.7 4.5 1.8L198 439.5M198 435.5v4h-4" />
+  <text class="m" x="208" y="447">one pass every 30 s by default</text>
+
+  <circle class="badge" cx="53" cy="476" r="9" />
+  <text class="num" x="53" y="480" text-anchor="middle">1</text>
+  <text class="h4" x="68" y="481">Measure</text>
+  <text x="44" y="504">busy and steal for the</text>
+  <text x="44" y="522">whole VPS, plus what</text>
+  <text x="44" y="540">user.slice used</text>
+
+  <circle class="badge" cx="245" cy="476" r="9" />
+  <text class="num" x="245" y="480" text-anchor="middle">2</text>
+  <text class="h4" x="260" y="481">Estimate</text>
+  <text x="236" y="504">a cautious model of the</text>
+  <text x="236" y="522">bank, billed 5% + 0.08</text>
+  <text x="236" y="540">vCPU above use; 0 after</text>
+  <text x="236" y="558">reboot, install or limit</text>
+
+  <circle class="badge" cx="445" cy="476" r="9" />
+  <text class="num" x="445" y="480" text-anchor="middle">3</text>
+  <text class="h4" x="460" y="481">Set the ceiling</text>
+  <text x="436" y="504">baseline + (estimate − 20%)</text>
+  <text x="436" y="522">÷ 30 min, or ÷ 60 min below</text>
+  <text x="436" y="540">20%, so under baseline;</text>
+  <text x="436" y="558">less margin and outside CPU</text>
+
+  <line class="rule" x1="44" y1="572" x2="628" y2="572" />
+  <text x="44"
+    y="592">Then it writes /run/governor/state.json: credits, ceiling, limit and accepting.</text>
+
+  <rect class="api" x="644" y="458" width="196" height="104" rx="8" />
+  <text class="h4" x="660" y="480">API check</text>
+  <text class="s" x="660" y="500">every 30 min unless</text>
+  <text class="s" x="660" y="516">limited. It logs</text>
+  <text class="s" x="660" y="532">differences and never</text>
+  <text class="s" x="660" y="548">changes the estimate.</text>
+  <path class="arrow muted" d="M800 184V456" marker-end="url(#muted)" />
+
+  <!-- Modes. -->
+  <line class="rule" x1="24" y1="628" x2="856" y2="628" />
+  <text class="tag" x="24" y="654">THREE MODES</text>
+
+  <rect class="slice" x="24" y="668" width="320" height="300" rx="10" />
+  <text class="h" x="44" y="694">Spending</text>
+  <text class="m" x="44" y="716">Every vCPU while the estimate is high,</text>
+  <text class="m" x="44" y="734">then it glides onto the 20% floor</text>
+
+  <!-- Chart points come from tools/diagram-curves.ts. -->
+  <text class="b" x="44" y="760">Credits</text>
+  <line class="series" x1="148" y1="756" x2="162" y2="756" />
+  <text class="tick" x="166" y="760">governor</text>
+  <line class="series other" x1="226" y1="756" x2="240" y2="756" />
+  <text class="tick" x="244" y="760">no governor</text>
+  <g transform="translate(0 770)">
+    <line class="grid" x1="84" y1="0" x2="300" y2="0" />
+    <line class="grid" x1="84" y1="44" x2="300" y2="44" />
+    <line class="threshold" x1="84" y1="35.2" x2="300" y2="35.2" />
+    <text class="tick" x="78" y="4" text-anchor="end">100%</text>
+    <text class="tick" x="78" y="48" text-anchor="end">0</text>
+    <text class="tick" x="90" y="31.2">20% floor</text>
+    <polyline class="series other" points="84,0 224.9,44 300,44" />
+    <polyline class="series"
+      points="84,0 122.3,11.9 124.5,12.7 171.8,27.4 176.3,28.6 180.8,29.6 187.5,30.8 189.8,31.1 192,31.5 194.3,31.7 198.8,32.3 207.8,33.1 216.8,33.6 219,33.8 225.8,34.1 232.5,34.3 234.8,34.3 239.3,34.5 243.8,34.5 246,34.6 248.3,34.6 250.5,34.7 255,34.7 266.3,34.8 268.5,34.9 279.8,34.9 282,35 300,35" />
+  </g>
+
+  <text class="b" x="44" y="840">vCPUs in use</text>
+  <g transform="translate(0 850)">
+    <line class="grid" x1="84" y1="0" x2="300" y2="0" />
+    <line class="grid" x1="84" y1="48" x2="300" y2="48" />
+    <line class="threshold" x1="84" y1="33.6" x2="224.9" y2="33.6" />
+    <text class="tick" x="78" y="4" text-anchor="end">8</text>
+    <text class="tick" x="78" y="52" text-anchor="end">0</text>
+    <text class="tick" x="90" y="29.6">host limit</text>
+    <polyline class="series other" points="84,0 224.9,0 224.9,33.6 300,33.6" />
+    <polyline class="series"
+      points="84,0 169.5,0 174,3.6 185.3,9.6 187.5,10.2 189.8,11.4 207.8,16.2 210,16.2 214.5,17.4 216.8,17.4 219,18 223.5,18 225.8,18.6 230.3,18.6 232.5,19.2 239.3,19.2 241.5,19.8 250.5,19.8 252.8,20.4 277.5,20.4 279.8,21 300,21" />
+    <text class="tick" x="304" y="25">4.5</text>
+    <text class="tick" x="304" y="37.6">2.4</text>
+  </g>
+  <text class="tick" x="84" y="916" text-anchor="middle">0 h</text>
+  <text class="tick" x="138" y="916" text-anchor="middle">1 h</text>
+  <text class="tick" x="192" y="916" text-anchor="middle">2 h</text>
+  <text class="tick" x="246" y="916" text-anchor="middle">3 h</text>
+  <text class="tick" x="300" y="916" text-anchor="middle">4 h</text>
+  <text class="s" x="44" y="938">KVM 8, all vCPUs wanted, billed 5% +</text>
+  <text class="s" x="44" y="954">0.08 vCPU above use: full bank lasts 2.6 h</text>
+
+  <text class="b" x="428" y="712" text-anchor="middle">Steal follows demand</text>
+  <path class="arrow orange" d="M352 726H504" marker-end="url(#orange)" />
+  <text class="s" x="428" y="746" text-anchor="middle">20 s probe at 0.2 vCPU,</text>
+  <text class="s" x="428" y="762" text-anchor="middle">skipped if steal reaches</text>
+  <text class="s" x="428" y="778" text-anchor="middle">60% of demand;</text>
+  <text class="s" x="428" y="794" text-anchor="middle">runs limit-start hooks</text>
+  <path class="arrow muted" d="M344 802H484Q494 802 494 812V872Q494 882 484 882H346"
+    marker-end="url(#muted)" />
+  <text class="s b" x="420" y="822" text-anchor="middle">No limit confirmed</text>
+  <text class="s" x="420" y="838" text-anchor="middle">neighbours suspected</text>
+  <text class="s" x="420" y="854" text-anchor="middle">retry in 10 min,</text>
+  <text class="s" x="420" y="870" text-anchor="middle">doubling to 1 h</text>
+  <text class="b" x="428" y="904" text-anchor="middle">Lift test passes</text>
+  <path class="arrow blue" d="M504 918H352" marker-end="url(#blue)" />
+  <text class="s" x="428" y="938" text-anchor="middle">runs limit-end hooks</text>
+  <text class="s" x="428" y="954" text-anchor="middle">estimate not restored</text>
+
+  <rect class="limited" x="512" y="668" width="344" height="300" rx="10" />
+  <text class="h" x="532" y="694">Recovering</text>
+  <text class="orange" x="532" y="714">limit inferred from steal, or set by root</text>
+  <text x="532" y="742">The estimate is set to 0, and accepting</text>
+  <text x="532" y="760">turns false: governor exec jobs such as</text>
+  <text x="532" y="778">cron wait, or skip with exit 3.</text>
+  <text x="532" y="804">user.slice is held below the host limit and</text>
+  <text x="532" y="822">cut each minute, down to 0.2 vCPU, while</text>
+  <text x="532" y="840">work still presses, so earning can resume.</text>
+  <text x="532" y="858">CPU outside the slice can still block it.</text>
+  <text x="532" y="884">Lift test: a 35 s burst on several cores.</text>
+  <text x="532" y="902">The VPS must keep ¾ of them busy with</text>
+  <text x="532" y="920">under 15% steal. First test after 24 min,</text>
+  <text x="532" y="938">then after 2, 4, 8, then every 15 min.</text>
+
+  <path class="arrow ink" d="M184 1000V970" marker-end="url(#ink)" />
+  <text class="s" x="192" y="990">start: estimate kept, or 0 after a reboot or install</text>
+  <path class="arrow ink" d="M640 1000V970" marker-end="url(#ink)" />
+  <text class="s" x="648" y="990">start: a saved limit resumes</text>
+  <rect class="idle" x="24" y="1000" width="832" height="76" rx="10" />
+  <text x="44" y="1024">
+    <tspan class="h4">Not running</tspan>
+    <tspan class="m" dx="12">before start, after a stop or crash, and early in boot</tspan>
+  </text>
+  <text x="44"
+    y="1044">systemd holds user.slice, SSH included, at 0.2 vCPU unless fallback_cpu_percent says otherwise.</text>
+  <text x="44"
+    y="1064">Stopping the daemon keeps this cap. To lift it, see Emergency access in the README.</text>
+</svg>

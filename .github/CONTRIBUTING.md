@@ -1,0 +1,99 @@
+# Contributing
+
+I built hostinger-governor for my own servers and share it as is. Issues and pull requests are
+welcome, but I can't promise a reply or a merge. Small changes with tests and a clear reason have
+the best chance.
+
+By taking part, you agree to follow the [code of conduct](CODE_OF_CONDUCT.md).
+
+## Before you open an issue
+
+- Search [existing issues](https://github.com/olmezsoy/hostinger-governor/issues?q=is%3Aissue),
+  including closed ones.
+- Report security problems privately. See the [security policy](SECURITY.md).
+- Ask [Hostinger support](https://www.hostinger.com/support/) about your plan, bill or limits. The
+  governor can't change them.
+- Never paste a Hostinger API token, a credential file or an unedited `/etc/governor/config.json`.
+  `governor status --json` and `governor report` include usernames, so remove any you don't want
+  public.
+
+The issue forms ask for what I need to reproduce a problem: `governor version`, your plan,
+distribution and systemd version, and the relevant lines from `journalctl -u governor.service`.
+
+## Set up a checkout
+
+You need Deno 2.9.7, the version CI and release builds use, and Python 3 for the installer tests.
+
+```sh
+deno task check
+python3 -m unittest discover -s test -p '*_test.py'
+```
+
+`deno task check` runs formatting, lint, type checks and the Deno tests. The test task needs
+unrestricted `--allow-run` because Deno requires it to signal hook process groups. Tests keep
+writable data in ignored `test/.tmp` directories.
+
+Run `deno fmt` before you commit. It formats Markdown, YAML and the SVG diagram too, at a line width
+of 100.
+
+## Test on Linux without risk
+
+`deno task smoke:linux <binary>` installs the governor system-wide. It writes sudoers rules and
+systemd units and changes CPU quotas, so run it only on a machine you can throw away. CI runs it on
+fresh GitHub-hosted runners.
+
+Don't test against a production VPS, and never exhaust a production VPS's credits to see what
+happens. Use the simulator instead.
+
+## Change the control law
+
+The credit estimate, the spend law and the limit heuristics live in `src/credits.ts` and
+`src/governor.ts`. The simulator drives the real `Governor` class through simulated days against a
+model of Hostinger's rules:
+
+```sh
+deno task sim
+deno task sim "hidden overhead" 5 --episodes
+```
+
+Include before and after numbers for the scenarios your change affects, such as `throttles`,
+`paused_h` and `used_pct`. The top of `test/sim.ts` lists the model's assumptions. A good simulation
+result is not proof of live Hostinger behavior.
+
+## Hostinger rule changes
+
+The `Rules watch` workflow opens an issue labelled `hostinger-rules` when Hostinger's CPU credit
+article changes. To accept a new version:
+
+1. Update `src/plans.ts` if the rules changed.
+2. Run `deno task rules:accept` and review `git diff rules/`.
+3. Commit both.
+
+The daemon never reads the article, by design. Rule changes reach servers as reviewed releases. See
+[Rule changes](../README.md#rule-changes).
+
+## Pull requests
+
+- Keep each pull request to one change and explain the problem it solves.
+- Add or update tests, and say how you tested. Mention anything you ran on a real or disposable
+  Linux machine.
+- Update the README and `docs/` when behavior changes. The diagram in `docs/how-it-works.svg`
+  repeats numbers from the code, such as the 30-second pass, the 20% floor and the probe and lift
+  test timings. Update it when they change. If you change `src/credits.ts` or `src/plans.ts`, run
+  `deno run --allow-read=src tools/diagram-curves.ts` and copy the new chart points into the SVG.
+- Leave `CHANGELOG.md` and the version number to me. I write both when I cut a release.
+
+## Releases
+
+These steps are for the maintainer.
+
+1. Add a section to `CHANGELOG.md` and set `VERSION` in `src/main.ts`.
+2. Merge to `main`.
+3. Tag the merge commit `v<version>` and push the tag.
+
+The `Release` workflow checks that the tag matches `governor version`, builds the x86_64 and ARM64
+binaries, runs the Linux smoke test and publishes the release with `SHA256SUMS`.
+
+## License
+
+Contributions are released under the [MIT License](../LICENSE), like the rest of the project.

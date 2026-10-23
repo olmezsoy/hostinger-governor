@@ -28,6 +28,8 @@ full use. At zero the whole VPS drops to a fraction of its CPU (30% on KVM 2, 4 
 balance rebuilds, and while work keeps pressing on that limit, nothing is earned. A busy server can
 stay limited for as long as the load lasts.
 
+![Diagram of how hostinger-governor works. Hostinger holds the CPU credit bank, and the VPS cannot read its balance. Every 30 seconds by default, governor.service reads CPU and steal from the kernel, keeps a cautious estimate of the bank, and sets one shared CPU quota on user.slice: every login, governor exec jobs, and services or Docker you enroll. Everything else is measured, not capped. An API check every 30 minutes, unless limited, never changes the estimate. Spending: every vCPU while the estimate is high, then a glide onto a 20% floor; with no governor, the same load empties the bank and Hostinger limits the VPS. After a reboot, an install or a limit, the estimate starts at 0, so the ceiling starts under the baseline. When steal follows demand during a 20-second probe at 0.2 vCPU, or reaches 60% of demand, the governor treats the VPS as limited: it holds user.slice below the host limit, down to 0.2 vCPU, until a lift test passes. If the probe does not confirm a limit, the governor stays in Spending and retries later. A saved limit resumes on start. While the daemon is not running, systemd holds user.slice, SSH included, at 0.2 vCPU by default.](docs/how-it-works.svg)
+
 The governor measures the whole machine and caps workloads placed under `user.slice`:
 
 - **Estimates the balance.** It reads `/proc/stat` and kernel uptime, initially allowing for 5% more
@@ -38,13 +40,13 @@ The governor measures the whole machine and caps workloads placed under `user.sl
   excludes the newest bucket, and compares complete intervals with guest measurements. Failures
   retry with exponential backoff. History is diagnostic only and cannot increase the estimate. The
   API does not establish whether buckets match credit billing or their timestamp semantics.
-- **Spends it.** One CPU ceiling covers every login on the machine (`user.slice`). The ceiling is
-  the baseline plus the balance's surplus over a 20% floor, spread across 30 minutes, minus what
-  system services use. Work gets every core while the balance is high, and the balance glides onto
-  the floor instead of emptying. A week's simulation in the tests never empties it and uses about
-  97% of the credits earned under its stated billing and background-load assumptions. Other tests
-  cover reboots, clock jumps, missing readings, recovery, permissions, and API outages; the
-  simulation is not a guarantee of live Hostinger behavior.
+- **Spends it.** One shared CPU ceiling covers every login on the machine (`user.slice`). The
+  ceiling is the baseline plus the balance's surplus over a 20% floor, spread across 30 minutes,
+  minus what system services use. Work gets every core while the balance is high, and the balance
+  glides onto the floor instead of emptying. A week's simulation in the tests never empties it and
+  uses about 97% of the credits earned under its stated billing and background-load assumptions.
+  Other tests cover reboots, clock jumps, missing readings, recovery, permissions, and API outages;
+  the simulation is not a guarantee of live Hostinger behavior.
 - **Tells a limit from noisy neighbours.** Steal can come from either. When steal appears, the
   governor compares steal with demand, cuts the quota for 20 seconds, then restores it. A limit's
   steal should follow demand. This is a heuristic; the guest cannot read the host's count of
