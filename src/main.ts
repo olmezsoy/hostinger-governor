@@ -95,10 +95,20 @@ try {
       const h = (await loadConfig()).hostinger;
       if (!h?.vm_id) throw new Error("hostinger.vm_id is not configured");
       const details = await vm(h, h.vm_id);
+      if (h.request_command && details.ipv4 === undefined) {
+        console.error(
+          "Hostinger broker omitted IPv4 addresses; upgrade the installed broker before using this check to verify the host's identity",
+        );
+      }
       const now = Date.now();
       const readings = await cpuReadings(h, h.vm_id, now - CHECK_WINDOW_MS, now);
       console.log(
-        JSON.stringify({ vm_id: h.vm_id, cpus: details.cpus, cpu_samples: readings.length }),
+        JSON.stringify({
+          vm_id: h.vm_id,
+          cpus: details.cpus,
+          ipv4: details.ipv4 ?? [],
+          cpu_samples: readings.length,
+        }),
       );
       break;
     }

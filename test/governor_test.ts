@@ -1,8 +1,65 @@
 import { assert, assertEquals, assertRejects, assertThrows } from "@std/assert";
-import { compareReadings, Governor, validateConfig } from "../src/governor.ts";
+import { compareReadings, detectPlan, Governor, validateConfig } from "../src/governor.ts";
 import { plan } from "../src/plans.ts";
-import { creditStep, liftConfirmed } from "../src/credits.ts";
+import { creditStep, liftConfirmed, type Reading } from "../src/credits.ts";
 import { fixture, p, start } from "./governor-fixture.ts";
+import { cpuReadings } from "../src/hostinger.ts";
+import { testDirectory } from "./temp.ts";
+import { flush, until, within } from "./async.ts";
+import contract from "./fixtures/hostinger-protocol.json" with { type: "json" };
+
+Deno.test("startup applies the first ceiling without contacting a hung VM broker", async () => {
+  const directory = await testDirectory("startup-broker-");
+  const release = `${Deno.cwd()}/${directory}/release`;
+  const started = `${Deno.cwd()}/${directory}/started`;
+  const cfg = {
+    hostinger: {
+      vm_id: 123,
+      request_command: [
+        "/bin/bash",
+        "-c",
+        `IFS= read -r request; touch '${started}'; ` +
+        `while [[ ! -f '${release}' ]]; do sleep 0.01; done; ` +
+        `printf '%s' '{"version":1,"vm_id":123,"data":{"cpus":4,"ipv4":[]}}'`,
+      ],
+    },
+  };
+  const originalRead = Deno.readTextFile;
+  Deno.readTextFile = (...args) =>
+    String(args[0]) === "/proc/stat"
+      ? Promise.resolve(Array.from({ length: 8 }, (_, i) => `cpu${i} 0 0 0`).join("\n"))
+      : originalRead(...args);
+  const f = fixture();
+  let caps = 0;
+  const startup = (async () => {
+    const p = await detectPlan(cfg);
+    const g = new Governor(cfg, p, undefined, {
+      ...f.io,
+      cap: (...args) => {
+        caps++;
+        return f.io.cap(...args);
+      },
+    });
+    await g.tick();
+    return g.publicState(start);
+  })();
+  try {
+    const state = await within(startup);
+    assertEquals(state.plan.vcpus, 8);
+    assertEquals(caps, 1);
+    assertEquals(state.ceiling, f.cap);
+    await assertRejects(() => Deno.stat(started), Deno.errors.NotFound);
+    assertEquals(
+      await detectPlan({ ...cfg, vcpus: 2, baseline_share: 0.3 }),
+      plan(2, undefined, 0.3),
+    );
+  } finally {
+    await Deno.writeTextFile(release, "");
+    await startup;
+    Deno.readTextFile = originalRead;
+    await Deno.remove(directory, { recursive: true });
+  }
+});
 
 Deno.test("rebuilding reserve is visible without claiming a Hostinger limit", async () => {
   const f = fixture();
@@ -146,19 +203,15 @@ Deno.test("a pending limit-start hook cannot delay the ceiling update or tick", 
     await gate;
   };
   const tick = f.advance(30, 0.25, 0.5);
-  let timer!: ReturnType<typeof setTimeout>;
-  const result = await Promise.race([
-    tick.then(() => "completed"),
-    new Promise<string>((resolve) => timer = setTimeout(() => resolve("blocked"), 30)),
-  ]);
-  clearTimeout(timer);
-  const ceilingBeforeRelease = f.cap;
-  release();
-  await tick;
-  assert(started);
-  assertEquals(result, "completed");
-  assertEquals(ceilingBeforeRelease, f.g.s.limit!.ceiling);
-  assertEquals(hookCeiling, hookLimitCeiling);
+  try {
+    await within(tick, 30);
+    assert(started);
+    assertEquals(f.cap, f.g.s.limit!.ceiling);
+    assertEquals(hookCeiling, hookLimitCeiling);
+  } finally {
+    release();
+    await tick;
+  }
 });
 
 Deno.test("invalid fallback settings are rejected during configuration validation", () => {
@@ -199,17 +252,14 @@ Deno.test("a pending limit-end hook cannot delay resuming the ceiling", async ()
     await gate;
   };
   const tick = f.advance();
-  let timer!: ReturnType<typeof setTimeout>;
-  const result = await Promise.race([
-    tick.then(() => "completed"),
-    new Promise<string>((resolve) => timer = setTimeout(() => resolve("blocked"), 30)),
-  ]);
-  clearTimeout(timer);
-  release();
-  await tick;
-  assertEquals(result, "completed");
-  assertEquals(stateCeiling, f.cap);
-  assertEquals(f.g.s.limit, undefined);
+  try {
+    await within(tick, 30);
+    assertEquals(stateCeiling, f.cap);
+    assertEquals(f.g.s.limit, undefined);
+  } finally {
+    release();
+    await tick;
+  }
 });
 
 Deno.test("compatible upgrades preserve the balance and rebuilding progress", async () => {
@@ -315,27 +365,175 @@ Deno.test("changing baseline invalidates a persisted estimate", () => {
   assertEquals(new Governor({ baseline_share: 0.3 }, smaller, f.g.s, f.io).s.balance, 0);
 });
 
-Deno.test("API history cannot increase a bank or claim an exact anchor", async () => {
-  const f = fixture({ hostinger: { vm_id: 123 } });
-  f.g.s.balance = 5000;
-  await f.g.anchorNow(start);
-  assertEquals(f.g.s.balance, 5000);
-  assertEquals(f.g.publicState(start).credits.anchor?.exact, false);
-  assertEquals(f.g.publicState(start).credits.anchor?.applied, false);
+Deno.test("a hung diagnostics broker cannot delay this or the next ceiling update", async () => {
+  const directory = await testDirectory("diagnostics-hang-");
+  const release = `${Deno.cwd()}/${directory}/release`;
+  const f = fixture({
+    initial_balance: p.capacity,
+    hostinger: {
+      vm_id: 123,
+      request_command: [
+        "/bin/bash",
+        "-c",
+        `IFS= read -r request; while [[ ! -f '${release}' ]]; do sleep 0.01; done; ` +
+        `printf '%s' '{"version":1,"vm_id":123,"data":{"cpu_usage":{"unit":"%","usage":{}}}}'`,
+      ],
+    },
+  });
+  let request: Promise<unknown> | undefined;
+  let requests = 0;
+  f.g.io.readings = (...args) => {
+    requests++;
+    return request = cpuReadings(...args);
+  };
+  let tick: Promise<void> | undefined;
+  try {
+    await f.g.tick();
+    const initialCeiling = f.cap;
+    f.g.s.balance = 0;
+    tick = f.advance(30, 0.5);
+    await within(tick);
+    assert(f.cap < initialCeiling);
+    const depletedCeiling = f.cap;
+    assertEquals(requests, 1);
+    // Several scheduled checks become due while the same broker request remains hung.
+    for (let i = 0; i < 3; i++) {
+      await f.request("seed");
+      await within(f.advance(1800));
+      assert(f.cap > depletedCeiling);
+      assertEquals(f.g.publicState(start).accepting, true);
+      assertEquals(requests, 1);
+    }
+  } finally {
+    await Deno.writeTextFile(release, "");
+    await tick;
+    await request;
+    await f.g.closeDiagnostics();
+    await Deno.remove(directory, { recursive: true });
+  }
 });
 
-Deno.test("failed anchors use exponential backoff", async () => {
-  const f = fixture({ hostinger: { vm_id: 123 } });
-  f.apiFails();
+Deno.test("shutdown waits for the broker to finish before a subsequent request", async () => {
+  const directory = await testDirectory("shutdown-broker-");
+  const release = `${Deno.cwd()}/${directory}/release`;
+  const started = `${Deno.cwd()}/${directory}/started`;
+  const finished = `${Deno.cwd()}/${directory}/finished`;
+  const f = fixture({
+    hostinger: {
+      vm_id: 123,
+      request_command: [
+        "/bin/bash",
+        "-c",
+        `IFS= read -r request; touch '${started}'; ` +
+        `while [[ ! -f '${release}' ]]; do sleep 0.01; done; ` +
+        `touch '${finished}'; ` +
+        `printf '%s' '{"version":1,"vm_id":123,"data":{"cpu_usage":{"unit":"%","usage":{}}}}'`,
+      ],
+    },
+  });
+  let requests = 0;
+  f.g.io.readings = (...args) => {
+    requests++;
+    return cpuReadings(...args);
+  };
   await f.g.tick();
   await f.advance();
-  assertEquals(f.attempts, 1);
+  assertEquals(requests, 1);
+  let shutdown: Promise<void> | undefined;
+  let closed = false;
+  try {
+    await until(async () => (await Deno.stat(started).catch(() => null))?.isFile ?? false);
+    shutdown = f.g.closeDiagnostics().then(() => {
+      closed = true;
+    });
+    await flush();
+    assertEquals(closed, false);
+    await Deno.writeTextFile(release, "");
+    await within(shutdown);
+    assert((await Deno.stat(finished)).isFile);
+    await f.advance(1800);
+    assertEquals(requests, 1);
+    assertEquals(f.g.s.anchor, undefined);
+    assertEquals(await cpuReadings(f.g.cfg.hostinger!, 123, 0, 5_000_000), []);
+  } finally {
+    await Deno.writeTextFile(release, "");
+    await shutdown;
+    await f.g.closeDiagnostics();
+    await Deno.remove(directory, { recursive: true });
+  }
+});
+
+for (const reset of ["reboot", "resetCounters"] as const) {
+  Deno.test(`diagnostics from before ${reset} cannot publish or change retry timing`, async () => {
+    const f = fixture({ hostinger: { vm_id: 123 } });
+    let release!: (readings: Reading[]) => void;
+    const pending = new Promise<Reading[]>((resolve) => release = resolve);
+    // Leave the request outstanding to verify its result cannot revive pre-reset state.
+    f.g.io.readings = () => pending;
+    await f.g.tick();
+    await f.advance();
+    f[reset]();
+    await f.g.tick();
+    release([{ at: start - 1_800_000, v: 0 }, { at: start, v: 0 }]);
+    await flush();
+    assertEquals(f.g.s.anchor, undefined);
+    assertEquals(f.g.s.readings, []);
+    f.g.io.readings = f.io.readings;
+    await f.advance();
+    assertEquals(f.attempts, 1);
+    await f.g.closeDiagnostics();
+  });
+}
+
+for (const limited of [false, true]) {
+  Deno.test(`late diagnostics ${limited ? "while limited " : ""}leave local control unchanged`, async () => {
+    const f = fixture({ hostinger: { vm_id: 123 } });
+    let release!: (readings: Reading[]) => void;
+    f.g.io.readings = () => new Promise((resolve) => release = resolve);
+    await f.g.tick();
+    await f.advance(30, 0.5);
+    if (limited) {
+      await f.request("limit-on");
+      await f.g.tick();
+    }
+    const before = structuredClone(f.g.s);
+    const publicBefore = f.g.publicState(start);
+    const cap = f.cap;
+    release([{ at: start - 1_800_000, v: 0 }, { at: start, v: 0 }]);
+    await flush();
+    const after = f.g.publicState(start);
+    assertEquals(f.g.s.balance, before.balance);
+    assertEquals(f.g.s.used, before.used);
+    assertEquals(f.g.s.margin, before.margin);
+    assertEquals(f.g.s.limit, before.limit);
+    assertEquals(f.cap, cap);
+    assertEquals(after.accepting, publicBefore.accepting);
+    assertEquals(after.credits.anchor?.applied, false);
+    assertEquals(after.credits.anchor?.exact, false);
+    await f.g.closeDiagnostics();
+  });
+}
+
+Deno.test("restarting on the same boot retires old timers and checks diagnostics promptly", async () => {
+  const f = fixture();
+  await f.g.tick();
   await f.advance();
+  const saved = {
+    ...f.g.s,
+    balance: 5000,
+    anchorNext: 1_930_000,
+    anchorBackoff: 1_800_000,
+  };
+  const g = new Governor({ hostinger: { vm_id: 123 } }, p, saved, f.io);
+  assertEquals(g.s.balance, 5000);
+  await g.tick();
+  f.elapse();
+  await g.tick();
+  await flush();
   assertEquals(f.attempts, 1);
-  await f.advance();
-  assertEquals(f.attempts, 2);
-  await f.advance(60);
-  assertEquals(f.attempts, 2);
+  assertEquals("anchorNext" in g.s, false);
+  assertEquals("anchorBackoff" in g.s, false);
+  await g.closeDiagnostics();
 });
 
 Deno.test("3% whole-machine steal tightens recovery every minute instead of stalling", async () => {
@@ -412,7 +610,6 @@ Deno.test("the actual burn-test method tolerates normal steal and rejects failed
 
 Deno.test("setup's limit-test budget covers the probe and the lift test", async () => {
   // tools/setup-hostinger-broker.py sizes its service waits from this shared value.
-  const contract = JSON.parse(await Deno.readTextFile("test/fixtures/hostinger-protocol.json"));
   const f = fixture();
   let probeMs = 0;
   const probing = new Governor({}, p, undefined, {

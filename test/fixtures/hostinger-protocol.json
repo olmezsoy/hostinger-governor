@@ -15,5 +15,20 @@
   "check_window_ms": 43200000,
   "governor_limit_test_ms": 40000,
   "capability": "request_command v1 supported",
-  "temporary_errors": ["busy", "rate_limited"]
+  "temporary_errors": ["busy", "rate_limited"],
+  "invalid_ipv4_addresses": [
+    "dummy.secret.token",
+    "example.com",
+    "::ffff:192.0.2.1",
+    "2001:db8::1",
+    "192.0.2.256",
+    "192.0.2",
+    "192.000.2.1",
+    "192.0.2.1/24",
+    "192.0.2.1\n",
+    3221225985,
+    true,
+    null
+  ],
+  "invalid_ipv4_fields": [{}, "192.0.2.1", [null], ["192.0.2.1"], [{}]]
 }

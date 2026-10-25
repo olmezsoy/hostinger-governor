@@ -1,7 +1,11 @@
-// Hostinger's public VPS API: the plan's vCPU count and the CPU readings its own accounting uses.
+// Hostinger VM identity checks and CPU history. Startup plan sizing uses local measurements.
 import type { Reading } from "./credits.ts";
 
 const API = "https://developers.hostinger.com/api/vps/v1/virtual-machines";
+// A token_command and the HTTP request that follows share this budget.
+export const API_TIMEOUT_MS = 15_000;
+// Matches the reference broker's credential limit; a Hostinger token is far shorter.
+export const MAX_TOKEN_BYTES = 8192;
 
 export type TokenSource = { token_file?: string; token_command?: string[] };
 export type HostingerSource = TokenSource & { request_command?: string[] };
@@ -137,22 +141,70 @@ function validId(id: number) {
 // manager, a secret store).
 export async function token(src: TokenSource): Promise<string> {
   if (src.token_command?.length) {
-    const out = await new Deno.Command(src.token_command[0], {
-      args: src.token_command.slice(1),
-      stdout: "piped",
-      stderr: "null",
-    }).output();
-    if (!out.success) throw new Error("token command failed");
-    return new TextDecoder().decode(out.stdout).trim();
+    return await commandToken(src.token_command);
   }
   if (src.token_file) return (await Deno.readTextFile(src.token_file)).trim();
   throw new Error("no Hostinger token configured");
 }
 
+async function commandToken(command: string[]): Promise<string> {
+  const child = new Deno.Command(command[0], {
+    args: command.slice(1),
+    detached: true,
+    stdin: "null",
+    stdout: "piped",
+    stderr: "null",
+  }).spawn();
+  const reader = child.stdout.getReader();
+  let expired = false;
+  const stop = () => {
+    // The private session includes ordinary children even after the parent exits.
+    try {
+      Deno.kill(-child.pid, "SIGKILL");
+    } catch { /* Already exited. */ }
+    try {
+      child.kill("SIGKILL");
+    } catch { /* Already reaped. */ }
+    void reader.cancel().catch(() => {});
+  };
+  const timer = setTimeout(() => {
+    expired = true;
+    stop();
+  }, API_TIMEOUT_MS);
+  try {
+    const output = (async () => {
+      const decoder = new TextDecoder();
+      let text = "";
+      let size = 0;
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) return text + decoder.decode();
+        size += value.length;
+        if (size > MAX_TOKEN_BYTES) throw new Error("token too large");
+        text += decoder.decode(value, { stream: true });
+      }
+    })();
+    const [text, status] = await Promise.all([output, child.status]);
+    if (expired || !status.success) throw new Error("token command failed");
+    return text.trim();
+  } catch {
+    stop();
+    throw new Error(expired ? "token command timed out" : "token command failed");
+  } finally {
+    clearTimeout(timer);
+    await child.status;
+    reader.releaseLock();
+  }
+}
+
 async function get<T>(src: TokenSource, path: string): Promise<T> {
+  const deadline = performance.now() + API_TIMEOUT_MS;
+  const bearer = await token(src);
+  const remaining = Math.ceil(deadline - performance.now());
+  if (remaining <= 0) throw new Error("Hostinger request timed out");
   const res = await fetch(`${API}${path}`, {
-    headers: { Authorization: `Bearer ${await token(src)}` },
-    signal: AbortSignal.timeout(15_000),
+    headers: { Authorization: `Bearer ${bearer}` },
+    signal: AbortSignal.timeout(remaining),
   });
   if (!res.ok) throw new Error(`Hostinger API ${path.split("?")[0]}: HTTP ${res.status}`);
   return await res.json() as T;
@@ -161,7 +213,7 @@ async function get<T>(src: TokenSource, path: string): Promise<T> {
 export async function vm(
   src: HostingerSource,
   id: number,
-): Promise<{ plan?: string; cpus?: number }> {
+): Promise<{ cpus?: number; ipv4: string[] | undefined }> {
   validateSource(src);
   validId(id);
   const body = src.request_command
@@ -170,14 +222,29 @@ export async function vm(
   if (!body || typeof body !== "object" || Array.isArray(body)) {
     throw new Error("invalid Hostinger VM response");
   }
-  const value = body as { plan?: string; cpus?: number };
+  const value = body as { cpus?: number; ipv4?: unknown };
   if (value.cpus !== undefined && (!Number.isSafeInteger(value.cpus) || value.cpus <= 0)) {
     throw new Error("invalid Hostinger CPU count");
   }
-  if (value.plan !== undefined && typeof value.plan !== "string") {
-    throw new Error("invalid Hostinger plan");
+  // Hostinger's schema makes ipv4 nullable, and older brokers omit it.
+  const addresses = value.ipv4 ?? [];
+  if (!Array.isArray(addresses) || !addresses.every(isIPv4Entry)) {
+    throw new Error("invalid Hostinger IPv4 addresses");
   }
-  return { cpus: value.cpus, plan: value.plan };
+  return {
+    cpus: value.cpus,
+    ipv4: value.ipv4 === undefined ? undefined : addresses.map((item) => item.address),
+  };
+}
+
+function isIPv4Entry(item: unknown): item is { address: string } {
+  const address = item && typeof item === "object" && "address" in item ? item.address : null;
+  if (typeof address !== "string") return false;
+  const octets = address.split(".");
+  return octets.length === 4 && octets.every((part) => {
+    const n = Number(part);
+    return Number.isInteger(n) && n >= 0 && n <= 255 && String(n) === part;
+  });
 }
 
 // CPU readings, in percent of the plan, about every 30 minutes.
