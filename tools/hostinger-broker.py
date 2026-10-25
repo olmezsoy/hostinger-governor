@@ -8,6 +8,7 @@ requests. Neither entry point accepts a URL, headers or an arbitrary command.
 
 import datetime
 import fcntl
+import ipaddress
 import json
 import math
 import os
@@ -241,8 +242,23 @@ def sanitize(body, value):
             and 1 <= cpus <= MAX_VCPUS,
             "Invalid upstream VM.",
         )
-        # Do not forward arbitrary account data, strings or upstream error text.
-        return {"cpus": cpus}
+        # Hostinger's schema makes ipv4 nullable: null means no addresses.
+        addresses = body.get("ipv4")
+        addresses = [] if addresses is None else addresses
+        require(isinstance(addresses, list), "Invalid upstream IPv4 addresses.")
+        ipv4 = []
+        for item in addresses:
+            require(
+                isinstance(item, dict) and isinstance(item.get("address"), str),
+                "Invalid upstream IPv4 addresses.",
+            )
+            try:
+                address = str(ipaddress.IPv4Address(item["address"]))
+            except ipaddress.AddressValueError:
+                raise Refused("Invalid upstream IPv4 addresses.") from None
+            ipv4.append({"address": address})
+        # Do not forward arbitrary account data or upstream error text.
+        return {"cpus": cpus, "ipv4": ipv4}
     metric = body.get("cpu_usage")
     require(
         isinstance(metric, dict)
@@ -304,11 +320,13 @@ def worker(value):
             or "data" not in cached
         ):
             raise Refused("Request rate limit reached.", "rate_limited")
-        return (
-            sanitize(cached["data"], value)
-            if value["operation"] == "metrics"
-            else cached["data"]
-        )
+        if value["operation"] == "metrics":
+            return sanitize(cached["data"], value)
+        # A pre-addresses broker cached only cpus. Refresh once after upgrade so
+        # an immediate deployment check can verify the VM's addresses. A failed
+        # refresh writes a no-data record below and still consumes its allowance.
+        if "ipv4" in cached["data"]:
+            return cached["data"]
     fetch_request = dict(value)
     if value["operation"] == "metrics":
         # Fetch one complete authorized window. A daemon fetch and a connection

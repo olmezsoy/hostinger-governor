@@ -28,7 +28,7 @@ full use. At zero the whole VPS drops to a fraction of its CPU (30% on KVM 2, 4 
 balance rebuilds, and while work keeps pressing on that limit, nothing is earned. A busy server can
 stay limited for as long as the load lasts.
 
-![Diagram of how hostinger-governor works. Hostinger holds the CPU credit bank, and the VPS cannot read its balance. Every 30 seconds by default, governor.service reads CPU and steal from the kernel, keeps a cautious estimate of the bank, and sets one shared CPU quota on user.slice: every login, governor exec jobs, and services or Docker you enroll. Everything else is measured, not capped. An API check every 30 minutes, unless limited, never changes the estimate. Spending: every vCPU while the estimate is high, then a glide onto a 20% floor; with no governor, the same load empties the bank and Hostinger limits the VPS. After a reboot, an install or a limit, the estimate starts at 0, so the ceiling starts under the baseline. When steal follows demand during a 20-second probe at 0.2 vCPU, or reaches 60% of demand, the governor treats the VPS as limited: it holds user.slice below the host limit, down to 0.2 vCPU, until a lift test passes. If the probe does not confirm a limit, the governor stays in Spending and retries later. A saved limit resumes on start. While the daemon is not running, systemd holds user.slice, SSH included, at 0.2 vCPU by default.](docs/how-it-works.svg)
+![Diagram of how hostinger-governor works. Hostinger holds the CPU credit bank, and the VPS cannot read its balance. Every 30 seconds by default, governor.service reads CPU and steal from the kernel, keeps a cautious estimate of the bank, and sets one shared CPU quota on user.slice: every login, governor exec jobs, and services or Docker you enroll. Everything else is measured, not capped. Provider diagnostics start every 30 minutes unless limited, and a request already in flight can still finish. Diagnostics never change the estimate. Spending: every vCPU while the estimate is high, then a glide onto a 20% floor; with no governor, the same load empties the bank and Hostinger limits the VPS. After a reboot, an install or a limit, the estimate starts at 0, so the ceiling starts under the baseline. When steal follows demand during a 20-second probe at 0.2 vCPU, or reaches 60% of demand, the governor treats the VPS as limited: it holds user.slice below the host limit, down to 0.2 vCPU, until a lift test passes. If the probe does not confirm a limit, the governor stays in Spending and retries later. A saved limit resumes on start. While the daemon is not running, systemd holds user.slice, SSH included, at 0.2 vCPU by default.](docs/how-it-works.svg)
 
 The governor measures the whole machine and caps workloads placed under `user.slice`:
 
@@ -36,10 +36,13 @@ The governor measures the whole machine and caps workloads placed under `user.sl
   billed CPU than the guest sees, plus 0.08 vCPU. Boot identity prevents earning across stops. After
   a reboot, counter reset, or upgrade from v0.1, the estimate starts at zero because intervening CPU
   consumption is unknown. Long gaps between samples cannot earn credits.
-- **Checks API history.** Every 30 minutes it fetches CPU history, validates units and values,
-  excludes the newest bucket, and compares complete intervals with guest measurements. Failures
-  retry with exponential backoff. History is diagnostic only and cannot increase the estimate. The
-  API does not establish whether buckets match credit billing or their timestamp semantics.
+- **Reads provider diagnostics.** Every 30 minutes it fetches CPU history, validates units and
+  values, excludes the newest bucket, and compares complete intervals with guest measurements.
+  Failures retry with exponential backoff. Fetches run in the background after the ceiling update,
+  with at most one in flight, so a slow provider or broker cannot delay CPU control. New requests
+  pause while limited; an existing request may finish later or overlap a local limit test. History
+  is diagnostic only and cannot increase the estimate. The API does not establish whether buckets
+  match credit billing or their timestamp semantics.
 - **Spends it.** One shared CPU ceiling covers every login on the machine (`user.slice`). The
   ceiling is the baseline plus the balance's surplus over a 20% floor, spread across 30 minutes,
   minus what system services use. Work gets every core while the balance is high, and the balance
@@ -66,7 +69,9 @@ The governor measures the whole machine and caps workloads placed under `user.sl
   crash, and early in boot. Operators can choose a different fallback. The helper can change only
   `user.slice`; recovery and probe floors still use 20%.
 
-Plans are read from Hostinger's API (KVM 1 to 8).
+The plan uses configured `vcpus`, or the kernel's CPU count when unset, with Hostinger's KVM rules.
+Startup and CPU control never wait for the provider. Use `governor check-hostinger` to verify the
+provider's VM details and addresses separately.
 
 ## Install
 
@@ -185,8 +190,8 @@ written. Calls run in sequence. Timed ticks keep their configured interval; an o
 not restart the timer. A pass less than `min(5 seconds, tick_seconds / 2)` after the last measured
 pass reuses its measurements while applying queued commands, setting the quota and writing state.
 Its CPU use accumulates into the next sample. This prevents tiny, noisy intervals from tightening a
-recovery quota or triggering a limit probe. API checks and limit probes run when a fresh sample is
-available and can take time. Hooks continue in the background.
+recovery quota or triggering a limit probe. Limit probes run when a fresh sample is available and
+can take time. Provider diagnostics and hooks continue in the background without delaying the pass.
 
 Verification scripts can check a limit without sleeping until the next tick:
 

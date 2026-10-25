@@ -2,7 +2,7 @@
   aria-labelledby="title" aria-describedby="desc">
   <title id="title">How hostinger-governor works</title>
   <desc
-    id="desc">Hostinger holds the CPU credit bank, and the VPS cannot read its balance. Every 30 seconds by default, governor.service reads CPU and steal from the kernel, keeps a cautious estimate of the bank, and sets one shared CPU quota on user.slice: every login, governor exec jobs, and services or Docker you enroll. Everything else is measured, not capped. An API check every 30 minutes, unless limited, never changes the estimate. Spending: every vCPU while the estimate is high, then a glide onto a 20% floor; with no governor, the same load empties the bank and Hostinger limits the VPS. After a reboot, an install or a limit, the estimate starts at 0, so the ceiling starts under the baseline. When steal follows demand during a 20-second probe at 0.2 vCPU, or reaches 60% of demand, the governor treats the VPS as limited: it holds user.slice below the host limit, down to 0.2 vCPU, until a lift test passes. If the probe does not confirm a limit, the governor stays in Spending and retries later. A saved limit resumes on start. While the daemon is not running, systemd holds user.slice, SSH included, at 0.2 vCPU by default.</desc>
+    id="desc">Hostinger holds the CPU credit bank, and the VPS cannot read its balance. Every 30 seconds by default, governor.service reads CPU and steal from the kernel, keeps a cautious estimate of the bank, and sets one shared CPU quota on user.slice: every login, governor exec jobs, and services or Docker you enroll. Everything else is measured, not capped. Provider diagnostics start every 30 minutes unless limited, and a request already in flight can still finish. Diagnostics never change the estimate. Spending: every vCPU while the estimate is high, then a glide onto a 20% floor; with no governor, the same load empties the bank and Hostinger limits the VPS. After a reboot, an install or a limit, the estimate starts at 0, so the ceiling starts under the baseline. When steal follows demand during a 20-second probe at 0.2 vCPU, or reaches 60% of demand, the governor treats the VPS as limited: it holds user.slice below the host limit, down to 0.2 vCPU, until a lift test passes. If the probe does not confirm a limit, the governor stays in Spending and retries later. A saved limit resumes on start. While the daemon is not running, systemd holds user.slice, SSH included, at 0.2 vCPU by default.</desc>
   <style>
   svg {
     --bg: #ffffff;
@@ -242,7 +242,7 @@
 
   <rect class="card" x="608" y="44" width="248" height="140" rx="10" />
   <text class="h" x="628" y="68">VPS API</text>
-  <text x="628" y="92">vCPU count, read at start</text>
+  <text x="628" y="92">VM details for verification</text>
   <text x="628" y="112">CPU use in 30-minute buckets</text>
   <text class="b" x="628" y="152">No balance</text>
 
@@ -326,11 +326,11 @@
     y="592">Then it writes /run/governor/state.json: credits, ceiling, limit and accepting.</text>
 
   <rect class="api" x="644" y="458" width="196" height="104" rx="8" />
-  <text class="h4" x="660" y="480">API check</text>
-  <text class="s" x="660" y="500">every 30 min unless</text>
-  <text class="s" x="660" y="516">limited. It logs</text>
-  <text class="s" x="660" y="532">differences and never</text>
-  <text class="s" x="660" y="548">changes the estimate.</text>
+  <text class="h4" x="660" y="480">Provider diagnostics</text>
+  <text class="s" x="660" y="500">New fetches every 30 min.</text>
+  <text class="s" x="660" y="516">No new fetch while limited.</text>
+  <text class="s" x="660" y="532">Older results may arrive;</text>
+  <text class="s" x="660" y="548">never change the estimate.</text>
   <path class="arrow muted" d="M800 184V456" marker-end="url(#muted)" />
 
   <!-- Modes. -->

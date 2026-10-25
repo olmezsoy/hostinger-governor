@@ -57,21 +57,20 @@ QUICK_COMMAND_SECONDS = 5
 CHILD_CLEANUP_SECONDS = 5
 # check-hostinger makes two broker requests, each with Governor's deadline.
 CONNECTION_CHECK_SECONDS = 2 * BROKER.REQUEST_SECONDS + QUICK_COMMAND_SECONDS
-# Governor honours SIGTERM only between ticks, and publishes its first state
-# after one plan lookup and one full tick. A tick may hold a history request
-# (Governor's broker deadline) and a limit probe: 20 s capped, then 20 s
-# restored. A lift test runs instead of both and is shorter. Pinned against
+# Governor finishes its active tick and waits for an in-flight diagnostic request
+# on SIGTERM. Startup derives the plan locally and publishes after one full tick.
+# A tick may hold a limit probe: 20 s capped, then 20 s restored.
+# A lift test runs instead of the probe and is shorter. Pinned against
 # governor.ts by governor_limit_test_ms in test/fixtures/hostinger-protocol.json.
 GOVERNOR_LIMIT_TEST_SECONDS = 40
-GOVERNOR_TICK_SECONDS = BROKER.REQUEST_SECONDS + GOVERNOR_LIMIT_TEST_SECONDS
 # governor.service sets no TimeoutStopSec, so systemd waits its default 90 s
-# for a tick to finish before killing the daemon. Outlast that wait.
+# for the active tick and diagnostics request to finish. Outlast that wait.
 SYSTEMD_STOP_SECONDS = 90
 STOP_SECONDS = SYSTEMD_STOP_SECONDS + 15
 # No Type= is set: start returns once ExecStartPre has applied the fallback.
 START_SECONDS = 45
-# Deno startup and scheduling get 15 s on top of the plan lookup and first tick.
-FRESH_STATE_SECONDS = BROKER.REQUEST_SECONDS + GOVERNOR_TICK_SECONDS + 15
+# Deno startup and scheduling get 15 s on top of the first tick.
+FRESH_STATE_SECONDS = GOVERNOR_LIMIT_TEST_SECONDS + 15
 # The last status call may begin just before the deadline, then sleep once.
 FRESH_STATE_WAIT_SECONDS = FRESH_STATE_SECONDS + QUICK_COMMAND_SECONDS + 1
 # Rollback: stop, restore files, daemon-reload, start, is-active, fresh state.
@@ -187,7 +186,16 @@ def validate_vm(token):
     validated = BROKER.sanitize(body, request)
     usage = validated["cpu_usage"]["usage"]
     require(isinstance(usage, dict) and len(usage) > 0, "CPU metrics are missing.")
-    return {"vm_id": vm_id, "cpus": cpus, "cpu_samples": len(usage)}
+    return {
+        "vm_id": vm_id,
+        "cpus": cpus,
+        "cpu_samples": len(usage),
+        # Only the VM's addresses that are also on a local interface identify this server.
+        "verified_ipv4": sorted(
+            item["address"] for item in validated_vm["ipv4"]
+            if item["address"] in local_ips
+        ),
+    }
 
 
 def validate_worker_identity(*, missing_ok=True):
@@ -734,6 +742,22 @@ def apply(token, cfg, original, vm, expected_hash):
                 check.get("vm_id") == vm["vm_id"] and check.get("cpus") == vm["cpus"],
                 "Governor cannot use the restricted Hostinger broker.",
             )
+            # Match the IPv4 identity already verified against local interfaces.
+            # IPv6-only preflight matches retain the VM-ID/CPU check above.
+            if vm["verified_ipv4"]:
+                # Older Governor releases pass the capability check but print no
+                # addresses; name that cause instead of reporting a mismatch.
+                addresses = check.get("ipv4")
+                require(
+                    isinstance(addresses, list)
+                    and all(isinstance(address, str) for address in addresses),
+                    "Governor's connection check reports no IPv4 addresses; "
+                    "install the matching Governor release first.",
+                )
+                require(
+                    set(addresses) & set(vm["verified_ipv4"]),
+                    "Governor's broker IPv4 addresses do not match this server.",
+                )
             for private_path in (ENCRYPTED, HOST_KEY):
                 access = subprocess.run(
                     [

@@ -11,7 +11,6 @@ export function fixture(config: Config = {}, paths?: { run: string; lib: string 
   let usage = 0;
   let cap = 200;
   let attempts = 0;
-  let failAPI = false;
   let failCap = false;
   let owner = 0;
   let mode = 0o644;
@@ -28,7 +27,6 @@ export function fixture(config: Config = {}, paths?: { run: string; lib: string 
     ceiling: () => Promise.resolve(cap),
     readings: () => {
       attempts++;
-      if (failAPI) return Promise.reject(new Error("API outage"));
       return Promise.resolve([{ at: start - 10_800_000, v: 0 }, { at: start, v: 0 }]);
     },
     hooks: () => Promise.resolve(),
@@ -68,9 +66,6 @@ export function fixture(config: Config = {}, paths?: { run: string; lib: string 
     },
     get attempts() {
       return attempts;
-    },
-    apiFails() {
-      failAPI = true;
     },
     capFails() {
       failCap = true;

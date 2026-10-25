@@ -371,6 +371,7 @@ def upstream(token, value):
         # Sanitization must remove token-bearing unrelated fields.
         return sanitize(api_body(token, "/12345"), value)
     if Path("/usr/local/libexec/governor-broker-smoke-hang").exists():
+        (STATE / "smoke-hang-started").write_text(str(time.monotonic()))
         time.sleep(120)
     return sanitize(api_body(token, "/12345/metrics?"), value)
 """.replace(
@@ -424,6 +425,7 @@ def upstream(token, value):
             "vm_id": 12345,
             "cpus": cpus,
             "cpu_samples": 2,
+            "ipv4": ["93.184.216.34"],
         }
     # The readable canary is accessible outside the sandbox but not inside it.
     # The actual dummy private key also verifies separate Unix ownership.
@@ -519,6 +521,51 @@ def upstream(token, value):
             break
         assert time.monotonic() - started < setup.BROKER.REQUEST_SECONDS
         time.sleep(0.1)
+
+    # A service stop must leave no independent root-launched worker behind. The
+    # unit's KillMode and the daemon's drain both matter: signalling the sudo
+    # launcher along with the daemon would let the daemon exit before its worker.
+    config = setup.CONFIG
+    original_config = config.read_bytes()
+    fixture_config = json.loads(original_config)
+    fixture_config["tick_seconds"] = 1
+    config.write_text(json.dumps(fixture_config))
+    entered = setup.BROKER.STATE / "smoke-hang-started"
+    entered.unlink()
+    cached = json.loads(cache.read_text())
+    cached["at"] = -1000
+    cache.write_text(json.dumps(cached))
+    try:
+        subprocess.run(["/usr/bin/systemctl", "start", "governor.service"], check=True)
+        deadline = time.monotonic() + 15
+        while not entered.exists():
+            assert time.monotonic() < deadline, "Daemon did not start broker diagnostics"
+            time.sleep(0.1)
+        worker_started = float(entered.read_text())
+        subprocess.run(
+            ["/usr/bin/systemctl", "stop", "governor.service"],
+            check=True,
+            timeout=90,
+        )
+        elapsed = time.monotonic() - worker_started
+        assert setup.BROKER.WORKER_SECONDS - 1 <= elapsed, elapsed
+        assert elapsed < setup.BROKER.REQUEST_SECONDS, elapsed
+        running = subprocess.run(
+            ["/usr/bin/systemctl", "is-active", "--quiet", "governor-hostinger-request.service"],
+            check=False,
+        )
+        assert running.returncode != 0, "Worker outlived daemon shutdown"
+        Path("/usr/local/libexec/governor-broker-smoke-hang").unlink()
+        # The intentional timeout consumes the allowance. Expire only this
+        # fixture's failed cache so the next check exercises worker availability.
+        cached = json.loads(cache.read_text())
+        cached["at"] = -1000
+        cache.write_text(json.dumps(cached))
+        assert json.loads(check(command).stdout)["ipv4"] == ["93.184.216.34"]
+    finally:
+        subprocess.run(["/usr/bin/systemctl", "stop", "governor.service"], check=True)
+        config.write_bytes(original_config)
+        Path("/usr/local/libexec/governor-broker-smoke-hang").unlink(missing_ok=True)
     journal = subprocess.run(
         [
             "/usr/bin/journalctl",
@@ -533,7 +580,7 @@ def upstream(token, value):
     )
     assert token.encode() not in journal.stdout + journal.stderr
     print(
-        "Broker Linux integration passed: isolated credential, CLI/cache, authorization, redaction, deadline"
+        "Broker Linux integration passed: isolated credential, CLI/cache, authorization, redaction, deadline, shutdown drain"
     )
 
 

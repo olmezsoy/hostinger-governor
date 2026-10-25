@@ -250,6 +250,8 @@ StateDirectoryMode=0755
 ExecStartPre=+/usr/bin/install -d -o root -g governor -m 0770 /run/governor/requests
 ExecStartPre=+/usr/local/bin/governor fallback
 ExecStart=/usr/local/bin/governor run
+# Let the daemon drain a privileged broker request before systemd cleans up its children.
+KillMode=mixed
 # Stopped or crashed, the machine keeps a ceiling under the credit baseline.
 ExecStopPost=+/usr/local/bin/governor fallback
 Restart=always

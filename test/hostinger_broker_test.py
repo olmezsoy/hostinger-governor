@@ -16,6 +16,9 @@ BROKER = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(BROKER)
 NOW = 1_800_000_000_000
 TOKEN = "dummy.secret.token"
+CONTRACT = json.loads(
+    (SOURCE.parent.parent / "test/fixtures/hostinger-protocol.json").read_text()
+)
 
 
 def vm_request(**changes):
@@ -76,6 +79,49 @@ class RequestTest(unittest.TestCase):
 
 
 class UpstreamTest(unittest.TestCase):
+    def test_vm_read_returns_only_validated_ipv4_addresses_and_cpu_count(self):
+        body = {
+            "id": 123,
+            "cpus": 8,
+            "ipv4": [
+                {"address": "192.0.2.1", "gateway": TOKEN},
+                {"address": "198.51.100.2", "secret": TOKEN},
+            ],
+            "ipv6": [{"address": "2001:db8::1"}],
+            "password": TOKEN,
+        }
+        self.assertEqual(
+            BROKER.sanitize(body, vm_request()),
+            {
+                "cpus": 8,
+                "ipv4": [{"address": "192.0.2.1"}, {"address": "198.51.100.2"}],
+            },
+        )
+
+    def test_vm_read_rejects_any_non_ipv4_address_without_echoing_it(self):
+        for address in CONTRACT["invalid_ipv4_addresses"]:
+            with self.subTest(address=address):
+                with self.assertRaises(BROKER.Refused) as raised:
+                    BROKER.sanitize(
+                        {
+                            "id": 123,
+                            "cpus": 8,
+                            "ipv4": [{"address": "192.0.2.1"}, {"address": address}],
+                        },
+                        vm_request(),
+                    )
+                self.assertNotIn(TOKEN, str(raised.exception))
+        for ipv4 in CONTRACT["invalid_ipv4_fields"]:
+            with self.subTest(ipv4=ipv4), self.assertRaises(BROKER.Refused):
+                BROKER.sanitize({"id": 123, "cpus": 8, "ipv4": ipv4}, vm_request())
+
+    def test_vm_read_treats_null_ipv4_as_no_addresses(self):
+        # Hostinger's OpenAPI schema declares VirtualMachineResource.ipv4 nullable.
+        self.assertEqual(
+            BROKER.sanitize({"id": 123, "cpus": 8, "ipv4": None}, vm_request()),
+            {"cpus": 8, "ipv4": []},
+        )
+
     def test_vm_data_excludes_credentials_and_unrelated_account_information(self):
         body = {
             "id": 123,
@@ -84,7 +130,7 @@ class UpstreamTest(unittest.TestCase):
             "password": TOKEN,
             "ssh_keys": [TOKEN],
         }
-        self.assertEqual(BROKER.sanitize(body, vm_request()), {"cpus": 8})
+        self.assertEqual(BROKER.sanitize(body, vm_request()), {"cpus": 8, "ipv4": []})
         for bad in (
             {"id": 124, "cpus": 8},
             {"id": 123, "cpus": True},
@@ -127,12 +173,17 @@ class UpstreamTest(unittest.TestCase):
         response = Mock()
         response.__enter__ = Mock(return_value=response)
         response.__exit__ = Mock(return_value=False)
-        response.read.return_value = b'{"id":123,"cpus":8}'
+        response.read.return_value = (
+            b'{"id":123,"cpus":8,"ipv4":[{"address":"192.0.2.1","secret":"dummy.secret.token"}]}'
+        )
         opener = SimpleNamespace(open=Mock(return_value=response))
         with patch.object(
             BROKER.urllib.request, "build_opener", return_value=opener
         ) as build:
-            self.assertEqual(BROKER.upstream(TOKEN, vm_request()), {"cpus": 8})
+            self.assertEqual(
+                BROKER.upstream(TOKEN, vm_request()),
+                {"cpus": 8, "ipv4": [{"address": "192.0.2.1"}]},
+            )
             req = opener.open.call_args.args[0]
             self.assertEqual(req.full_url, BROKER.API + "/123")
             self.assertEqual(req.get_method(), "GET")
@@ -174,16 +225,60 @@ class CacheTest(unittest.TestCase):
             replacement.start()
             self.addCleanup(replacement.stop)
 
+    def test_upgrade_refreshes_a_legacy_vm_cache_once(self):
+        BROKER.write_cache(self.root / "vm.json", {
+            "boot_id": "boot-test", "at": 100, "request": vm_request(),
+            "data": {"cpus": 8},
+        })
+        data = {"cpus": 8, "ipv4": [{"address": "192.0.2.1"}]}
+        with patch.object(
+            BROKER, "read_token", return_value=TOKEN
+        ) as token, patch.object(
+            BROKER, "upstream", return_value=data
+        ) as upstream, patch.object(BROKER.time, "monotonic", return_value=101):
+            self.assertEqual(BROKER.worker(vm_request()), data)
+            self.assertEqual(BROKER.worker(vm_request()), data)
+            token.assert_called_once()
+            upstream.assert_called_once_with(TOKEN, vm_request())
+
+    def test_failed_legacy_vm_refresh_does_not_bypass_cooldown_again(self):
+        BROKER.write_cache(self.root / "vm.json", {
+            "boot_id": "boot-test", "at": 100, "request": vm_request(),
+            "data": {"cpus": 8},
+        })
+        with patch.object(BROKER, "read_token", return_value=TOKEN), patch.object(
+            BROKER, "upstream", side_effect=BROKER.Refused("API failed")
+        ) as upstream, patch.object(BROKER.time, "monotonic", return_value=101):
+            with self.assertRaisesRegex(BROKER.Refused, "API failed"):
+                BROKER.worker(vm_request())
+            with self.assertRaises(BROKER.Refused) as raised:
+                BROKER.worker(vm_request())
+            self.assertEqual(raised.exception.code, "rate_limited")
+            upstream.assert_called_once()
+
+    def test_legacy_vm_cache_for_another_vm_cannot_bypass_cooldown(self):
+        BROKER.write_cache(self.root / "vm.json", {
+            "boot_id": "boot-test", "at": 100, "request": vm_request(vm_id=124),
+            "data": {"cpus": 8},
+        })
+        with patch.object(BROKER, "upstream") as upstream, patch.object(
+            BROKER.time, "monotonic", return_value=101
+        ):
+            with self.assertRaises(BROKER.Refused) as raised:
+                BROKER.worker(vm_request())
+            self.assertEqual(raised.exception.code, "rate_limited")
+            upstream.assert_not_called()
+
     def test_identical_requests_use_sanitized_cache_without_reading_token(self):
         with patch.object(
             BROKER, "read_token", return_value=TOKEN
         ) as token, patch.object(
-            BROKER, "upstream", return_value={"cpus": 8}
+            BROKER, "upstream", return_value={"cpus": 8, "ipv4": []}
         ) as upstream, patch.object(
             BROKER.time, "monotonic", return_value=100
         ):
-            self.assertEqual(BROKER.worker(vm_request()), {"cpus": 8})
-            self.assertEqual(BROKER.worker(vm_request()), {"cpus": 8})
+            self.assertEqual(BROKER.worker(vm_request()), {"cpus": 8, "ipv4": []})
+            self.assertEqual(BROKER.worker(vm_request()), {"cpus": 8, "ipv4": []})
             self.assertEqual(token.call_count, 1)
             self.assertEqual(upstream.call_count, 1)
         self.assertNotIn(TOKEN, (self.root / "vm.json").read_bytes().decode())
@@ -269,9 +364,6 @@ class CacheTest(unittest.TestCase):
 
 class LauncherTest(unittest.TestCase):
     def test_protocol_bounds_and_timeout_order_match_the_typescript_contract(self):
-        contract = json.loads(
-            (SOURCE.parent.parent / "test/fixtures/hostinger-protocol.json").read_text()
-        )
         for constant, key in (
             ("MAX_BODY", "max_response_bytes"),
             ("MAX_INTERVAL", "max_interval_ms"),
@@ -288,9 +380,9 @@ class LauncherTest(unittest.TestCase):
             ("START_SECONDS", "start_seconds"),
             ("STOP_SECONDS", "stop_seconds"),
         ):
-            self.assertEqual(getattr(BROKER, constant), contract[key])
-        self.assertEqual(list(BROKER.TEMPORARY_ERRORS), contract["temporary_errors"])
-        self.assertEqual(BROKER.REQUEST_SECONDS * 1000, contract["request_timeout_ms"])
+            self.assertEqual(getattr(BROKER, constant), CONTRACT[key])
+        self.assertEqual(list(BROKER.TEMPORARY_ERRORS), CONTRACT["temporary_errors"])
+        self.assertEqual(BROKER.REQUEST_SECONDS * 1000, CONTRACT["request_timeout_ms"])
         self.assertLess(
             BROKER.START_SECONDS + BROKER.WORKER_SECONDS + BROKER.STOP_SECONDS,
             BROKER.RUN_SECONDS,
@@ -298,7 +390,7 @@ class LauncherTest(unittest.TestCase):
         self.assertLess(BROKER.API_SECONDS, BROKER.WORKER_SECONDS)
         self.assertLess(BROKER.WORKER_SECONDS, BROKER.RUN_SECONDS)
         self.assertLess(BROKER.RUN_SECONDS, BROKER.ALARM_SECONDS)
-        self.assertLess(BROKER.ALARM_SECONDS * 1000, contract["request_timeout_ms"])
+        self.assertLess(BROKER.ALARM_SECONDS * 1000, CONTRACT["request_timeout_ms"])
 
     def test_launcher_cannot_run_unprivileged(self):
         with patch.object(BROKER.os, "geteuid", return_value=999):

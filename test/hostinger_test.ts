@@ -1,24 +1,148 @@
-import { assertEquals, assertRejects, assertThrows } from "@std/assert";
+import { assert, assertEquals, assertRejects, assertThrows } from "@std/assert";
 import {
+  API_TIMEOUT_MS,
   BROKER_CAPABILITY,
   BROKER_COOLDOWN_SECONDS,
   CHECK_WINDOW_MS,
   cpuReadings,
   MAX_INTERVAL_MS,
   MAX_RESPONSE,
+  MAX_TOKEN_BYTES,
   MAX_VM_ID,
   parseReadings,
   REQUEST_TIMEOUT_MS,
   TEMPORARY_ERRORS,
+  token,
   validateSource,
   vm,
 } from "../src/hostinger.ts";
 import { MAX_VCPUS } from "../src/plans.ts";
 import { testDirectory } from "./temp.ts";
 import { cliArguments } from "./cli.ts";
+import { within } from "./async.ts";
+import contract from "./fixtures/hostinger-protocol.json" with { type: "json" };
 
-Deno.test("TypeScript broker protocol bounds match the shared contract fixture", async () => {
-  const contract = JSON.parse(await Deno.readTextFile("test/fixtures/hostinger-protocol.json"));
+for (const background of [false, true]) {
+  Deno.test(`token deadline handles ${background ? "an exited parent with open child stdout" : "a command ignoring SIGTERM"}`, async () => {
+    const directory = await testDirectory("token-deadline-");
+    const parent = `${Deno.cwd()}/${directory}/parent`;
+    const child = `${Deno.cwd()}/${directory}/child`;
+    const originalTimeout = globalThis.setTimeout;
+    const budgets: number[] = [];
+    // Keep the real subprocesses and assert the production budget, shortening only its timer.
+    globalThis.setTimeout = new Proxy(originalTimeout, {
+      apply(target, receiver, args) {
+        if (args[1] === API_TIMEOUT_MS) {
+          budgets.push(args[1]);
+          args[1] = 100;
+        }
+        return Reflect.apply(target, receiver, args);
+      },
+    });
+    const script = `printf '%s' "$$" > "$1"; printf 'dummy-secret'; ` +
+      (background
+        ? `(trap '' TERM; while :; do sleep 1; done) & printf '%s' "$!" > "$2"; exit 0`
+        : `trap '' TERM; while :; do :; done`);
+    const request = token({
+      token_command: ["/bin/bash", "-c", script, "token-test", parent, child],
+    });
+    const rejected = assertRejects(() => request, Error, "token command timed out");
+    try {
+      await within(rejected, 700);
+      assertEquals(budgets, [API_TIMEOUT_MS]);
+      if (background) {
+        const pid = Number(await Deno.readTextFile(child));
+        const out = await new Deno.Command("/bin/bash", {
+          args: ["-c", 'ps -o stat= -p "$1"', "check-own-child", String(pid)],
+          stdout: "piped",
+          stderr: "null",
+        }).output();
+        const state = new TextDecoder().decode(out.stdout).trim();
+        assert(!state || state.startsWith("Z"), "token child must be terminated");
+      }
+    } finally {
+      globalThis.setTimeout = originalTimeout;
+      for (const path of [parent, child]) {
+        const pid = Number(await Deno.readTextFile(path).catch(() => "0"));
+        if (Number.isSafeInteger(pid) && pid > 1) {
+          try {
+            Deno.kill(pid, "SIGKILL");
+          } catch { /* Already terminated. */ }
+        }
+      }
+      await request.catch(() => {});
+      await rejected.catch(() => {});
+      await Deno.remove(directory, { recursive: true });
+    }
+  });
+}
+
+Deno.test("direct VM checks share the 15-second budget between token lookup and HTTP", async () => {
+  const originalFetch = globalThis.fetch;
+  const originalNow = performance.now;
+  const originalTimeout = AbortSignal.timeout;
+  let nowCalls = 0;
+  const budgets: number[] = [];
+  performance.now = () => nowCalls++ === 0 ? 0 : 3000;
+  AbortSignal.timeout = (ms) => {
+    budgets.push(ms);
+    return originalTimeout(ms);
+  };
+  globalThis.fetch = (_input, init) => {
+    assertEquals(new Headers(init?.headers).get("Authorization"), "Bearer dummy-token");
+    return Promise.resolve(
+      new Response(JSON.stringify({
+        cpus: 8,
+        ipv4: [{ address: "192.0.2.1" }],
+        plan: { unused: "ignored provider metadata" },
+      })),
+    );
+  };
+  try {
+    assertEquals(await vm({ token_command: ["/bin/bash", "-c", "printf 'dummy-token\\n'"] }, 123), {
+      cpus: 8,
+      ipv4: ["192.0.2.1"],
+    });
+    assertEquals(budgets, [API_TIMEOUT_MS - 3000]);
+  } finally {
+    globalThis.fetch = originalFetch;
+    performance.now = originalNow;
+    AbortSignal.timeout = originalTimeout;
+  }
+});
+
+Deno.test("a token lookup that spends the whole budget skips the HTTP request", async () => {
+  const originalFetch = globalThis.fetch;
+  const originalNow = performance.now;
+  let nowCalls = 0;
+  let fetched = false;
+  performance.now = () => nowCalls++ === 0 ? 0 : API_TIMEOUT_MS;
+  globalThis.fetch = () => {
+    fetched = true;
+    return Promise.reject(new Error("unexpected request"));
+  };
+  try {
+    await assertRejects(
+      () => vm({ token_command: ["/bin/bash", "-c", "printf 'dummy-token\\n'"] }, 123),
+      Error,
+      "Hostinger request timed out",
+    );
+    assertEquals(fetched, false);
+  } finally {
+    globalThis.fetch = originalFetch;
+    performance.now = originalNow;
+  }
+});
+
+Deno.test("token commands may print at most the credential limit", async () => {
+  const command = (bytes: number) => ({
+    token_command: ["/bin/bash", "-c", `head -c ${bytes} /dev/zero | tr '\\0' a`],
+  });
+  assertEquals(await token(command(MAX_TOKEN_BYTES)), "a".repeat(MAX_TOKEN_BYTES));
+  await assertRejects(() => token(command(MAX_TOKEN_BYTES + 1)), Error, "token command failed");
+});
+
+Deno.test("TypeScript broker protocol bounds match the shared contract fixture", () => {
   assertEquals(MAX_RESPONSE, contract.max_response_bytes);
   assertEquals(MAX_INTERVAL_MS, contract.max_interval_ms);
   assertEquals(MAX_VM_ID, contract.max_vm_id);
@@ -27,7 +151,7 @@ Deno.test("TypeScript broker protocol bounds match the shared contract fixture",
   assertEquals(BROKER_COOLDOWN_SECONDS, contract.cooldown_seconds);
   assertEquals(CHECK_WINDOW_MS, contract.check_window_ms);
   assertEquals(BROKER_CAPABILITY, contract.capability);
-  assertEquals(TEMPORARY_ERRORS, contract.temporary_errors);
+  assertEquals<readonly string[]>(TEMPORARY_ERRORS, contract.temporary_errors);
 });
 
 const metric = (
@@ -55,7 +179,7 @@ Deno.test("malformed CPU metrics cannot become credit evidence", () => {
 
 const broker = (script: string) => ({ request_command: ["/bin/bash", "-c", script] });
 const reply = (data: unknown, vm_id = 123, version = 1) =>
-  `printf '%s' '${JSON.stringify({ version, vm_id, data })}'`;
+  `cat >/dev/null; printf '%s' '${JSON.stringify({ version, vm_id, data })}'`;
 
 Deno.test("operation broker receives only a versioned VM request on stdin", async () => {
   const src = broker(
@@ -63,12 +187,45 @@ Deno.test("operation broker receives only a versioned VM request on stdin", asyn
       reply({ cpus: 8 })
     }`,
   );
-  assertEquals(await vm(src, 123), { cpus: 8, plan: undefined });
+  assertEquals(await vm(src, 123), { cpus: 8, ipv4: undefined });
 });
 
 Deno.test("operation broker starts from the root directory, not the caller's", async () => {
   const src = broker(`IFS= read -r request; [[ $PWD == / ]] || exit 1; ${reply({ cpus: 8 })}`);
-  assertEquals(await vm(src, 123), { cpus: 8, plan: undefined });
+  assertEquals(await vm(src, 123), { cpus: 8, ipv4: undefined });
+});
+
+Deno.test("VM reads expose only validated IPv4 addresses", async () => {
+  assertEquals(
+    await vm(
+      broker(reply({
+        cpus: 8,
+        ipv4: [{ address: "192.0.2.1", secret: "secret-token" }, { address: "198.51.100.2" }],
+        password: "secret-token",
+      })),
+      123,
+    ),
+    { cpus: 8, ipv4: ["192.0.2.1", "198.51.100.2"] },
+  );
+  // Hostinger's schema makes ipv4 nullable; null means no addresses, not a malformed one.
+  assertEquals(await vm(broker(reply({ cpus: 8, ipv4: null })), 123), {
+    cpus: 8,
+    ipv4: [],
+  });
+  for (const address of contract.invalid_ipv4_addresses) {
+    const error = await assertRejects(
+      () => vm(broker(reply({ cpus: 8, ipv4: [{ address: "192.0.2.1" }, { address }] })), 123),
+      Error,
+    );
+    assertEquals(error.message, "invalid Hostinger IPv4 addresses");
+  }
+  for (const ipv4 of contract.invalid_ipv4_fields) {
+    await assertRejects(
+      () => vm(broker(reply({ cpus: 8, ipv4 })), 123),
+      Error,
+      "invalid Hostinger IPv4 addresses",
+    );
+  }
 });
 
 Deno.test("operation broker receives bounded metrics parameters and keeps bucket validation", async () => {
@@ -139,7 +296,7 @@ Deno.test("broker input and VM replies are validated without executing an invali
       "invalid Hostinger metrics interval",
     );
   }
-  for (const data of [{ cpus: -1 }, { cpus: "8" }, { cpus: 1.5 }, { plan: {} }]) {
+  for (const data of [{ cpus: -1 }, { cpus: "8" }, { cpus: 1.5 }]) {
     await assertRejects(() => vm(broker(reply(data)), 123));
   }
 });
@@ -184,7 +341,7 @@ Deno.test("check-hostinger CLI exercises both broker operations without outputti
   const seconds = Math.floor(Date.now() / 1000);
   const recent = metric("%", { [seconds - 5400]: 10, [seconds - 3600]: 20, [seconds - 1800]: 30 });
   const command = `IFS= read -r request; case $request in *'"operation":"vm"'*) ${
-    reply({ cpus: 8 })
+    reply({ cpus: 8, ipv4: [{ address: "192.0.2.1" }, { address: "198.51.100.2" }] })
   };; *) ${reply(recent)};; esac`;
   try {
     await Deno.writeTextFile(
@@ -202,9 +359,11 @@ Deno.test("check-hostinger CLI exercises both broker operations without outputti
       }).output();
     const out = await run([]);
     assertEquals(out.code, 0);
+    assertEquals(new TextDecoder().decode(out.stderr), "");
     assertEquals(JSON.parse(new TextDecoder().decode(out.stdout)), {
       vm_id: 123,
       cpus: 8,
+      ipv4: ["192.0.2.1", "198.51.100.2"],
       cpu_samples: 2,
     });
     const help = await run(["--help"]);
@@ -213,6 +372,29 @@ Deno.test("check-hostinger CLI exercises both broker operations without outputti
       new TextDecoder().decode(help.stdout).includes("request_command v1 supported"),
       true,
     );
+    for (const details of [{ cpus: 8 }, { cpus: 8, ipv4: null }, { cpus: 8, ipv4: [] }]) {
+      const command = `IFS= read -r request; case $request in *'"operation":"vm"'*) ${
+        reply(details)
+      };; *) ${reply(recent)};; esac`;
+      await Deno.writeTextFile(
+        config,
+        JSON.stringify({
+          hostinger: { vm_id: 123, ...broker(command) },
+        }),
+      );
+      const compatible = await run([]);
+      assertEquals(compatible.code, 0);
+      assertEquals(JSON.parse(new TextDecoder().decode(compatible.stdout)), {
+        vm_id: 123,
+        cpus: 8,
+        ipv4: [],
+        cpu_samples: 2,
+      });
+      assertEquals(
+        new TextDecoder().decode(compatible.stderr).includes("upgrade the installed broker"),
+        !("ipv4" in details),
+      );
+    }
     await Deno.writeTextFile(
       config,
       JSON.stringify({ hostinger: { vm_id: 123, ...broker("printf secret-token >&2; exit 1") } }),

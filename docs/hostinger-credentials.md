@@ -3,12 +3,18 @@
 `token_file` and `token_command` give Governor the raw Hostinger token. A secret store can protect
 the saved token, but once Governor receives it, Governor has all of its permissions.
 
+A `token_command` and the following HTTP request share a 15-second budget. The command's deadline
+includes waiting for stdout to close. At the deadline Governor terminates the command and its
+ordinary children and closes the output reader; credential output is never included in errors. The
+command may print at most 8,192 bytes.
+
 `request_command` lets a separate broker hold the token and return only authorized results. This
 option needs the broker-capable Governor build; it is not available in v0.2.2.
 
 ## Guided setup
 
-Install v0.2.3 or later first. From a checkout of that release on your computer, run:
+Install the matching Governor release first. For IPv4 verification, its `check-hostinger` must
+return the VM's `ipv4` list. From a checkout of the same release on your computer, run:
 
 ```sh
 bash tools/setup-hostinger-broker.sh <SSH-destination>
@@ -34,6 +40,11 @@ through a temporary FIFO in a private directory. A FIFO carries bytes in memory,
 file. The receiver checks its owner, permissions and file type before accepting input. The bridge
 removes the FIFO after the request. Both remote processes disable core dumps before reading a token.
 
+After installation, the wizard checks the broker's VM ID and CPU count again. When preflight matched
+an IPv4 address to a local interface, the broker must return at least one of those verified
+addresses too. An IPv6-only match retains the VM-ID and CPU checks because the broker returns no
+IPv6 addresses.
+
 This avoids recording the token when sudo's `log_input` is enabled. Sudo can still log the public
 setup source and non-secret results. It does not receive token bytes on its logged input stream. See
 [sudo's I/O logging documentation](https://www.sudo.ws/docs/man/1.9.14/sudoers.man.pdf). Root or a
@@ -56,11 +67,12 @@ protected backup and staging files for manual recovery in that case.
 
 Setup and rollback stop Governor before marking the new start. They require a state write strictly
 after that boundary. The old daemon's shutdown write cannot certify a new process that never
-publishes, even if the service reports active. Governor finishes its current tick before it stops
-and publishes only after its first tick, and a tick may include a 40-second limit test. Setup
-therefore waits up to 105 seconds for each: systemd's default 90-second stop timeout plus a margin,
-and a plan lookup, one long tick and startup. Rollback has its own step deadlines; the overall setup
-deadline does not interrupt it.
+publishes, even if the service reports active. Governor finishes its current tick and any active
+diagnostics request before it stops and publishes only after its first tick, and a tick may include
+a 40-second limit test. Setup therefore waits up to 105 seconds for stopping, covering systemd's
+default 90-second stop timeout plus a margin, and 55 seconds for fresh state, covering one long tick
+and startup. Startup uses configured vCPUs or the kernel's CPU count without contacting Hostinger.
+Rollback has its own step deadlines; the overall setup deadline does not interrupt it.
 
 The wizard does not rotate or revoke Hostinger tokens. Revoke an old token in hPanel after verifying
 migration if it is no longer used elsewhere. Other copies of a token and existing credential-manager
@@ -108,12 +120,22 @@ CPU metrics use Unix timestamps in milliseconds. Governor requests at most 48 ho
 The command exits zero and writes one JSON response on stdout:
 
 ```json
-{ "version": 1, "vm_id": 1234567, "data": { "cpus": 8 } }
+{
+  "version": 1,
+  "vm_id": 1234567,
+  "data": { "cpus": 8, "ipv4": [{ "address": "192.0.2.1" }] }
+}
 ```
 
 For metrics, `data` contains the usual `cpu_usage` object with a percent `unit` and a `usage`
 mapping from Unix seconds to numeric percentages. Governor validates readings and still discards the
 newest bucket. The VM ID and protocol version in the response must match the request.
+
+VM `ipv4` entries contain only an `address` validated as IPv4. The reference broker drops every
+other address field, IPv6 and unrelated provider data. Governor validates addresses again before
+returning them. A null `ipv4` field, which Hostinger's schema allows, and an omitted one from an
+older broker are accepted as an empty list; malformed fields or any non-IPv4 address reject the VM
+response.
 
 An authorized request may instead receive `{"version":1,"vm_id":1234567,"error":"busy"}` or the
 fixed code `rate_limited`, with exit status zero. Governor reports a temporary refusal with a retry
@@ -125,16 +147,43 @@ it or its workers. Errors never fall back to direct token-based requests. Govern
 accounting and uses its existing retry backoff. It does not log broker stdout, stderr or upstream
 error text.
 
+The daemon starts diagnostics in the background after applying the CPU ceiling, with at most one
+request in flight. A slow or hung request cannot delay this pass or the next one. The usual
+30-minute schedule and exponential retry backoff remain; failed requests retry from completion. New
+requests pause while limited. A request already in flight can finish and publish after the limit
+starts, and provider work can overlap local limit tests. Shutdown stops new diagnostics and waits
+for the active request within its existing deadline, so a privileged worker finishes before the next
+daemon can start another request. Results from before a reboot or counter reset are discarded
+without interrupting that worker. Scheduling starts fresh for each daemon, so a previous request
+cannot postpone the first diagnostics check after restart. With a direct token, each restart that
+reaches a full pass can make another provider request; the broker shares cached results across
+restarts for its 60-second window. Provider readings never change the ceiling, credit estimate or
+job admission.
+
+Re-run the regular Governor installer when upgrading. Its `KillMode=mixed` service setting sends the
+initial stop signal to the daemon so its broker launcher can finish; systemd still cleans up
+remaining children afterward. Replacing only the binary keeps the old service setting. This also
+lets an active probe or lift test, including its CPU burners, finish before stopping. Hooks still
+cancel their own process groups. The 40-second limit-test budget plus a 25-second broker request
+fits within systemd's default 90-second stop timeout.
+
 The reference broker uses nested budgets: a 15-second API timeout, 18-second worker runtime,
 23-second `systemd-run` timeout, 24-second launcher alarm and Governor's 25-second command deadline.
 Systemd bounds the start job and worker startup at three seconds, and stop at one second. Startup,
 runtime and stop together fit inside the outer command budget. The shared protocol fixture tests
-these limits, cooldown, connection-check window, capability marker and temporary error codes on both
-sides. Hooks use a different runner because they need process-group cleanup and no output, while a
-broker has bounded JSON output and can be privileged.
+these limits, cooldown, connection-check window, capability marker, temporary error codes and the
+non-IPv4 values both sides must reject. Hooks and token commands use their own runners because they
+need process-group cleanup, while a broker has bounded JSON output and can be privileged.
 
 Run `governor check-hostinger` as the daemon's Unix user to test both operations without changing
-the credit estimate. It prints only the VM ID, CPU count and number of complete CPU readings.
+the credit estimate. It prints the VM ID, CPU count, an `ipv4` array of address strings and the
+number of complete CPU readings. A deployment can require an address in `ipv4` to match one of the
+host's own addresses, in addition to checking the CPU count. An empty list cannot verify the host's
+identity. An older broker that omits the field produces a warning on stderr while stdout remains
+JSON. A present empty or null list does not trigger the upgrade warning. Upgrade both Governor and
+the installed broker to obtain addresses. The reference broker refreshes a cached VM response that
+lacks `ipv4` once after an upgrade, even within the 60-second cache window; subsequent requests
+share the new result. Failed refreshes still consume the rate allowance.
 
 ## Reference broker
 
@@ -146,12 +195,14 @@ Its no-argument launcher starts a short-lived `key-manager-hostinger` worker. On
 the encrypted Hostinger credential. The worker cannot access home directories, including unrelated
 SSH keys, or Governor's private configuration and state. It permits only GET requests for the
 configured VM's details and recent CPU metrics, verifies HTTPS, refuses redirects, ignores proxy
-environment variables and returns only validated CPU data. Each operation permits at most one
-upstream attempt per minute; failed attempts count too. Successful metric requests cache a rolling
-48-hour window, then filter it to each caller's authorized interval. Connection checks and daemon
-fetches share that cache for one minute despite differing timestamps. Request locking prevents
-concurrent workers. A check during an in-flight request may report `busy`; a failed upstream attempt
-can report `rate_limited` during cooldown. Neither means the connection configuration is broken.
+environment variables and returns only the validated CPU count, IPv4 addresses and CPU metrics. Each
+operation permits at most one upstream attempt per minute; failed attempts count too. The one
+exception is the single refresh of a VM response cached by an older broker without `ipv4`.
+Successful metric requests cache a rolling 48-hour window, then filter it to each caller's
+authorized interval. Connection checks and daemon fetches share that cache for one minute despite
+differing timestamps. Request locking prevents concurrent workers. A check during an in-flight
+request may report `busy`; a failed upstream attempt can report `rate_limited` during cooldown.
+Neither means the connection configuration is broken.
 
 Home-directory keys are blocked by `ProtectHome`. Keys outside home directories rely on their Unix
 permissions; the broker cannot discover every secret path on a server. Keep them private to their

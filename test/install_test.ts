@@ -70,6 +70,12 @@ Deno.test("installer updates package indexes and revokes legacy consumer write a
   assert(script.includes("visudo -cf /etc/sudoers.d/governor"));
 });
 
+Deno.test("installer lets the daemon finish its broker request before killing remaining children", () => {
+  const service = script.split("cat > /etc/systemd/system/governor.service <<'EOF'\n")[1]
+    .split("\nEOF")[0];
+  assert(service.includes("KillMode=mixed"));
+});
+
 Deno.test("installer derives the boot fallback from validated configuration instead of a fixed quota", () => {
   assert(script.includes("fallback_percent=$(/usr/local/bin/governor fallback --print)"));
   const boot = script.split("cat > /etc/systemd/system/user.slice.d/10-governor.conf <<EOF\n")[1]

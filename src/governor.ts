@@ -21,10 +21,11 @@ import {
   tightenCeiling,
   widen,
 } from "./credits.ts";
-import { cpuReadings, type HostingerSource, validateSource, vm } from "./hostinger.ts";
+import { cpuReadings, type HostingerSource, validateSource } from "./hostinger.ts";
 import { MAX_VCPUS, type Plan, plan, RULES_SINCE } from "./plans.ts";
 import { DEFAULT_FALLBACK_CPU_PERCENT, fallbackCpuPercent } from "./fallback.ts";
 import { HOOK_TIMEOUT_SECONDS, HookRunner, validateHookTimeout } from "./hooks.ts";
+import { DiagnosticsRunner } from "./diagnostics.ts";
 import { controlLoop } from "./control.ts";
 import {
   type Clock,
@@ -58,7 +59,7 @@ export type Config = {
   timezone?: string;
   initial_balance?: number;
   tick_seconds?: number;
-  // Overrides the plan read from Hostinger's API.
+  // Overrides the kernel's vCPU count for local plan sizing.
   vcpus?: number;
   baseline_share?: number;
   // Percent of one vCPU, only while the daemon is starting/stopped/failed.
@@ -114,8 +115,6 @@ type Private = {
   usagePrev?: UsageSnapshot;
   ceiling?: number;
   topAt?: number;
-  anchorNext?: number;
-  anchorBackoff?: number;
   noEarn?: boolean;
   earning?: boolean;
   capFailed?: boolean;
@@ -163,7 +162,6 @@ const STEAL_WINDOW_MS = 5 * 60_000;
 const CPU_WINDOW_MS = 30 * 60_000;
 const KEEP_MS = 2 * 3_600_000;
 const READINGS_KEEP_MS = 48 * 3_600_000;
-const ANCHOR_EVERY_MS = 30 * 60_000;
 const LIMIT_STEAL = 0.1;
 const TEST_EVERY_MS = 2 * 60_000;
 const TEST_MAX_MS = 15 * 60_000;
@@ -267,17 +265,7 @@ async function writeJson(path: string, value: unknown, mode: number) {
 }
 
 export async function detectPlan(cfg: Config): Promise<Plan> {
-  if (cfg.vcpus) return plan(cfg.vcpus, undefined, cfg.baseline_share);
-  const h = cfg.hostinger;
-  if (h?.vm_id) {
-    try {
-      const v = await vm(h, h.vm_id);
-      if (v.cpus) return plan(v.cpus, v.plan ?? `KVM ${v.cpus}`, cfg.baseline_share);
-    } catch (e) {
-      log("plan from Hostinger's API failed, counting vCPUs:", e);
-    }
-  }
-  return plan(await vcpusSeen(), undefined, cfg.baseline_share);
+  return plan(cfg.vcpus ?? await vcpusSeen(), undefined, cfg.baseline_share);
 }
 
 async function capSlice(slice: string, percent: number): Promise<boolean> {
@@ -321,6 +309,7 @@ export class Governor {
   comparison: number | null = null;
   private liftEvidence: "unknown" | "limited" | "lifted" = "unknown";
   private readonly hookRunner: HookRunner;
+  private readonly diagnostics?: DiagnosticsRunner;
   constructor(
     readonly cfg: Config,
     readonly plan: Plan,
@@ -390,6 +379,21 @@ export class Governor {
     }
     this.s.schema = 2;
     this.s.planKey = planKey;
+    // Older persisted state includes diagnostic timers. Each daemon gets a fresh schedule;
+    // keep the compatible credit estimate but retire these obsolete fields on the next save.
+    const legacy = this.s as Private & { anchorNext?: number; anchorBackoff?: number };
+    delete legacy.anchorNext;
+    delete legacy.anchorBackoff;
+    const h = cfg.hostinger;
+    if (h?.vm_id) {
+      const id = h.vm_id;
+      this.diagnostics = new DiagnosticsRunner({
+        readings: (at) => this.io.readings(h, id, Math.max(at - READINGS_KEEP_MS, RULES_SINCE), at),
+        clock: () => this.io.clock(),
+        publish: (readings, at) => this.publishDiagnostics(readings, at),
+        log: (e) => log("diagnostics failed:", e),
+      });
+    }
     if (this.s.balance >= plan.recovered) this.s.rebuilding = null;
   }
   get slice() {
@@ -504,6 +508,10 @@ export class Governor {
     return this.hookRunner.close();
   }
 
+  closeDiagnostics() {
+    return this.diagnostics?.close() ?? Promise.resolve();
+  }
+
   enterLimit(now: number, learn: boolean) {
     const s = this.s;
     const entry = { balance: s.balance, used: s.used, learn };
@@ -551,15 +559,7 @@ export class Governor {
     log("request:", JSON.stringify(r));
   }
 
-  async anchorNow(now: number) {
-    const h = this.cfg.hostinger;
-    if (!h?.vm_id) return;
-    const readings = await this.io.readings(
-      h,
-      h.vm_id,
-      Math.max(now - READINGS_KEEP_MS, RULES_SINCE),
-      now,
-    );
+  private publishDiagnostics(readings: Reading[], now: number) {
     if (!readings.length) return;
     this.s.readings = readings;
     const r = replay(this.plan, readings);
@@ -656,6 +656,7 @@ export class Governor {
       return;
     }
     if (reset) {
+      this.diagnostics?.reset();
       if (s.bootId !== undefined || prev) {
         s.balance = 0;
         s.rebuilding = { reason: s.bootId !== bootId ? "reboot" : "counter-reset", since: now };
@@ -670,8 +671,6 @@ export class Governor {
       this.comparison = null;
       s.samples = [];
       s.probe = { cooldownUntil: 0, backoffMs: BACKOFF_MS };
-      s.anchorNext = 0;
-      s.anchorBackoff = 60_000;
       s.topAt = undefined;
       if (s.limit) {
         s.limit.heldFrom = uptime;
@@ -742,18 +741,6 @@ export class Governor {
       recovery.charged += charged(busyCores, s.margin) * seconds;
     }
     s.at = now;
-    if (!s.limit && uptime >= (s.anchorNext ?? 0)) {
-      s.anchorNext = uptime + ANCHOR_EVERY_MS;
-      try {
-        await this.anchorNow(now);
-        s.anchorBackoff = 60_000;
-      } catch (e) {
-        s.anchorNext = uptime + (s.anchorBackoff ?? 60_000);
-        s.anchorBackoff = Math.min((s.anchorBackoff ?? 60_000) * 2, ANCHOR_EVERY_MS);
-        log("anchor failed:", e);
-      }
-    }
-
     const control = this.controlMeasurements();
     const { count, busy, steal, outside } = control;
     const current = await this.io.ceiling(this.slice);
@@ -850,6 +837,7 @@ export class Governor {
 
     try {
       await this.applyCeiling(current, control);
+      if (!s.limit) this.diagnostics?.refresh({ at: now, uptime });
     } finally {
       for (const event of notifications) this.notify(event, now);
     }
@@ -923,6 +911,7 @@ export async function runDaemon() {
   const stop = () => {
     controller.abort();
     void g.closeHooks();
+    void g.closeDiagnostics();
   };
   Deno.addSignalListener("SIGTERM", stop);
   Deno.addSignalListener("SIGINT", stop);
@@ -937,6 +926,7 @@ export async function runDaemon() {
       },
     });
   } finally {
+    await g.closeDiagnostics();
     if (ranPass) await g.save(Date.now()).catch(() => {});
     await g.closeHooks();
     Deno.removeSignalListener("SIGTERM", stop);

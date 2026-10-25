@@ -71,13 +71,29 @@ class ValidationTests(unittest.TestCase):
     def test_matches_server_and_verifies_metrics(self):
         self.assertEqual(
             self.validate([[VM], VM, METRICS]),
-            {"vm_id": 12345, "cpus": 8, "cpu_samples": 1},
+            {
+                "vm_id": 12345, "cpus": 8, "cpu_samples": 1,
+                "verified_ipv4": ["93.184.216.34"],
+            },
         )
 
     def test_wrong_account_refused(self):
         other = {**VM, "ipv4": [{"address": "1.1.1.1"}]}
         with self.assertRaisesRegex(REMOTE.SafeError, "exactly one VPS"):
             self.validate([[other]])
+
+    def test_ipv6_only_vm_can_be_identified_without_ipv4(self):
+        vm = {**VM, "ipv4": None, "ipv6": [{"address": "2606:4700:4700::1111"}]}
+        interfaces = json.dumps([
+            {"addr_info": [{"local": "2606:4700:4700::1111"}]}
+        ]).encode()
+        with patch.object(REMOTE, "run", return_value=interfaces), patch.object(
+            REMOTE, "api_get", side_effect=[[vm], vm, METRICS]
+        ), patch.object(REMOTE.Path, "read_text", return_value=COUNTERS):
+            result = REMOTE.validate_vm(TOKEN)
+        self.assertEqual(
+            result, {"vm_id": 12345, "cpus": 8, "cpu_samples": 1, "verified_ipv4": []}
+        )
 
     def test_ambiguous_vm_refused(self):
         with self.assertRaisesRegex(REMOTE.SafeError, "exactly one VPS"):
@@ -229,10 +245,13 @@ class DeadlineTests(unittest.TestCase):
         # STOP_SECONDS assumes systemd's default stop timeout for the unit.
         self.assertNotIn("TimeoutStopSec", unit)
         self.assertGreater(REMOTE.STOP_SECONDS, REMOTE.SYSTEMD_STOP_SECONDS)
-        self.assertGreater(REMOTE.SYSTEMD_STOP_SECONDS, REMOTE.GOVERNOR_TICK_SECONDS)
+        self.assertGreater(
+            REMOTE.SYSTEMD_STOP_SECONDS,
+            REMOTE.GOVERNOR_LIMIT_TEST_SECONDS + REMOTE.BROKER.REQUEST_SECONDS,
+        )
         self.assertGreater(
             REMOTE.FRESH_STATE_SECONDS,
-            REMOTE.BROKER.REQUEST_SECONDS + REMOTE.GOVERNOR_TICK_SECONDS,
+            REMOTE.GOVERNOR_LIMIT_TEST_SECONDS,
         )
 
     def test_limit_test_budget_matches_governor(self):
@@ -595,11 +614,16 @@ class TransactionTests(unittest.TestCase):
                     else TOKEN.encode()
                 )
         if argv[0] == "/usr/sbin/runuser" and argv[-1] == "check-hostinger":
-            return json.dumps({"vm_id": 12345, "cpus": 8, "cpu_samples": 24}).encode()
+            return json.dumps({
+                "vm_id": 12345, "cpus": 8, "cpu_samples": 24, "ipv4": ["93.184.216.34"],
+            }).encode()
         return b""
 
-    def invoke(self, runner=None, fingerprint=None):
-        vm = {"vm_id": 12345, "cpus": 8, "cpu_samples": 24}
+    def invoke(self, runner=None, fingerprint=None, verified_ipv4=("93.184.216.34",)):
+        vm = {
+            "vm_id": 12345, "cpus": 8, "cpu_samples": 24,
+            "verified_ipv4": list(verified_ipv4),
+        }
         digest = fingerprint or hashlib.sha256(self.original).hexdigest()
         with patch.object(REMOTE, "run", side_effect=runner or self.runner):
             return REMOTE.apply(
@@ -638,6 +662,56 @@ class TransactionTests(unittest.TestCase):
             self.assertNotIn(TOKEN, " ".join(argv))
             self.assertNotIn(TOKEN, str(env))
             self.assertNotIn("seed", argv)
+
+    def test_post_install_rejects_a_broker_with_the_right_cpus_but_wrong_ipv4(self):
+        def runner(argv, **kwargs):
+            if argv[0] == "/usr/sbin/runuser" and argv[-1] == "check-hostinger":
+                return json.dumps({
+                    "vm_id": 12345, "cpus": 8, "cpu_samples": 24,
+                    "ipv4": ["198.51.100.2"],
+                }).encode()
+            return self.runner(argv, **kwargs)
+
+        with contextlib.redirect_stderr(io.StringIO()), self.assertRaisesRegex(
+            REMOTE.SafeError, "IPv4 addresses do not match this server"
+        ):
+            self.invoke(runner)
+        self.assertEqual(self.config.read_bytes(), self.original)
+
+    def test_post_install_names_an_older_governor_without_ipv4_output(self):
+        def runner(argv, **kwargs):
+            if argv[0] == "/usr/sbin/runuser" and argv[-1] == "check-hostinger":
+                return json.dumps({"vm_id": 12345, "cpus": 8, "cpu_samples": 24}).encode()
+            return self.runner(argv, **kwargs)
+
+        with contextlib.redirect_stderr(io.StringIO()), self.assertRaisesRegex(
+            REMOTE.SafeError, "install the matching Governor release"
+        ):
+            self.invoke(runner)
+        self.assertEqual(self.config.read_bytes(), self.original)
+
+    def test_ipv6_only_preflight_configures_without_ipv4_output(self):
+        def runner(argv, **kwargs):
+            if argv[0] == "/usr/sbin/runuser" and argv[-1] == "check-hostinger":
+                return json.dumps({"vm_id": 12345, "cpus": 8, "cpu_samples": 24}).encode()
+            return self.runner(argv, **kwargs)
+
+        result = self.invoke(runner, verified_ipv4=())
+        self.assertTrue(result["configured"])
+
+    def test_ipv6_only_preflight_still_rejects_a_cpu_mismatch(self):
+        def runner(argv, **kwargs):
+            if argv[0] == "/usr/sbin/runuser" and argv[-1] == "check-hostinger":
+                return json.dumps({
+                    "vm_id": 12345, "cpus": 4, "cpu_samples": 24, "ipv4": [],
+                }).encode()
+            return self.runner(argv, **kwargs)
+
+        with contextlib.redirect_stderr(io.StringIO()), self.assertRaisesRegex(
+            REMOTE.SafeError, "restricted Hostinger broker"
+        ):
+            self.invoke(runner, verified_ipv4=())
+        self.assertEqual(self.config.read_bytes(), self.original)
 
     def test_restart_failure_restores_original_config_and_archives_ciphertext(self):
         starts = 0
