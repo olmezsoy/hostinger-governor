@@ -28,28 +28,30 @@ full use. At zero the whole VPS drops to a fraction of its CPU (30% on KVM 2, 4 
 balance rebuilds, and while work keeps pressing on that limit, nothing is earned. A busy server can
 stay limited for as long as the load lasts.
 
-![Diagram of how hostinger-governor works. Hostinger holds the CPU credit bank, and the VPS cannot read its balance. Every 30 seconds by default, governor.service reads CPU and steal from the kernel, keeps a cautious estimate of the bank, and sets one shared CPU quota on user.slice: every login, governor exec jobs, and services or Docker you enroll. Everything else is measured, not capped. Provider diagnostics start every 30 minutes unless limited, and a request already in flight can still finish. Diagnostics never change the estimate. Spending: every vCPU while the estimate is high, then a glide onto a 20% floor; with no governor, the same load empties the bank and Hostinger limits the VPS. After a reboot, an install or a limit, the estimate starts at 0, so the ceiling starts under the baseline. When steal follows demand during a 20-second probe at 0.2 vCPU, or reaches 60% of demand, the governor treats the VPS as limited: it holds user.slice below the host limit, down to 0.2 vCPU, until a lift test passes. If the probe does not confirm a limit, the governor stays in Spending and retries later. A saved limit resumes on start. While the daemon is not running, systemd holds user.slice, SSH included, at 0.2 vCPU by default.](docs/how-it-works.svg)
+![Diagram of how hostinger-governor works. Hostinger holds the CPU credit bank, and the VPS cannot read its balance. Every 30 seconds by default, governor.service reads CPU and steal from the kernel, keeps a cautious estimate of the bank, and sets one shared CPU quota on user.slice: every login, governor exec jobs, and services or Docker you enroll. Everything else is measured, not capped. Provider diagnostics start every 30 minutes unless limited, and a request already in flight can still finish. Readings can only tighten the estimate in apply mode. Spending: every vCPU while the estimate is high, then a glide onto the spending floor, 20% in off or shadow and initially 5% in apply; with no governor, the same load empties the bank and Hostinger limits the VPS. After a reboot, an install or a limit, the estimate starts at 0, so the ceiling starts under the baseline. When steal follows demand during a 20-second probe at 0.2 vCPU, or reaches 60% of demand, the governor treats the VPS as limited: it holds user.slice below the host limit, down to 0.2 vCPU, until a lift test passes. At the lift it classifies the limit; a sustained-use limit gets back the estimate its reset hid. If the probe does not confirm a limit, the governor stays in Spending and retries later. A saved limit resumes on start. While the daemon is not running, systemd holds user.slice, SSH included, at 0.2 vCPU by default.](docs/how-it-works.svg)
 
 The governor measures the whole machine and caps workloads placed under `user.slice`:
 
 - **Estimates the balance.** It reads `/proc/stat` and kernel uptime, initially allowing for 5% more
-  billed CPU than the guest sees, plus 0.08 vCPU. Boot identity prevents earning across stops. After
-  a reboot, counter reset, or upgrade from v0.1, the estimate starts at zero because intervening CPU
-  consumption is unknown. Long gaps between samples cannot earn credits.
+  billed CPU than the guest sees, plus 0.08 vCPU in `off` and `shadow` or 0.04 vCPU to start in
+  `apply`. Boot identity prevents earning across stops. After a reboot, counter reset, or upgrade
+  from v0.1, the estimate starts at zero because intervening CPU consumption is unknown. Long gaps
+  between samples cannot earn credits.
 - **Reads provider diagnostics.** Every 30 minutes it fetches CPU history, validates units and
   values, excludes the newest bucket, and compares complete intervals with guest measurements.
   Failures retry with exponential backoff. Fetches run in the background after the ceiling update,
   with at most one in flight, so a slow provider or broker cannot delay CPU control. New requests
   pause while limited; an existing request may finish later or overlap a local limit test. History
-  is diagnostic only and cannot increase the estimate. The API does not establish whether buckets
-  match credit billing or their timestamp semantics.
+  cannot increase the estimate. Readings cover the interval since the previous timestamp; their
+  relationship to credit billing remains unknown.
 - **Spends it.** One shared CPU ceiling covers every login on the machine (`user.slice`). The
-  ceiling is the baseline plus the balance's surplus over a 20% floor, spread across 30 minutes,
-  minus what system services use. Work gets every core while the balance is high, and the balance
-  glides onto the floor instead of emptying. A week's simulation in the tests never empties it and
-  uses about 97% of the credits earned under its stated billing and background-load assumptions.
-  Other tests cover reboots, clock jumps, missing readings, recovery, permissions, and API outages;
-  the simulation is not a guarantee of live Hostinger behavior.
+  ceiling is the baseline plus the balance's surplus over the spending floor, spread across 30
+  minutes, minus what system services use. The floor is 20% in off and shadow, initially 5% in
+  apply. Work gets every core while the balance is high, and the balance glides onto the floor
+  instead of emptying. A week's simulation in the tests never empties it and uses about 97% of the
+  credits earned under its stated billing and background-load assumptions. Other tests cover
+  reboots, clock jumps, missing readings, recovery, permissions, and API outages; the simulation is
+  not a guarantee of live Hostinger behavior.
 - **Tells a limit from noisy neighbours.** Steal can come from either. When steal appears, the
   governor compares steal with demand, cuts the quota for 20 seconds, then restores it. A limit's
   steal should follow demand. This is a heuristic; the guest cannot read the host's count of
@@ -62,9 +64,13 @@ The governor measures the whole machine and caps workloads placed under `user.sl
   15 minutes from completion. Probe and test intervals still count toward billed CPU, but cannot
   tighten the quota or masquerade as outside demand. Obvious or sharply increased steal can bypass a
   neighbour-probe cooldown. These remain heuristics, so detection can be delayed and neighbours can
-  cause false alarms. The margin learns only after healthy burners show delivery consistent with an
-  ongoing host limit. A first test that passes leaves the margin unchanged and never restores old
-  credits.
+  cause false alarms. A limit teaches only when a lift test during it fails with limited evidence
+  and, at the lift, its delivered CPU stayed flat within 0.3 cores of the plan's limit, or flat
+  below it: a credit limit. A cap that starts high or falls marks sustained-use throttling, which
+  teaches nothing and keeps the allowance at or below the baseline for three hours after the lift.
+  Its entry reset the estimate to 0 although the bank wasn't empty, so the estimate it hid comes
+  back, replayed on the guest's own count. Unknown limits teach nothing and alert. A first test that
+  passes leaves the margin unchanged and never restores old credits.
 - **Keeps a fallback quota.** The default is 20% of one core before startup, after shutdown or a
   crash, and early in boot. Operators can choose a different fallback. The helper can change only
   `user.slice`; recovery and probe floors still use 20%.
@@ -72,6 +78,16 @@ The governor measures the whole machine and caps workloads placed under `user.sl
 The plan uses configured `vcpus`, or the kernel's CPU count when unset, with Hostinger's KVM rules.
 Startup and CPU control never wait for the provider. Use `governor check-hostinger` to verify the
 provider's VM details and addresses separately.
+
+Calibration is opt-in. See [calibration configuration, evidence and rollout](docs/calibration.md)
+for `off`, `shadow`, `apply`, and `governor calibrate --explain` or `--reset`. In apply mode, the
+margin and floor tighten from recorded readings and confirmed credit limits. Learned settings never
+loosen on their own, with two exceptions, both when Hostinger's meter changes. Fits on the readings
+after the change replace what limits taught while it was held, never going below what was learned
+before it. A floor raised while readings couldn't be used returns to where it was once returning
+readings show the change. Only `governor calibrate --reset` returns them to the start. While
+readings stay stale or invalid for a day, apply holds at least today's 1.05× + 0.08 margin, and that
+hold ends when readings resume.
 
 ## Install
 
@@ -89,7 +105,9 @@ curl -fsSL https://github.com/olmezsoy/hostinger-governor/releases/latest/downlo
   `"token_command": ["your-cli", "get", "hostinger"]` in the config. Both options give Governor the
   raw token. For operation-only access without disclosing the token, use `request_command` instead.
   See [Hostinger credential isolation](docs/hostinger-credentials.md).
-- `--consumer`: accepted for compatibility. All users can read status; control requires root.
+- `--consumer`: accepted for compatibility. All users can read status in `/run/governor/state.json`;
+  control requires root. `governor calibrate --explain` reads the daemon's private files, so it
+  needs root or the `governor` user too.
 - `--baseline-share`: baseline fraction for a new config, default `0.6`. Existing configs are kept;
   change `baseline_share` there when you have evidence for different rules.
 
@@ -154,7 +172,10 @@ sudo systemctl restart governor.service
 ```
 
 Running the installer again updates the governor and revokes the old consumer group's request
-access. The first v0.2 startup discards the v0.1 estimate, which may have been inflated.
+access. Before it stops the running daemon, it checks the existing config with the new binary and
+stops the upgrade if that fails, for example on a key the new version doesn't know. It also gives
+back to the `governor` user any of its state files a root run created, which the service couldn't
+read otherwise. The first v0.2 startup discards the v0.1 estimate, which may have been inflated.
 `--uninstall` removes the daemon and its boot quota and lifts the ceiling. Workload routing
 configured separately is kept; remove those service drop-ins or restore Docker's backup if you want
 to undo that routing.
@@ -167,12 +188,12 @@ configuration if setup fails. See
 
 ## Use it
 
-| Who                        | How                                                                                                                                                                                    |
-| -------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Scripts and other services | `governor status --json`, or read `/run/governor/state.json` (world-readable). Before starting heavy work, check `accepting`; it is false while Hostinger limits the machine.          |
-| People                     | `governor report [hours]`: CPU, credits, Hostinger's readings, steal, each user's share, memory, swap, load, disk.                                                                     |
-| Owners                     | `sudo governor limit off` when Hostinger support lifts a limit, `sudo governor limit on` to start one by hand, `sudo governor seed <core-seconds>` to set the balance.                 |
-| Events                     | Executables in `/etc/governor/hooks.d` run as the `governor` user on `limit-start` and `limit-end`, with the event in `GOVERNOR_EVENT` and the state on stdin. See `examples/hooks.d`. |
+| Who                        | How                                                                                                                                                                                                       |
+| -------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Scripts and other services | `governor status --json`, or read `/run/governor/state.json` (world-readable). Before starting heavy work, check `accepting`; it is false while Hostinger limits the machine.                             |
+| People                     | `governor report [hours]`: CPU, credits, Hostinger's readings, steal, each user's share, memory, swap, load, disk.                                                                                        |
+| Owners                     | `sudo governor limit off` when Hostinger support lifts a limit, `sudo governor limit on` to start one by hand (a limit already detected goes on), `sudo governor seed <core-seconds>` to set the balance. |
+| Events                     | Executables in `/etc/governor/hooks.d` run as the `governor` user on limit and calibration events, with the event in `GOVERNOR_EVENT` and the state on stdin. See `examples/hooks.d`.                     |
 
 A fresh install starts the estimate at zero because the real balance is unknown. It grows from
 observed CPU use. Only root can seed a known balance; API history never seeds it automatically.
@@ -184,14 +205,16 @@ sudo governor tick
 ```
 
 The command talks to the running daemon over its private `/run/governor/tick.sock` Unix socket. It
-processes queued `limit` and `seed` requests, runs the same control pass as a timed tick, and
-returns successfully only after `/var/lib/governor/persist.json` and `/run/governor/state.json` are
-written. Calls run in sequence. Timed ticks keep their configured interval; an on-demand pass does
-not restart the timer. A pass less than `min(5 seconds, tick_seconds / 2)` after the last measured
-pass reuses its measurements while applying queued commands, setting the quota and writing state.
-Its CPU use accumulates into the next sample. This prevents tiny, noisy intervals from tightening a
-recovery quota or triggering a limit probe. Limit probes run when a fresh sample is available and
-can take time. Provider diagnostics and hooks continue in the background without delaying the pass.
+processes queued `limit`, `seed` and `calibrate --reset` requests, runs the same control pass as a
+timed tick, and returns successfully only after `/var/lib/governor/persist.json` and
+`/run/governor/state.json` are written. Calls run in sequence. Timed ticks keep their configured
+interval; an on-demand pass does not restart the timer. A pass less than
+`min(5 seconds, tick_seconds / 2)` after the last measured pass reuses its measurements while
+applying queued commands, evaluating calibration again if a command changed the estimate, setting
+the quota and writing state. Its CPU use accumulates into the next sample. This prevents tiny, noisy
+intervals from tightening a recovery quota or triggering a limit probe. Limit probes run when a
+fresh sample is available and can take time. Provider diagnostics and hooks continue in the
+background without delaying the pass.
 
 Verification scripts can check a limit without sleeping until the next tick:
 
@@ -265,9 +288,16 @@ for detection probes or the governor's recovery floor.
 ## Hook delivery
 
 Place notification executables in `/etc/governor/hooks.d`. Hooks run as the `governor` user, with
-`GOVERNOR_EVENT=limit-start` or `limit-end` and the captured public state on stdin. CPU quota
-control happens first. Delivery runs in the background, preserving event order and alphabetical hook
-order, so a slow notification destination cannot delay the control loop.
+`GOVERNOR_EVENT` naming `limit-start`, `limit-end`, `limit-classified`, `calibration`,
+`rules-mismatch` or `readings-invalid`, and the captured public state on stdin. CPU quota control
+happens first. Delivery runs in the background, preserving event order and alphabetical hook order,
+so a slow notification destination cannot delay the control loop.
+
+`rules-mismatch` and `readings-invalid` alert in every calibration mode, once per episode, and so
+does `limit-classified` for a sustained-use or unknown limit. `calibration` fires in apply mode when
+a calibration decision changes the settings in force and doesn't alert on its own: a latched rules
+mismatch, which applies at least 1.05× + 0.08, fires `rules-mismatch` alone. A raised `start` that a
+daemon start applies fires nothing. See [Calibration](docs/calibration.md#hooks-and-state).
 
 Each hook has its own deadline. `hook_timeout_seconds` defaults to 60 and accepts 1 to 300 seconds.
 It includes startup and writing stdin, even if the hook never reads it or ignores SIGTERM. Governor
@@ -388,7 +418,9 @@ baseline too.
 The governor keeps:
 
 - top-process snapshots from hot or stolen moments in `/var/lib/governor/top/<day>.log`, for a week;
-- its working state in `/var/lib/governor/persist.json`.
+- its working state in `/var/lib/governor/persist.json`;
+- 90 days of calibration evidence in `/var/lib/governor/history.json`, a daily snapshot, and
+  `history.log`, the changes appended since; both are private to the governor.
 
 ## Rule changes
 
@@ -500,7 +532,8 @@ billing.
 - Sustained work above the baseline (4.8 vCPU on KVM 8) cannot fit; it runs slower instead. If that
   is your normal load, a plan with dedicated vCPUs is the fix.
 - Hostinger also throttles sustained high use as potential abuse, on rules it does not publish. The
-  governor treats any limit the same way, but it cannot know that rule in advance.
+  governor classifies cap trajectories and recovery evidence, but cannot predict that rule in
+  advance.
 - System services and containers outside `user.slice` are measured, not capped. Enroll heavy work
   using the commands above. The governor cannot guarantee recovery while outside demand remains
   above the host limit.

@@ -128,8 +128,10 @@ The command exits zero and writes one JSON response on stdout:
 ```
 
 For metrics, `data` contains the usual `cpu_usage` object with a percent `unit` and a `usage`
-mapping from Unix seconds to numeric percentages. Governor validates readings and still discards the
-newest bucket. The VM ID and protocol version in the response must match the request.
+mapping from Unix seconds to numeric percentages. Governor validates readings and keeps the newest
+bucket out of its calculations, using it only to track revisions, unless `readings.use_newest` is on
+([calibration](calibration.md#readings)). The VM ID and protocol version in the response must match
+the request.
 
 VM `ipv4` entries contain only an `address` validated as IPv4. The reference broker drops every
 other address field, IPv6 and unrelated provider data. Governor validates addresses again before
@@ -139,7 +141,11 @@ response.
 
 An authorized request may instead receive `{"version":1,"vm_id":1234567,"error":"busy"}` or the
 fixed code `rate_limited`, with exit status zero. Governor reports a temporary refusal with a retry
-instruction. No arbitrary error text is accepted through this channel.
+instruction. A metrics request may also receive the fixed code `invalid_metrics` when Hostinger
+returned metrics no CPU percentage can be: a unit other than percent, a timestamp that isn't Unix
+seconds, a value that isn't a number from 0 to 100, or a reading stamped more than five minutes
+ahead. Governor then treats the readings as invalid, as it does on its own API path, and alerts once
+with `readings-invalid`. No arbitrary error text is accepted through this channel.
 
 Responses are limited to 4 MiB. Governor attempts to stop a command after 25 seconds. A privileged
 broker must also bound its own lifetime because an unprivileged caller may not be able to terminate
@@ -157,8 +163,10 @@ daemon can start another request. Results from before a reboot or counter reset 
 without interrupting that worker. Scheduling starts fresh for each daemon, so a previous request
 cannot postpone the first diagnostics check after restart. With a direct token, each restart that
 reaches a full pass can make another provider request; the broker shares cached results across
-restarts for its 60-second window. Provider readings never change the ceiling, credit estimate or
-job admission.
+restarts for its 60-second window. In calibration's `off` and `shadow` modes, provider readings
+never change the ceiling, credit estimate or job admission. In `apply` they can lower the estimate
+the governor acts on and tighten its margin and floor, never the reverse; see
+[Calibration](calibration.md).
 
 Re-run the regular Governor installer when upgrading. Its `KillMode=mixed` service setting sends the
 initial stop signal to the daemon so its broker launcher can finish; systemd still cleans up
@@ -166,6 +174,24 @@ remaining children afterward. Replacing only the binary keeps the old service se
 lets an active probe or lift test, including its CPU burners, finish before stopping. Hooks still
 cancel their own process groups. The 40-second limit-test budget plus a 25-second broker request
 fits within systemd's default 90-second stop timeout.
+
+The installer doesn't touch an installed broker, and the setup wizard refuses to overwrite its
+files. Replace the broker's source with the matching release's copy as root. The release publishes
+`hostinger-broker.py` beside the binaries, so on the VPS, after upgrading Governor:
+
+```sh
+cd "$(mktemp -d)"
+base=https://github.com/olmezsoy/hostinger-governor/releases/download/v$(governor version)
+curl -fsSLO "$base/hostinger-broker.py" && curl -fsSLO "$base/SHA256SUMS" &&
+  grep ' hostinger-broker.py$' SHA256SUMS | sha256sum -c - &&
+  sudo install -o root -g root -m 0644 hostinger-broker.py /usr/local/libexec/governor-hostinger.py
+```
+
+A checkout of that release has the same file at `tools/hostinger-broker.py`.
+
+The launcher and sudo rule stay as they are, and the next request runs the new source. Until then an
+older broker reports a wrong unit or value as a plain failure, so readings go stale instead of
+raising `readings-invalid`, and a broker older than the IPv4 change omits `ipv4`.
 
 The reference broker uses nested budgets: a 15-second API timeout, 18-second worker runtime,
 23-second `systemd-run` timeout, 24-second launcher alarm and Governor's 25-second command deadline.
@@ -257,7 +283,10 @@ does not revoke a token or remove copies from server snapshots.
 
 The wizard refuses existing broker installations. Rotation is a manual administrator operation;
 schedule it before the expiry chosen in hPanel. An expired token disables API diagnostics, not local
-CPU accounting or quota control. Do not delete the installed broker to make the wizard run again.
+CPU accounting or quota control. Calibration loses its readings too: in every mode, fitting and
+drift detection pause after two hours, and after a day `apply` holds at least 1.05× + 0.08 until
+readings resume ([stale readings](calibration.md#stale-and-invalid-readings)). Do not delete the
+installed broker to make the wizard run again.
 
 1. Create a replacement token in the same Hostinger account. Keep the old token valid until the new
    one has passed a connection check.

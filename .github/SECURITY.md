@@ -35,11 +35,13 @@ These boundaries matter most:
 
 - **The daemon's privileges.** `governor.service` runs as the unprivileged `governor` user. The base
   installation grants sudo only for `/usr/local/libexec/governor-cap`, which sets `CPUQuota` on
-  `user.slice` and nothing else. The optional broker adds the restricted grant described below.
-  Anything that lets the `governor` user or another local user exceed these boundaries is in scope.
-- **Root-only controls.** `governor limit`, `seed` and `tick` must stay root-only. The daemon
-  accepts request files in `/run/governor/requests` only when root owns them, and its control socket
-  admits only root and the daemon's user.
+  `user.slice` and, when asked, its `CPUQuotaPeriodSec` to 10 ms or systemd's default, and nothing
+  else. The optional broker adds the restricted grant described below. Anything that lets the
+  `governor` user or another local user exceed these boundaries is in scope.
+- **Root-only controls.** `governor limit`, `seed`, `tick` and `calibrate --reset` must stay
+  root-only; `calibrate --explain` only reads, and needs root or the `governor` user to read the
+  daemon's private files. The daemon accepts request files in `/run/governor/requests` only when
+  root owns them, and its control socket admits only root and the daemon's user.
 - **Hostinger credentials.** The installer's token file is readable only by root and the `governor`
   group. The optional `request_command` broker adds a no-argument sudo grant for
   `/usr/local/libexec/governor-hostinger`. Its fixed launcher starts an isolated worker that can

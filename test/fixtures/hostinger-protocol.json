@@ -16,6 +16,20 @@
   "governor_limit_test_ms": 40000,
   "capability": "request_command v1 supported",
   "temporary_errors": ["busy", "rate_limited"],
+  "invalid_metrics_error": "invalid_metrics",
+  "clock_skew_ms": 300000,
+  "invalid_timestamp_keys": [
+    "1.5",
+    "1e3",
+    " 3000",
+    "3000 ",
+    "+3000",
+    "-1",
+    "0x10",
+    "",
+    "1234567890123",
+    "\uff13\uff10\uff10\uff10"
+  ],
   "invalid_ipv4_addresses": [
     "dummy.secret.token",
     "example.com",
@@ -30,5 +44,13 @@
     true,
     null
   ],
-  "invalid_ipv4_fields": [{}, "192.0.2.1", [null], ["192.0.2.1"], [{}]]
+  "invalid_ipv4_fields": [{}, "192.0.2.1", [null], ["192.0.2.1"], [{}]],
+  "failed_metrics_bodies": [
+    {},
+    { "cpu_usage": null },
+    { "cpu_usage": "%" },
+    { "cpu_usage": { "unit": "%" } },
+    { "cpu_usage": { "unit": "%", "usage": null } },
+    { "cpu_usage": { "unit": "%", "usage": [] } }
+  ]
 }

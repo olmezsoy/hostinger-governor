@@ -90,7 +90,8 @@ notice.
 
 Runway stops at the reserve rather than promising the entire estimated bank can be spent. Refill
 ETAs assume the measured rate continues. A detected host limit and paused work are shown separately.
-Hostinger API history is diagnostic and never raises the estimate.
+Hostinger API history never raises the estimate. In calibration's `apply` mode it can lower it, so
+the report calls it tighten only; otherwise it calls it diagnostic.
 
 The command refuses to display a stale bank. Without fresh governor state it still reports machine
 resources, with `governor` and `credits` set to `null` and an unavailable notice. API history may be

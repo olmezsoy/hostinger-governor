@@ -163,6 +163,65 @@ class UpstreamTest(unittest.TestCase):
                     {"cpu_usage": {"unit": unit, "usage": usage}}, metrics_request()
                 )
 
+    def test_impossible_percentages_are_reported_as_invalid_not_failed(self):
+        # The daemon raises readings-invalid for these, as on its own API path.
+        # A string, null or boolean value, a timestamp that isn't Unix seconds, and a missing unit
+        # count too: the daemon's parser rejects each as an invalid reading.
+        for unit, usage in (
+            ("cores", {"1799998200": 20}),
+            (None, {"1799998200": 20}),
+            ("%", {"1799998200": 101}),
+            ("%", {"1799998200": -1}),
+            ("%", {"1799998200": float("nan")}),
+            # Too large for a float: math.isfinite would raise on it.
+            ("%", {"1799998200": 10**400}),
+            ("%", {"1799998200": TOKEN}),
+            ("%", {"1799998200": None}),
+            ("%", {"1799998200": True}),
+            ("%", {TOKEN: 20}),
+            ("%", {str((NOW + BROKER.CLOCK_SKEW_MS) // 1000 + 1): 20}),
+            # Keys that aren't Unix seconds, which the daemon's own API path rejects too.
+            *(("%", {key: 20}) for key in CONTRACT["invalid_timestamp_keys"]),
+        ):
+            with self.assertRaises(BROKER.Refused) as raised:
+                BROKER.sanitize(
+                    {"cpu_usage": {"unit": unit, "usage": usage}}, metrics_request()
+                )
+            self.assertEqual(raised.exception.code, BROKER.INVALID_METRICS)
+        # A response without the metrics object is still an ordinary failure, on the daemon's own
+        # API path too (hostinger_test.ts).
+        for body in CONTRACT["failed_metrics_bodies"]:
+            with self.assertRaises(BROKER.Refused) as raised:
+                BROKER.sanitize(body, metrics_request())
+            self.assertIsNone(raised.exception.code)
+        # A reading inside the daemon's clock skew is kept, as the daemon keeps it.
+        ahead = str((NOW + BROKER.CLOCK_SKEW_MS) // 1000)
+        self.assertEqual(
+            BROKER.sanitize({"cpu_usage": {"unit": "%", "usage": {ahead: 20}}}, metrics_request()),
+            {"cpu_usage": {"unit": "%", "usage": {ahead: 20}}},
+        )
+
+    def test_worker_reports_invalid_metrics_as_a_fixed_code(self):
+        output = io.StringIO()
+        with patch.object(BROKER.sys, "argv", ["broker", "--worker"]), patch.object(
+            BROKER.resource, "setrlimit"
+        ), patch.object(BROKER.signal, "signal"), patch.object(
+            BROKER.signal, "alarm"
+        ), patch.object(
+            BROKER.sys,
+            "stdin",
+            SimpleNamespace(buffer=io.BytesIO(json.dumps(metrics_request()).encode())),
+        ), patch.object(BROKER, "configured_vm_id", return_value=123), patch.object(
+            BROKER, "authorize_request", return_value=metrics_request()
+        ), patch.object(
+            BROKER, "worker", side_effect=BROKER.Refused("bad unit", BROKER.INVALID_METRICS)
+        ), contextlib.redirect_stdout(output):
+            BROKER.main()
+        self.assertEqual(
+            json.loads(output.getvalue()),
+            {"version": 1, "vm_id": 123, "error": BROKER.INVALID_METRICS},
+        )
+
     def test_redirect_never_forwards_authorization(self):
         with self.assertRaisesRegex(BROKER.Refused, "redirect refused"):
             BROKER.NoRedirect().redirect_request(
@@ -382,6 +441,8 @@ class LauncherTest(unittest.TestCase):
         ):
             self.assertEqual(getattr(BROKER, constant), CONTRACT[key])
         self.assertEqual(list(BROKER.TEMPORARY_ERRORS), CONTRACT["temporary_errors"])
+        self.assertEqual(BROKER.INVALID_METRICS, CONTRACT["invalid_metrics_error"])
+        self.assertEqual(BROKER.CLOCK_SKEW_MS, CONTRACT["clock_skew_ms"])
         self.assertEqual(BROKER.REQUEST_SECONDS * 1000, CONTRACT["request_timeout_ms"])
         self.assertLess(
             BROKER.START_SECONDS + BROKER.WORKER_SECONDS + BROKER.STOP_SECONDS,

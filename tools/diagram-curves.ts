@@ -59,7 +59,7 @@ const drop = x(empty);
 const limited = round(CPU_HEIGHT * (1 - p.limit / p.vcpus));
 
 console.log(`credit estimate: ${simplify(estimate)}`);
-console.log(`20% floor y: ${round(ESTIMATE_HEIGHT * (1 - LAW.floor))}`);
+console.log(`${LAW.floor * 100}% spending floor y: ${round(ESTIMATE_HEIGHT * (1 - LAW.floor))}`);
 console.log(`governor vCPUs: ${simplify(cpu)}`);
 console.log(
   `no governor credits: ${X0},0 ${drop},${ESTIMATE_HEIGHT} ${X0 + WIDTH},${ESTIMATE_HEIGHT}`,

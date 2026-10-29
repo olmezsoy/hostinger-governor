@@ -64,6 +64,48 @@ Deno.test("failed fallback application is reported to systemd", async () => {
   );
 });
 
+Deno.test("the default fallback quota also resets a recovery period the daemon left", async () => {
+  const set = ["set-property", "--runtime", "user.slice"];
+  const calls: string[][] = [];
+  const config = () => Promise.resolve({ fallback_cpu_percent: 150 });
+  const vcpus = () => Promise.resolve(8);
+  await fallback({
+    config,
+    vcpus,
+    run: (args) => {
+      calls.push(args);
+      return Promise.resolve({ success: true });
+    },
+  });
+  assertEquals(calls, [[...set, "CPUQuota=150%"], [...set, "CPUQuotaPeriodSec="]]);
+  // systemd before 242 has no period property: the quota alone still counts as applied.
+  for (const period of [Promise.resolve({ success: false }), Promise.reject(new Error("gone"))]) {
+    let call = 0;
+    await fallback({
+      config,
+      vcpus,
+      run: () => call++ ? period : Promise.resolve({ success: true }),
+    });
+    assertEquals(call, 2);
+  }
+  // A quota that wasn't set is reported, and the period isn't touched.
+  calls.length = 0;
+  await assertRejects(
+    () =>
+      fallback({
+        config,
+        vcpus,
+        run: (args) => {
+          calls.push(args);
+          return Promise.resolve({ success: false });
+        },
+      }),
+    Error,
+    "could not apply fallback CPU quota",
+  );
+  assertEquals(calls, [[...set, "CPUQuota=150%"]]);
+});
+
 Deno.test("hook deadlines are finite and bounded", () => {
   validateConfig({ hook_timeout_seconds: 5 });
   for (const value of [0, -1, NaN, Infinity, 301]) {

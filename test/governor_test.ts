@@ -474,7 +474,7 @@ for (const reset of ["reboot", "resetCounters"] as const) {
     await f.advance();
     f[reset]();
     await f.g.tick();
-    release([{ at: start - 1_800_000, v: 0 }, { at: start, v: 0 }]);
+    release([{ at: start - 1_800_000, v: 0 }, { at: start, v: 0 }, { at: start + 15_000, v: 0 }]);
     await flush();
     assertEquals(f.g.s.anchor, undefined);
     assertEquals(f.g.s.readings, []);
@@ -499,7 +499,7 @@ for (const limited of [false, true]) {
     const before = structuredClone(f.g.s);
     const publicBefore = f.g.publicState(start);
     const cap = f.cap;
-    release([{ at: start - 1_800_000, v: 0 }, { at: start, v: 0 }]);
+    release([{ at: start - 1_800_000, v: 0 }, { at: start, v: 0 }, { at: start + 15_000, v: 0 }]);
     await flush();
     const after = f.g.publicState(start);
     assertEquals(f.g.s.balance, before.balance);
@@ -725,9 +725,32 @@ Deno.test("failed quota application reports not accepting", async () => {
   assertEquals(f.g.publicState(start).accepting, false);
 });
 
+Deno.test("CPU comparison skips intervals outside 900 to 2,700 seconds", () => {
+  const readings = [{ at: start, v: 0 }, { at: start + 2_701_000, v: 25 }, {
+    at: start + 4_501_000,
+    v: 50,
+  }];
+  const samples = [{ at: start + 2_701_000, seconds: 2701, busy: 0.2, steal: 0 }, {
+    at: start + 4_501_000,
+    seconds: 1800,
+    busy: 0.4,
+    steal: 0,
+  }];
+  // Only the second interval counts: 50% read against 40% measured.
+  assertEquals(compareReadings(readings, samples), 10);
+});
+
 Deno.test("CPU comparison requires complete guest coverage and rejects clock-jump samples", () => {
-  const readings = [{ at: start, v: 0 }, { at: start + 1_800_000, v: 25 }];
-  const samples = [{ at: start + 1_800_000, seconds: 1800, busy: 0.2, steal: 0 }];
+  const readings = [{ at: start, v: 0 }, { at: start + 1_798_000, v: 25 }, {
+    at: start + 3_849_000,
+    v: 45,
+  }];
+  const samples = [{ at: start + 1_798_000, seconds: 1798, busy: 0.2, steal: 0 }, {
+    at: start + 3_849_000,
+    seconds: 2051,
+    busy: 0.4,
+    steal: 0,
+  }];
   assertEquals(compareReadings(readings, samples), 5);
   assertEquals(compareReadings(readings, [{ ...samples[0], seconds: 30 }]), null);
   assertEquals(compareReadings(readings, [{ ...samples[0], clockValid: false }]), null);
@@ -836,7 +859,7 @@ Deno.test("failed lift tests back off from two minutes to fifteen", async () => 
   assertEquals(gaps.slice(0, 5), [2, 4, 8, 15, 15]);
 });
 
-Deno.test("a limit teaches the margin only once a lift test fails", async () => {
+Deno.test("a limit teaches the margin only once a lift test fails, when it lifts", async () => {
   const f = fixture();
   await f.g.tick();
   [f.g.s.balance, f.g.s.used] = [20_000, 50_000];
@@ -845,6 +868,13 @@ Deno.test("a limit teaches the margin only once a lift test fails", async () => 
   assertEquals(f.g.s.margin, margin);
   f.g.io.demand = () => Promise.resolve({ busy: 0.3, steal: 0.52, seconds: 25 });
   for (let i = 0; i < 60; i++) await f.advance(30, 0.3, 0);
+  assertEquals(f.g.s.limit?.record?.confirmed, true);
+  // Classification at the lift, with every cap recorded, decides what the limit teaches.
+  assertEquals(f.g.s.margin, margin);
+  f.g.limitGone = () => Promise.resolve(true);
+  for (let i = 0; i < 60 && f.g.s.limit; i++) await f.advance(30, 0.3, 0);
+  assertEquals(f.g.s.limit, undefined);
+  assertEquals(f.g.history.limits.at(-1)?.class, "credit");
   assert(f.g.s.margin.mul > margin.mul);
 });
 

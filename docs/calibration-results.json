@@ -1,0 +1,2897 @@
+{
+  "seed": 13,
+  "days": 56,
+  "start": "2026-10-12T00:00:00Z",
+  "workload": "Seeded CI jobs at twice a single stream: 6-8 requested cores. Weekdays from 06:00 to 22:00 UTC run 0.5-6 hour jobs separated by 5-30 minute lulls at 0.4-1.4 cores; nights and weekends run 10-60 minute jobs separated by 30-120 minute lulls. Day-level meter wobble 0.01 cores. No production traces were available.",
+  "runtime": "Deno 2.9.7",
+  "results": [
+    {
+      "id": "S1",
+      "wouldBeLogs": 0,
+      "creditLimits": 0,
+      "hostLimits": [],
+      "clampShare": 0.9954737103174603,
+      "clockStepClampShare": null,
+      "limitedHours": 0,
+      "cpuCoreHours": 5222.997095830889,
+      "gap": 0,
+      "gapBilledCoreSeconds": 0,
+      "corruptionRecovered": false,
+      "ticksAfterCorruption": 0,
+      "slowestTickMs": 0,
+      "historyReadable": false,
+      "widened": false,
+      "widenCalls": 0,
+      "legacyMargin": {
+        "mul": 1.05,
+        "add": 0.08
+      },
+      "rebootPreserved": false,
+      "firstClampAfterDrift": null,
+      "episodeSettingsUnchanged": true,
+      "applied": {
+        "mul": 1.052,
+        "add": 0.046087681639647826,
+        "floor": 0.05
+      },
+      "fit": {
+        "a": 1.0479078078099748,
+        "b": 0.013203182080378184,
+        "aHi": 1.0519206453812078,
+        "sigma": [
+          0.022631298623551153,
+          0.01290624611137385
+        ],
+        "sigmaFloor": 0.037536069815437265,
+        "pairs": 664,
+        "days": 15
+      },
+      "episodes": [],
+      "classifications": [],
+      "fallbacks": [],
+      "decisions": [
+        {
+          "at": 180240,
+          "trigger": "fit",
+          "mode": "apply",
+          "changed": false
+        },
+        {
+          "at": 267600,
+          "trigger": "fit",
+          "mode": "apply",
+          "changed": true
+        },
+        {
+          "at": 3243300,
+          "trigger": "fit",
+          "mode": "apply",
+          "changed": true
+        },
+        {
+          "at": 3505380,
+          "trigger": "fit",
+          "mode": "apply",
+          "changed": true
+        }
+      ],
+      "ceilingDigest": "33593b1f",
+      "invalidSlots": 0,
+      "pairsDuringClockJump": 2,
+      "readingGaps": 17,
+      "quotaPeriodUsed": false,
+      "quotaPeriodRestored": false,
+      "comparison": {
+        "id": "S1-comparison",
+        "wouldBeLogs": 0,
+        "creditLimits": 0,
+        "hostLimits": [],
+        "clampShare": 0.9954737103174603,
+        "clockStepClampShare": null,
+        "limitedHours": 0,
+        "cpuCoreHours": 5228.883573883272,
+        "gap": 0,
+        "gapBilledCoreSeconds": 0,
+        "corruptionRecovered": false,
+        "ticksAfterCorruption": 0,
+        "slowestTickMs": 0,
+        "historyReadable": false,
+        "widened": false,
+        "widenCalls": 0,
+        "legacyMargin": {
+          "mul": 1.05,
+          "add": 0.08
+        },
+        "rebootPreserved": false,
+        "firstClampAfterDrift": null,
+        "episodeSettingsUnchanged": true,
+        "applied": {
+          "mul": 1.05,
+          "add": 0.04,
+          "floor": 0.05
+        },
+        "fit": null,
+        "episodes": [],
+        "classifications": [],
+        "fallbacks": [],
+        "decisions": [],
+        "ceilingDigest": "0c07a112",
+        "invalidSlots": 0,
+        "pairsDuringClockJump": 2,
+        "readingGaps": 17,
+        "quotaPeriodUsed": false,
+        "quotaPeriodRestored": false
+      },
+      "assessment": {
+        "status": "pass",
+        "notes": [],
+        "cpuCostPercent": 0.1125761927801343,
+        "limitsPrevented": 0
+      }
+    },
+    {
+      "id": "S2",
+      "wouldBeLogs": 0,
+      "creditLimits": 1,
+      "hostLimits": [
+        {
+          "at": 1792018115000,
+          "lift": 1792021211000
+        }
+      ],
+      "clampShare": 0.9954735419224425,
+      "clockStepClampShare": null,
+      "limitedHours": 0.8602777777777778,
+      "cpuCoreHours": 5194.261327421018,
+      "gap": 0.041147389518177015,
+      "gapBilledCoreSeconds": 145152.29999515924,
+      "corruptionRecovered": false,
+      "ticksAfterCorruption": 0,
+      "slowestTickMs": 0,
+      "historyReadable": false,
+      "widened": false,
+      "widenCalls": 0,
+      "legacyMargin": {
+        "mul": 1.05,
+        "add": 0.08
+      },
+      "rebootPreserved": false,
+      "firstClampAfterDrift": null,
+      "episodeSettingsUnchanged": false,
+      "applied": {
+        "mul": 1.052,
+        "add": 0.08694548088560605,
+        "floor": 0.055379300596244165
+      },
+      "fit": {
+        "a": 1.0479425319982354,
+        "b": 0.013058226206690726,
+        "aHi": 1.0519088289239364,
+        "sigma": [
+          0.022502143301005986,
+          0.012921627857932516
+        ],
+        "sigmaFloor": 0.03739223636455804,
+        "pairs": 664,
+        "days": 15
+      },
+      "episodes": [
+        {
+          "onset": 1792018110012,
+          "entry": 1792018200000,
+          "path": "probe",
+          "balance": 2042.4428007121728,
+          "used": 1078982.5398343408,
+          "settings": {
+            "mul": 1.05,
+            "add": 0.04,
+            "floor": 0.05
+          },
+          "gap": 0,
+          "acted": 1975.238320712173,
+          "mode": "apply",
+          "track": 3204.193305432571,
+          "caps": [
+            {
+              "at": 1792018200000,
+              "busy": 2.4,
+              "demand": 4.6,
+              "ceiling": 440,
+              "pressing": true
+            },
+            {
+              "at": 1792020010000,
+              "busy": 2.1,
+              "demand": 2.1,
+              "ceiling": 190,
+              "pressing": false
+            }
+          ],
+          "confirmed": true,
+          "learn": true,
+          "testDelivery": {
+            "busy": 2.4,
+            "demand": 7.1
+          },
+          "firstTest": "limited",
+          "limitedAt": 1792020610000,
+          "lift": 1792021570000,
+          "recovery": {
+            "elapsedSeconds": 3370,
+            "estimatedRecoverySeconds": 3283.483760139047,
+            "estimatedPausedSeconds": 310.0059999999994
+          },
+          "class": "credit",
+          "diagnosis": {
+            "gap": 0.041147389518177015,
+            "source": "readings",
+            "anchor": {
+              "at": 1791792000000,
+              "balance": 34560,
+              "exact": true
+            },
+            "onset": 1792017810012,
+            "eta": 415.6595296572886,
+            "explained": false,
+            "left": 3157.3014812503966,
+            "bridged": 0,
+            "lower": 0.039306640625
+          },
+          "liftCheck": {
+            "at": 1792025200000,
+            "predicted": 3428.4218134765624,
+            "ratio": 1.009207206184302
+          },
+          "capCount": 2,
+          "evidenceDigest": "95ab1799"
+        }
+      ],
+      "classifications": [
+        "credit"
+      ],
+      "fallbacks": [],
+      "decisions": [
+        {
+          "at": 180240,
+          "trigger": "fit",
+          "mode": "apply",
+          "changed": false
+        },
+        {
+          "at": 258340,
+          "trigger": "limit-classified",
+          "mode": "apply",
+          "changed": false
+        },
+        {
+          "at": 258400,
+          "trigger": "limit-diagnosis",
+          "mode": "apply",
+          "changed": true
+        },
+        {
+          "at": 267460,
+          "trigger": "fit",
+          "mode": "apply",
+          "changed": true
+        },
+        {
+          "at": 3328690,
+          "trigger": "fit",
+          "mode": "apply",
+          "changed": true
+        },
+        {
+          "at": 3503410,
+          "trigger": "fit",
+          "mode": "apply",
+          "changed": true
+        }
+      ],
+      "ceilingDigest": "5cc4662a",
+      "invalidSlots": 0,
+      "pairsDuringClockJump": 2,
+      "readingGaps": 17,
+      "quotaPeriodUsed": false,
+      "quotaPeriodRestored": false,
+      "comparison": null,
+      "assessment": {
+        "status": "pass",
+        "notes": []
+      }
+    },
+    {
+      "id": "S3",
+      "wouldBeLogs": 0,
+      "creditLimits": 1,
+      "hostLimits": [
+        {
+          "at": 1791815852000,
+          "lift": 1791819034000
+        }
+      ],
+      "clampShare": 0.9954735419224425,
+      "clockStepClampShare": null,
+      "limitedHours": 0.8841666666666667,
+      "cpuCoreHours": 5140.8188006804,
+      "gap": 0.1173149238737771,
+      "gapBilledCoreSeconds": 483840.999959153,
+      "corruptionRecovered": false,
+      "ticksAfterCorruption": 0,
+      "slowestTickMs": 0,
+      "historyReadable": false,
+      "widened": false,
+      "widenCalls": 0,
+      "legacyMargin": {
+        "mul": 1.05,
+        "add": 0.08
+      },
+      "rebootPreserved": false,
+      "firstClampAfterDrift": null,
+      "episodeSettingsUnchanged": false,
+      "applied": {
+        "mul": 1.052,
+        "add": 0.16442406393092313,
+        "floor": 0.05381352253362602
+      },
+      "fit": {
+        "a": 1.0479226634030907,
+        "b": 0.013191075159293408,
+        "aHi": 1.0519587760656741,
+        "sigma": [
+          0.02236593062426578,
+          0.012965505482875896
+        ],
+        "sigmaFloor": 0.037383189420978,
+        "pairs": 664,
+        "days": 15
+      },
+      "episodes": [
+        {
+          "onset": 1791815849998,
+          "entry": 1791815940000,
+          "path": "probe",
+          "balance": 2992.7279728882822,
+          "used": 165775.2733671124,
+          "settings": {
+            "mul": 1.05,
+            "add": 0.04,
+            "floor": 0.05
+          },
+          "gap": 0,
+          "acted": 2925.5234928882824,
+          "mode": "apply",
+          "track": null,
+          "caps": [
+            {
+              "at": 1791815940000,
+              "busy": 2.4,
+              "demand": 5.1,
+              "ceiling": 490,
+              "pressing": true
+            },
+            {
+              "at": 1791817750000,
+              "busy": 2.1,
+              "demand": 2.1,
+              "ceiling": 190,
+              "pressing": false
+            }
+          ],
+          "confirmed": true,
+          "learn": true,
+          "testDelivery": {
+            "busy": 2.4,
+            "demand": 7.1
+          },
+          "firstTest": "limited",
+          "limitedAt": 1791818380000,
+          "lift": 1791819340000,
+          "recovery": {
+            "elapsedSeconds": 3400.002,
+            "estimatedRecoverySeconds": 3277.2479215244703,
+            "estimatedPausedSeconds": 310.00599999999895
+          },
+          "class": "credit",
+          "diagnosis": {
+            "gap": 0.1173149238737771,
+            "source": "readings",
+            "anchor": {
+              "at": 1791792000000,
+              "balance": 34560,
+              "exact": true
+            },
+            "onset": 1791815549998,
+            "eta": 234.41865899897,
+            "explained": false,
+            "left": 2616.9697593996743,
+            "bridged": 0,
+            "lower": 0.10736083984375
+          },
+          "liftCheck": {
+            "at": 1791822970000,
+            "predicted": 3889.1699279785157,
+            "ratio": 0.8973642357185477
+          },
+          "capCount": 2,
+          "evidenceDigest": "0444b8f1"
+        }
+      ],
+      "classifications": [
+        "credit"
+      ],
+      "fallbacks": [],
+      "decisions": [
+        {
+          "at": 56110,
+          "trigger": "limit-classified",
+          "mode": "apply",
+          "changed": false
+        },
+        {
+          "at": 56170,
+          "trigger": "limit-diagnosis",
+          "mode": "apply",
+          "changed": true
+        },
+        {
+          "at": 179890,
+          "trigger": "fit",
+          "mode": "apply",
+          "changed": false
+        },
+        {
+          "at": 267250,
+          "trigger": "fit",
+          "mode": "apply",
+          "changed": true
+        },
+        {
+          "at": 3328480,
+          "trigger": "fit",
+          "mode": "apply",
+          "changed": true
+        },
+        {
+          "at": 3503200,
+          "trigger": "fit",
+          "mode": "apply",
+          "changed": true
+        }
+      ],
+      "ceilingDigest": "f31f0d26",
+      "invalidSlots": 0,
+      "pairsDuringClockJump": 2,
+      "readingGaps": 17,
+      "quotaPeriodUsed": false,
+      "quotaPeriodRestored": false,
+      "comparison": null,
+      "assessment": {
+        "status": "pass",
+        "notes": []
+      }
+    },
+    {
+      "id": "S4",
+      "wouldBeLogs": 0,
+      "creditLimits": 0,
+      "hostLimits": [],
+      "clampShare": 0.9954737103174603,
+      "clockStepClampShare": null,
+      "limitedHours": 0,
+      "cpuCoreHours": 5178.714038513412,
+      "gap": 0,
+      "gapBilledCoreSeconds": 0,
+      "corruptionRecovered": false,
+      "ticksAfterCorruption": 0,
+      "slowestTickMs": 0,
+      "historyReadable": false,
+      "widened": false,
+      "widenCalls": 0,
+      "legacyMargin": {
+        "mul": 1.05,
+        "add": 0.08
+      },
+      "rebootPreserved": false,
+      "firstClampAfterDrift": 2460690,
+      "episodeSettingsUnchanged": true,
+      "applied": {
+        "mul": 1.075,
+        "add": 0.06469752022073472,
+        "floor": 0.05
+      },
+      "fit": {
+        "a": 1.0606096280389767,
+        "b": 0.050560714464451983,
+        "aHi": 1.0660345632281865,
+        "sigma": [
+          0.008971653254585403,
+          0.018399021222649088
+        ],
+        "sigmaFloor": 0.043837673582320436,
+        "pairs": 666,
+        "days": 15
+      },
+      "episodes": [],
+      "classifications": [],
+      "fallbacks": [],
+      "decisions": [
+        {
+          "at": 180240,
+          "trigger": "fit",
+          "mode": "apply",
+          "changed": false
+        },
+        {
+          "at": 267600,
+          "trigger": "fit",
+          "mode": "apply",
+          "changed": true
+        },
+        {
+          "at": 2462520,
+          "trigger": "cusum-alarm",
+          "mode": "apply",
+          "changed": true
+        },
+        {
+          "at": 2467980,
+          "trigger": "drift-hold",
+          "mode": "apply",
+          "changed": true
+        },
+        {
+          "at": 2557140,
+          "trigger": "cusum-keep",
+          "mode": "apply",
+          "changed": false
+        },
+        {
+          "at": 2600820,
+          "trigger": "fit",
+          "mode": "apply",
+          "changed": true
+        },
+        {
+          "at": 2688180,
+          "trigger": "fit",
+          "mode": "apply",
+          "changed": true
+        },
+        {
+          "at": 2775540,
+          "trigger": "fit",
+          "mode": "apply",
+          "changed": true
+        },
+        {
+          "at": 2862900,
+          "trigger": "fit",
+          "mode": "apply",
+          "changed": true
+        },
+        {
+          "at": 2950260,
+          "trigger": "fit",
+          "mode": "apply",
+          "changed": true
+        },
+        {
+          "at": 3037620,
+          "trigger": "fit",
+          "mode": "apply",
+          "changed": true
+        },
+        {
+          "at": 3124980,
+          "trigger": "fit",
+          "mode": "apply",
+          "changed": true
+        },
+        {
+          "at": 3212340,
+          "trigger": "fit",
+          "mode": "apply",
+          "changed": true
+        },
+        {
+          "at": 3299700,
+          "trigger": "fit",
+          "mode": "apply",
+          "changed": true
+        },
+        {
+          "at": 3387060,
+          "trigger": "fit",
+          "mode": "apply",
+          "changed": true
+        },
+        {
+          "at": 3474420,
+          "trigger": "fit",
+          "mode": "apply",
+          "changed": true
+        },
+        {
+          "at": 3561780,
+          "trigger": "fit",
+          "mode": "apply",
+          "changed": true
+        },
+        {
+          "at": 3649140,
+          "trigger": "fit",
+          "mode": "apply",
+          "changed": true
+        },
+        {
+          "at": 3998580,
+          "trigger": "fit",
+          "mode": "apply",
+          "changed": true
+        },
+        {
+          "at": 4260660,
+          "trigger": "fit",
+          "mode": "apply",
+          "changed": true
+        },
+        {
+          "at": 4348020,
+          "trigger": "fit",
+          "mode": "apply",
+          "changed": true
+        },
+        {
+          "at": 4435380,
+          "trigger": "fit",
+          "mode": "apply",
+          "changed": true
+        },
+        {
+          "at": 4522740,
+          "trigger": "fit",
+          "mode": "apply",
+          "changed": true
+        }
+      ],
+      "ceilingDigest": "fb709c37",
+      "invalidSlots": 0,
+      "pairsDuringClockJump": 2,
+      "readingGaps": 17,
+      "quotaPeriodUsed": false,
+      "quotaPeriodRestored": false,
+      "comparison": null,
+      "assessment": {
+        "status": "pass",
+        "notes": []
+      }
+    },
+    {
+      "id": "S5",
+      "wouldBeLogs": 0,
+      "creditLimits": 0,
+      "hostLimits": [],
+      "clampShare": 0.9954733173762603,
+      "clockStepClampShare": null,
+      "limitedHours": 0,
+      "cpuCoreHours": 5214.168840952351,
+      "gap": 0,
+      "gapBilledCoreSeconds": 0,
+      "corruptionRecovered": false,
+      "ticksAfterCorruption": 0,
+      "slowestTickMs": 0,
+      "historyReadable": false,
+      "widened": false,
+      "widenCalls": 0,
+      "legacyMargin": {
+        "mul": 1.05,
+        "add": 0.08
+      },
+      "rebootPreserved": false,
+      "firstClampAfterDrift": null,
+      "episodeSettingsUnchanged": true,
+      "applied": {
+        "mul": 1.052,
+        "add": 0.046087681639647826,
+        "floor": 0.05
+      },
+      "fit": {
+        "a": 1.0479318787318315,
+        "b": 0.013114406184055127,
+        "aHi": 1.0519124552855577,
+        "sigma": [
+          0.02263894816437306,
+          0.01288487591049225
+        ],
+        "sigmaFloor": 0.03742425868177379,
+        "pairs": 663,
+        "days": 15
+      },
+      "episodes": [
+        {
+          "onset": 1792400849998,
+          "entry": 1792401030000,
+          "path": "probe",
+          "balance": 22649.714975649546,
+          "used": 2559219.4949201155,
+          "settings": {
+            "mul": 1.05,
+            "add": 0.046087681639647826,
+            "floor": 0.05
+          },
+          "gap": 0,
+          "mode": "apply",
+          "track": 23828.493903554612,
+          "caps": [
+            {
+              "at": 1792401030000,
+              "busy": 6,
+              "demand": 7.744126319885254,
+              "ceiling": 780,
+              "pressing": true
+            },
+            {
+              "at": 1792402840000,
+              "busy": 2.1,
+              "demand": 2.1,
+              "ceiling": 190,
+              "pressing": false
+            },
+            {
+              "at": 1792404640000,
+              "busy": 2.1,
+              "demand": 2.1,
+              "ceiling": 190,
+              "pressing": false
+            },
+            {
+              "at": 1792406440000,
+              "busy": 2.1,
+              "demand": 2.1,
+              "ceiling": 190,
+              "pressing": false
+            },
+            {
+              "at": 1792408240000,
+              "busy": 1.7308333333333337,
+              "demand": 1.7437500000000004,
+              "ceiling": 95,
+              "pressing": false
+            },
+            {
+              "at": 1792410040000,
+              "busy": 1.1500000000000001,
+              "demand": 1.1500000000000001,
+              "ceiling": 95,
+              "pressing": false
+            }
+          ],
+          "confirmed": true,
+          "learn": true,
+          "testDelivery": {
+            "busy": 6,
+            "demand": 7.1000000000000005
+          },
+          "firstTest": "unknown",
+          "limitedAt": 1792411000000,
+          "lift": 1792411960000,
+          "recovery": {
+            "elapsedSeconds": 10930,
+            "estimatedRecoverySeconds": 2766.6338750791265,
+            "estimatedPausedSeconds": 820.0400000000027
+          },
+          "class": "sustained-use",
+          "restored": true,
+          "capCount": 7,
+          "evidenceDigest": null
+        }
+      ],
+      "classifications": [
+        "sustained-use"
+      ],
+      "fallbacks": [],
+      "decisions": [
+        {
+          "at": 180240,
+          "trigger": "fit",
+          "mode": "apply",
+          "changed": false
+        },
+        {
+          "at": 267600,
+          "trigger": "fit",
+          "mode": "apply",
+          "changed": true
+        },
+        {
+          "at": 648730,
+          "trigger": "limit-classified",
+          "mode": "apply",
+          "changed": false
+        },
+        {
+          "at": 3327790,
+          "trigger": "fit",
+          "mode": "apply",
+          "changed": true
+        },
+        {
+          "at": 3502510,
+          "trigger": "fit",
+          "mode": "apply",
+          "changed": true
+        }
+      ],
+      "ceilingDigest": "a6200997",
+      "invalidSlots": 0,
+      "pairsDuringClockJump": 2,
+      "readingGaps": 17,
+      "quotaPeriodUsed": false,
+      "quotaPeriodRestored": false,
+      "comparison": {
+        "id": "S5-comparison",
+        "wouldBeLogs": 3,
+        "creditLimits": 0,
+        "hostLimits": [],
+        "clampShare": 0.9954733173762603,
+        "clockStepClampShare": null,
+        "limitedHours": 0,
+        "cpuCoreHours": 5146.613431301621,
+        "gap": 0,
+        "gapBilledCoreSeconds": 0,
+        "corruptionRecovered": false,
+        "ticksAfterCorruption": 0,
+        "slowestTickMs": 0,
+        "historyReadable": false,
+        "widened": false,
+        "widenCalls": 0,
+        "legacyMargin": {
+          "mul": 1.05,
+          "add": 0.08
+        },
+        "rebootPreserved": false,
+        "firstClampAfterDrift": null,
+        "episodeSettingsUnchanged": true,
+        "applied": {
+          "mul": 1.053,
+          "add": 0.04551714135934848,
+          "floor": 0.05
+        },
+        "fit": {
+          "a": 1.048063105712733,
+          "b": 0.012888450745149438,
+          "aHi": 1.052161875505526,
+          "sigma": [
+            0.02110693494554099,
+            0.013387743691669455
+          ],
+          "sigmaFloor": 0.037630609035921886,
+          "pairs": 663,
+          "days": 15
+        },
+        "episodes": [
+          {
+            "onset": 1792400849998,
+            "entry": 1792401030000,
+            "path": "probe",
+            "balance": 22279.392459154904,
+            "used": 2544882.3085242026,
+            "settings": {
+              "mul": 1.05,
+              "add": 0.08,
+              "floor": 0.2
+            },
+            "gap": 0,
+            "mode": "off",
+            "track": 23826.855395802384,
+            "caps": [
+              {
+                "at": 1792401030000,
+                "busy": 6,
+                "demand": 7.744126319885254,
+                "ceiling": 780,
+                "pressing": true
+              },
+              {
+                "at": 1792402840000,
+                "busy": 2.1,
+                "demand": 2.1,
+                "ceiling": 190,
+                "pressing": false
+              },
+              {
+                "at": 1792404640000,
+                "busy": 2.1,
+                "demand": 2.1,
+                "ceiling": 190,
+                "pressing": false
+              },
+              {
+                "at": 1792406440000,
+                "busy": 2.1,
+                "demand": 2.1,
+                "ceiling": 190,
+                "pressing": false
+              },
+              {
+                "at": 1792408240000,
+                "busy": 1.7308333333333337,
+                "demand": 1.7437500000000004,
+                "ceiling": 95,
+                "pressing": false
+              },
+              {
+                "at": 1792410040000,
+                "busy": 1.1500000000000001,
+                "demand": 1.1500000000000001,
+                "ceiling": 95,
+                "pressing": false
+              }
+            ],
+            "confirmed": true,
+            "learn": true,
+            "testDelivery": {
+              "busy": 6,
+              "demand": 7.1000000000000005
+            },
+            "firstTest": "unknown",
+            "limitedAt": 1792411000000,
+            "lift": 1792411960000,
+            "recovery": {
+              "elapsedSeconds": 10930,
+              "estimatedRecoverySeconds": 2804.7047263400214,
+              "estimatedPausedSeconds": 820.0400000000027
+            },
+            "class": "sustained-use",
+            "restored": true,
+            "capCount": 7,
+            "evidenceDigest": null
+          }
+        ],
+        "classifications": [
+          "sustained-use"
+        ],
+        "fallbacks": [],
+        "decisions": [
+          {
+            "at": 180240,
+            "trigger": "fit",
+            "mode": "off",
+            "changed": false
+          },
+          {
+            "at": 267600,
+            "trigger": "fit",
+            "mode": "off",
+            "changed": true
+          },
+          {
+            "at": 648730,
+            "trigger": "limit-classified",
+            "mode": "off",
+            "changed": false
+          },
+          {
+            "at": 3327790,
+            "trigger": "fit",
+            "mode": "off",
+            "changed": true
+          },
+          {
+            "at": 3502510,
+            "trigger": "fit",
+            "mode": "off",
+            "changed": true
+          }
+        ],
+        "ceilingDigest": "67547351",
+        "invalidSlots": 0,
+        "pairsDuringClockJump": 2,
+        "readingGaps": 17,
+        "quotaPeriodUsed": false,
+        "quotaPeriodRestored": false
+      },
+      "assessment": {
+        "status": "pass",
+        "notes": [],
+        "cpuCostPercent": -1.3126186870740943,
+        "limitsPrevented": 0
+      }
+    },
+    {
+      "id": "S6",
+      "wouldBeLogs": 0,
+      "creditLimits": 0,
+      "hostLimits": [],
+      "clampShare": 0.9954736261215177,
+      "clockStepClampShare": null,
+      "limitedHours": 0,
+      "cpuCoreHours": 5216.719600633849,
+      "gap": 0,
+      "gapBilledCoreSeconds": 0,
+      "corruptionRecovered": false,
+      "ticksAfterCorruption": 0,
+      "slowestTickMs": 0,
+      "historyReadable": false,
+      "widened": false,
+      "widenCalls": 0,
+      "legacyMargin": {
+        "mul": 1.05,
+        "add": 0.08
+      },
+      "rebootPreserved": false,
+      "firstClampAfterDrift": null,
+      "episodeSettingsUnchanged": true,
+      "applied": {
+        "mul": 1.052,
+        "add": 0.046087681639647826,
+        "floor": 0.05
+      },
+      "fit": {
+        "a": 1.0479815245061521,
+        "b": 0.012913010241242695,
+        "aHi": 1.0519092820540572,
+        "sigma": [
+          0.022815289901140536,
+          0.012853057637772171
+        ],
+        "sigmaFloor": 0.03757408630103181,
+        "pairs": 664,
+        "days": 15
+      },
+      "episodes": [
+        {
+          "onset": 1792397059998,
+          "entry": 1792397120000,
+          "path": "evident",
+          "balance": 22596.139340332,
+          "used": 2539833.0513554458,
+          "settings": {
+            "mul": 1.05,
+            "add": 0.046087681639647826,
+            "floor": 0.05
+          },
+          "gap": 0,
+          "acted": 22512.823682028793,
+          "mode": "apply",
+          "track": 23770.164441807254,
+          "caps": [
+            {
+              "at": 1792397120000,
+              "busy": 1.8827703255414963,
+              "demand": 6.275901084877551,
+              "ceiling": 790,
+              "pressing": true
+            }
+          ],
+          "confirmed": false,
+          "learn": true,
+          "firstTest": "lifted",
+          "lift": 1792398620000,
+          "recovery": {
+            "elapsedSeconds": 1500.002,
+            "estimatedRecoverySeconds": 2096.554362481028,
+            "estimatedPausedSeconds": 60.003999999999905
+          },
+          "class": "unknown",
+          "capCount": 1,
+          "evidenceDigest": null
+        }
+      ],
+      "classifications": [
+        "unknown"
+      ],
+      "fallbacks": [],
+      "decisions": [
+        {
+          "at": 180240,
+          "trigger": "fit",
+          "mode": "apply",
+          "changed": false
+        },
+        {
+          "at": 267600,
+          "trigger": "fit",
+          "mode": "apply",
+          "changed": true
+        },
+        {
+          "at": 635390,
+          "trigger": "limit-classified",
+          "mode": "apply",
+          "changed": false
+        },
+        {
+          "at": 3243470,
+          "trigger": "fit",
+          "mode": "apply",
+          "changed": true
+        },
+        {
+          "at": 3505550,
+          "trigger": "fit",
+          "mode": "apply",
+          "changed": true
+        }
+      ],
+      "ceilingDigest": "476bfc56",
+      "invalidSlots": 0,
+      "pairsDuringClockJump": 2,
+      "readingGaps": 17,
+      "quotaPeriodUsed": false,
+      "quotaPeriodRestored": false,
+      "comparison": {
+        "id": "S6-comparison",
+        "wouldBeLogs": 4,
+        "creditLimits": 0,
+        "hostLimits": [],
+        "clampShare": 0.9954736261215177,
+        "clockStepClampShare": null,
+        "limitedHours": 0,
+        "cpuCoreHours": 5146.095534731573,
+        "gap": 0,
+        "gapBilledCoreSeconds": 0,
+        "corruptionRecovered": false,
+        "ticksAfterCorruption": 0,
+        "slowestTickMs": 0,
+        "historyReadable": false,
+        "widened": false,
+        "widenCalls": 0,
+        "legacyMargin": {
+          "mul": 1.05,
+          "add": 0.08
+        },
+        "rebootPreserved": false,
+        "firstClampAfterDrift": null,
+        "episodeSettingsUnchanged": true,
+        "applied": {
+          "mul": 1.053,
+          "add": 0.04551714135934848,
+          "floor": 0.05
+        },
+        "fit": {
+          "a": 1.0481075132870186,
+          "b": 0.01269765422704916,
+          "aHi": 1.0521526417346134,
+          "sigma": [
+            0.02132960003076746,
+            0.013342187195419934
+          ],
+          "sigmaFloor": 0.037868471658765314,
+          "pairs": 664,
+          "days": 15
+        },
+        "episodes": [
+          {
+            "onset": 1792397059998,
+            "entry": 1792397120000,
+            "path": "evident",
+            "balance": 22358.41385297686,
+            "used": 2525363.2679303773,
+            "settings": {
+              "mul": 1.05,
+              "add": 0.08,
+              "floor": 0.2
+            },
+            "gap": 0,
+            "mode": "off",
+            "track": 23767.931170213124,
+            "caps": [
+              {
+                "at": 1792397120000,
+                "busy": 1.8827703255414963,
+                "demand": 6.275901084877551,
+                "ceiling": 790,
+                "pressing": true
+              }
+            ],
+            "confirmed": false,
+            "learn": true,
+            "firstTest": "lifted",
+            "lift": 1792398620000,
+            "recovery": {
+              "elapsedSeconds": 1500.002,
+              "estimatedRecoverySeconds": 2118.344322439094,
+              "estimatedPausedSeconds": 60.003999999999905
+            },
+            "class": "unknown",
+            "capCount": 1,
+            "evidenceDigest": null
+          }
+        ],
+        "classifications": [
+          "unknown"
+        ],
+        "fallbacks": [],
+        "decisions": [
+          {
+            "at": 180240,
+            "trigger": "fit",
+            "mode": "off",
+            "changed": false
+          },
+          {
+            "at": 267600,
+            "trigger": "fit",
+            "mode": "off",
+            "changed": true
+          },
+          {
+            "at": 635390,
+            "trigger": "limit-classified",
+            "mode": "off",
+            "changed": false
+          },
+          {
+            "at": 3243470,
+            "trigger": "fit",
+            "mode": "off",
+            "changed": true
+          },
+          {
+            "at": 3418190,
+            "trigger": "fit",
+            "mode": "off",
+            "changed": true
+          },
+          {
+            "at": 3505550,
+            "trigger": "fit",
+            "mode": "off",
+            "changed": true
+          }
+        ],
+        "ceilingDigest": "a8045e66",
+        "invalidSlots": 0,
+        "pairsDuringClockJump": 2,
+        "readingGaps": 17,
+        "quotaPeriodUsed": false,
+        "quotaPeriodRestored": false
+      },
+      "assessment": {
+        "status": "pass",
+        "notes": [],
+        "cpuCostPercent": -1.3723815546296472,
+        "limitsPrevented": 0
+      }
+    },
+    {
+      "id": "S7",
+      "wouldBeLogs": 0,
+      "creditLimits": 0,
+      "hostLimits": [],
+      "clampShare": 0.9954737103174603,
+      "clockStepClampShare": null,
+      "limitedHours": 0,
+      "cpuCoreHours": 5222.49090597612,
+      "gap": 0,
+      "gapBilledCoreSeconds": 0,
+      "corruptionRecovered": false,
+      "ticksAfterCorruption": 0,
+      "slowestTickMs": 0,
+      "historyReadable": false,
+      "widened": false,
+      "widenCalls": 0,
+      "legacyMargin": {
+        "mul": 1.05,
+        "add": 0.08
+      },
+      "rebootPreserved": false,
+      "firstClampAfterDrift": null,
+      "episodeSettingsUnchanged": true,
+      "applied": {
+        "mul": 1.052,
+        "add": 0.046087681639647826,
+        "floor": 0.05
+      },
+      "fit": {
+        "a": 1.0481226039399743,
+        "b": 0.012552876637582422,
+        "aHi": 1.051919809493714,
+        "sigma": [
+          0.022171656910100375,
+          0.012823759516508694
+        ],
+        "sigmaFloor": 0.036917799652725486,
+        "pairs": 663,
+        "days": 15
+      },
+      "episodes": [],
+      "classifications": [],
+      "fallbacks": [
+        {
+          "at": 1295400,
+          "since": 1208520
+        }
+      ],
+      "decisions": [
+        {
+          "at": 180240,
+          "trigger": "fit",
+          "mode": "apply",
+          "changed": false
+        },
+        {
+          "at": 267600,
+          "trigger": "fit",
+          "mode": "apply",
+          "changed": true
+        },
+        {
+          "at": 1295400,
+          "trigger": "stale-fallback",
+          "mode": "apply",
+          "changed": true
+        },
+        {
+          "at": 1383360,
+          "trigger": "readings-resumed",
+          "mode": "apply",
+          "changed": true
+        },
+        {
+          "at": 3305280,
+          "trigger": "fit",
+          "mode": "apply",
+          "changed": true
+        },
+        {
+          "at": 3480000,
+          "trigger": "fit",
+          "mode": "apply",
+          "changed": true
+        }
+      ],
+      "ceilingDigest": "0a9b11c2",
+      "invalidSlots": 0,
+      "pairsDuringClockJump": 2,
+      "readingGaps": 17,
+      "quotaPeriodUsed": false,
+      "quotaPeriodRestored": false,
+      "comparison": null,
+      "assessment": {
+        "status": "pass",
+        "notes": []
+      }
+    },
+    {
+      "id": "S8",
+      "wouldBeLogs": 0,
+      "creditLimits": 0,
+      "hostLimits": [],
+      "clampShare": 0.9943317829457364,
+      "clockStepClampShare": null,
+      "limitedHours": 0,
+      "cpuCoreHours": 5222.180343029778,
+      "gap": 0,
+      "gapBilledCoreSeconds": 0,
+      "corruptionRecovered": false,
+      "ticksAfterCorruption": 0,
+      "slowestTickMs": 0,
+      "historyReadable": true,
+      "widened": false,
+      "widenCalls": 0,
+      "legacyMargin": {
+        "mul": 1.05,
+        "add": 0.08
+      },
+      "rebootPreserved": true,
+      "firstClampAfterDrift": null,
+      "episodeSettingsUnchanged": true,
+      "applied": {
+        "mul": 1.052,
+        "add": 0.046087681639647826,
+        "floor": 0.05
+      },
+      "fit": {
+        "a": 1.0478658686317883,
+        "b": 0.013417436513058156,
+        "aHi": 1.0519201692167834,
+        "sigma": [
+          0.022613852151902352,
+          0.012910072839873585
+        ],
+        "sigmaFloor": 0.03743359508366172,
+        "pairs": 664,
+        "days": 15
+      },
+      "episodes": [],
+      "classifications": [],
+      "fallbacks": [],
+      "decisions": [
+        {
+          "at": 180240,
+          "trigger": "fit",
+          "mode": "apply",
+          "changed": false
+        },
+        {
+          "at": 267600,
+          "trigger": "fit",
+          "mode": "apply",
+          "changed": true
+        },
+        {
+          "at": 3326670,
+          "trigger": "fit",
+          "mode": "apply",
+          "changed": true
+        },
+        {
+          "at": 3501390,
+          "trigger": "fit",
+          "mode": "apply",
+          "changed": true
+        }
+      ],
+      "ceilingDigest": "129c8b5b",
+      "invalidSlots": 0,
+      "pairsDuringClockJump": 2,
+      "readingGaps": 17,
+      "quotaPeriodUsed": false,
+      "quotaPeriodRestored": false,
+      "comparison": null,
+      "assessment": {
+        "status": "pass",
+        "notes": []
+      }
+    },
+    {
+      "id": "S9",
+      "wouldBeLogs": 0,
+      "creditLimits": 0,
+      "hostLimits": [],
+      "clampShare": 0.9954737103174603,
+      "clockStepClampShare": null,
+      "limitedHours": 0,
+      "cpuCoreHours": 5218.095630531064,
+      "gap": 0,
+      "gapBilledCoreSeconds": 0,
+      "corruptionRecovered": false,
+      "ticksAfterCorruption": 0,
+      "slowestTickMs": 0,
+      "historyReadable": false,
+      "widened": false,
+      "widenCalls": 0,
+      "legacyMargin": {
+        "mul": 1.05,
+        "add": 0.08
+      },
+      "rebootPreserved": false,
+      "firstClampAfterDrift": null,
+      "episodeSettingsUnchanged": true,
+      "applied": {
+        "mul": 1.051,
+        "add": 0.05472297565310402,
+        "floor": 0.05
+      },
+      "fit": {
+        "a": 1.0467797472125187,
+        "b": 0.015594678827990371,
+        "aHi": 1.0501420247462232,
+        "sigma": [
+          0.022138874931749833,
+          0.012473614881587982
+        ],
+        "sigmaFloor": 0.03825869742576414,
+        "pairs": 623,
+        "days": 15
+      },
+      "episodes": [],
+      "classifications": [],
+      "fallbacks": [],
+      "decisions": [
+        {
+          "at": 180240,
+          "trigger": "fit",
+          "mode": "apply",
+          "changed": true
+        },
+        {
+          "at": 3245100,
+          "trigger": "fit",
+          "mode": "apply",
+          "changed": true
+        }
+      ],
+      "ceilingDigest": "e4ed01ac",
+      "invalidSlots": 0,
+      "pairsDuringClockJump": 2,
+      "readingGaps": 97,
+      "quotaPeriodUsed": false,
+      "quotaPeriodRestored": false,
+      "comparison": {
+        "id": "S9-comparison",
+        "wouldBeLogs": 0,
+        "creditLimits": 0,
+        "hostLimits": [],
+        "clampShare": 0.9954737103174603,
+        "clockStepClampShare": null,
+        "limitedHours": 0,
+        "cpuCoreHours": 5222.997095830889,
+        "gap": 0,
+        "gapBilledCoreSeconds": 0,
+        "corruptionRecovered": false,
+        "ticksAfterCorruption": 0,
+        "slowestTickMs": 0,
+        "historyReadable": false,
+        "widened": false,
+        "widenCalls": 0,
+        "legacyMargin": {
+          "mul": 1.05,
+          "add": 0.08
+        },
+        "rebootPreserved": false,
+        "firstClampAfterDrift": null,
+        "episodeSettingsUnchanged": true,
+        "applied": {
+          "mul": 1.052,
+          "add": 0.046087681639647826,
+          "floor": 0.05
+        },
+        "fit": {
+          "a": 1.0479078078099748,
+          "b": 0.013203182080378184,
+          "aHi": 1.0519206453812078,
+          "sigma": [
+            0.022631298623551153,
+            0.01290624611137385
+          ],
+          "sigmaFloor": 0.037536069815437265,
+          "pairs": 664,
+          "days": 15
+        },
+        "episodes": [],
+        "classifications": [],
+        "fallbacks": [],
+        "decisions": [
+          {
+            "at": 180240,
+            "trigger": "fit",
+            "mode": "apply",
+            "changed": false
+          },
+          {
+            "at": 267600,
+            "trigger": "fit",
+            "mode": "apply",
+            "changed": true
+          },
+          {
+            "at": 3243300,
+            "trigger": "fit",
+            "mode": "apply",
+            "changed": true
+          },
+          {
+            "at": 3505380,
+            "trigger": "fit",
+            "mode": "apply",
+            "changed": true
+          }
+        ],
+        "ceilingDigest": "33593b1f",
+        "invalidSlots": 0,
+        "pairsDuringClockJump": 2,
+        "readingGaps": 17,
+        "quotaPeriodUsed": false,
+        "quotaPeriodRestored": false
+      },
+      "assessment": {
+        "status": "pass",
+        "notes": [],
+        "cpuCostPercent": 0.09384392160082392,
+        "limitsPrevented": 0
+      }
+    },
+    {
+      "id": "S10",
+      "wouldBeLogs": 0,
+      "creditLimits": 0,
+      "hostLimits": [],
+      "clampShare": 0.9954737103174603,
+      "clockStepClampShare": 1,
+      "limitedHours": 0,
+      "cpuCoreHours": 5222.997095830889,
+      "gap": 0,
+      "gapBilledCoreSeconds": 0,
+      "corruptionRecovered": false,
+      "ticksAfterCorruption": 0,
+      "slowestTickMs": 0,
+      "historyReadable": false,
+      "widened": false,
+      "widenCalls": 0,
+      "legacyMargin": {
+        "mul": 1.05,
+        "add": 0.08
+      },
+      "rebootPreserved": false,
+      "firstClampAfterDrift": null,
+      "episodeSettingsUnchanged": true,
+      "applied": {
+        "mul": 1.052,
+        "add": 0.046087681639647826,
+        "floor": 0.05
+      },
+      "fit": {
+        "a": 1.0479078078099748,
+        "b": 0.013203182080378184,
+        "aHi": 1.0519206453812078,
+        "sigma": [
+          0.022631298623551153,
+          0.01290624611137385
+        ],
+        "sigmaFloor": 0.037536069815437265,
+        "pairs": 664,
+        "days": 15
+      },
+      "episodes": [],
+      "classifications": [],
+      "fallbacks": [],
+      "decisions": [
+        {
+          "at": 180240,
+          "trigger": "fit",
+          "mode": "apply",
+          "changed": false
+        },
+        {
+          "at": 267600,
+          "trigger": "fit",
+          "mode": "apply",
+          "changed": true
+        },
+        {
+          "at": 3243300,
+          "trigger": "fit",
+          "mode": "apply",
+          "changed": true
+        },
+        {
+          "at": 3505380,
+          "trigger": "fit",
+          "mode": "apply",
+          "changed": true
+        }
+      ],
+      "ceilingDigest": "33593b1f",
+      "invalidSlots": 7,
+      "pairsDuringClockJump": 0,
+      "readingGaps": 17,
+      "quotaPeriodUsed": false,
+      "quotaPeriodRestored": false,
+      "comparison": null,
+      "assessment": {
+        "status": "pass",
+        "notes": []
+      }
+    },
+    {
+      "id": "S11",
+      "wouldBeLogs": 0,
+      "creditLimits": 0,
+      "hostLimits": [],
+      "clampShare": 0.12047371031746032,
+      "clockStepClampShare": null,
+      "limitedHours": 0,
+      "cpuCoreHours": 5211.290109864979,
+      "gap": 0,
+      "gapBilledCoreSeconds": 0,
+      "corruptionRecovered": true,
+      "ticksAfterCorruption": 141120,
+      "slowestTickMs": 53.36854199995287,
+      "historyReadable": true,
+      "widened": false,
+      "widenCalls": 0,
+      "legacyMargin": {
+        "mul": 1.05,
+        "add": 0.08
+      },
+      "rebootPreserved": false,
+      "firstClampAfterDrift": null,
+      "episodeSettingsUnchanged": true,
+      "applied": {
+        "mul": 1.054,
+        "add": 0.046087681639647826,
+        "floor": 0.05
+      },
+      "fit": {
+        "a": 1.0419991910728195,
+        "b": 0.026773142640307945,
+        "aHi": 1.0538870339215671,
+        "sigma": [
+          0.025333011710481843,
+          0.010252795840975359
+        ],
+        "sigmaFloor": 0.04354737042252104,
+        "pairs": 142,
+        "days": 4
+      },
+      "episodes": [],
+      "classifications": [],
+      "fallbacks": [],
+      "decisions": [
+        {
+          "at": 872340,
+          "trigger": "fit",
+          "mode": "apply",
+          "changed": true
+        },
+        {
+          "at": 1878810,
+          "trigger": "cusum-alarm",
+          "mode": "apply",
+          "changed": true
+        },
+        {
+          "at": 1969800,
+          "trigger": "cusum-revert",
+          "mode": "apply",
+          "changed": true
+        }
+      ],
+      "ceilingDigest": "5d98580f",
+      "invalidSlots": 0,
+      "pairsDuringClockJump": 2,
+      "readingGaps": 16,
+      "quotaPeriodUsed": false,
+      "quotaPeriodRestored": false,
+      "comparison": null,
+      "assessment": {
+        "status": "pass",
+        "notes": []
+      }
+    },
+    {
+      "id": "S12",
+      "wouldBeLogs": 24,
+      "creditLimits": 1,
+      "hostLimits": [
+        {
+          "at": 1795784873000,
+          "lift": 1795788000000
+        }
+      ],
+      "clampShare": 0.9954735419224425,
+      "clockStepClampShare": null,
+      "limitedHours": 0.8688888888888889,
+      "cpuCoreHours": 5139.040583415941,
+      "gap": 0.006577885194496545,
+      "gapBilledCoreSeconds": 0,
+      "corruptionRecovered": false,
+      "ticksAfterCorruption": 0,
+      "slowestTickMs": 0,
+      "historyReadable": false,
+      "widened": true,
+      "widenCalls": 1,
+      "legacyMargin": {
+        "mul": 1.07,
+        "add": 0.1
+      },
+      "rebootPreserved": false,
+      "firstClampAfterDrift": null,
+      "episodeSettingsUnchanged": true,
+      "applied": {
+        "mul": 1.075,
+        "add": 0.0700128348463771,
+        "floor": 0.05
+      },
+      "fit": {
+        "a": 1.0612735102242699,
+        "b": 0.048594779075011196,
+        "aHi": 1.0667481836976676,
+        "sigma": [
+          0.009337463263680252,
+          0.01722902252608129
+        ],
+        "sigmaFloor": 0.0420311109921397,
+        "pairs": 665,
+        "days": 15
+      },
+      "episodes": [
+        {
+          "onset": 1795784880012,
+          "entry": 1795784970000,
+          "path": "probe",
+          "balance": 7678.211649984796,
+          "used": 16610123.460182086,
+          "settings": {
+            "mul": 1.05,
+            "add": 0.08,
+            "floor": 0.2
+          },
+          "gap": 0,
+          "mode": "shadow",
+          "track": 709.2263251701534,
+          "caps": [
+            {
+              "at": 1795784970000,
+              "busy": 2.4,
+              "demand": 4.799999999999999,
+              "ceiling": 460,
+              "pressing": true
+            },
+            {
+              "at": 1795786780000,
+              "busy": 2.1,
+              "demand": 2.1,
+              "ceiling": 190,
+              "pressing": false
+            }
+          ],
+          "confirmed": true,
+          "learn": true,
+          "testDelivery": {
+            "busy": 2.4,
+            "demand": 7.1
+          },
+          "firstTest": "limited",
+          "limitedAt": 1795787380000,
+          "lift": 1795788340000,
+          "recovery": {
+            "elapsedSeconds": 3370,
+            "estimatedRecoverySeconds": 3347.0838496302845,
+            "estimatedPausedSeconds": 310.0059999999994
+          },
+          "class": "credit",
+          "legacyLearned": true,
+          "diagnosis": {
+            "gap": 0.006577885194496545,
+            "source": "readings",
+            "anchor": {
+              "at": 1791792000000,
+              "balance": 34560,
+              "exact": true
+            },
+            "onset": 1795784580012,
+            "eta": 9935.654042283499,
+            "explained": false,
+            "left": 823.8415818269873,
+            "bridged": 49831,
+            "lower": 0.00408935546875
+          },
+          "liftCheck": {
+            "at": 1795793800000,
+            "predicted": 4401.876184326172,
+            "ratio": 0.7860257433682556
+          },
+          "capCount": 2,
+          "evidenceDigest": "b532a45f"
+        }
+      ],
+      "classifications": [
+        "credit"
+      ],
+      "fallbacks": [],
+      "decisions": [
+        {
+          "at": 180240,
+          "trigger": "fit",
+          "mode": "shadow",
+          "changed": false
+        },
+        {
+          "at": 267600,
+          "trigger": "fit",
+          "mode": "shadow",
+          "changed": true
+        },
+        {
+          "at": 2460690,
+          "trigger": "cusum-alarm",
+          "mode": "shadow",
+          "changed": true
+        },
+        {
+          "at": 2466150,
+          "trigger": "drift-hold",
+          "mode": "shadow",
+          "changed": true
+        },
+        {
+          "at": 2469780,
+          "trigger": "drift-hold",
+          "mode": "shadow",
+          "changed": true
+        },
+        {
+          "at": 2553510,
+          "trigger": "cusum-keep",
+          "mode": "shadow",
+          "changed": false
+        },
+        {
+          "at": 2600820,
+          "trigger": "fit",
+          "mode": "shadow",
+          "changed": true
+        },
+        {
+          "at": 2688180,
+          "trigger": "fit",
+          "mode": "shadow",
+          "changed": true
+        },
+        {
+          "at": 2775540,
+          "trigger": "fit",
+          "mode": "shadow",
+          "changed": true
+        },
+        {
+          "at": 2862900,
+          "trigger": "fit",
+          "mode": "shadow",
+          "changed": true
+        },
+        {
+          "at": 2950260,
+          "trigger": "fit",
+          "mode": "shadow",
+          "changed": true
+        },
+        {
+          "at": 3037620,
+          "trigger": "fit",
+          "mode": "shadow",
+          "changed": true
+        },
+        {
+          "at": 3124980,
+          "trigger": "fit",
+          "mode": "shadow",
+          "changed": true
+        },
+        {
+          "at": 3212340,
+          "trigger": "fit",
+          "mode": "shadow",
+          "changed": true
+        },
+        {
+          "at": 3299700,
+          "trigger": "fit",
+          "mode": "shadow",
+          "changed": true
+        },
+        {
+          "at": 3387060,
+          "trigger": "fit",
+          "mode": "shadow",
+          "changed": true
+        },
+        {
+          "at": 3474420,
+          "trigger": "fit",
+          "mode": "shadow",
+          "changed": true
+        },
+        {
+          "at": 3561780,
+          "trigger": "fit",
+          "mode": "shadow",
+          "changed": true
+        },
+        {
+          "at": 3649140,
+          "trigger": "fit",
+          "mode": "shadow",
+          "changed": true
+        },
+        {
+          "at": 3911220,
+          "trigger": "fit",
+          "mode": "shadow",
+          "changed": true
+        },
+        {
+          "at": 4025110,
+          "trigger": "limit-classified",
+          "mode": "shadow",
+          "changed": false
+        },
+        {
+          "at": 4025170,
+          "trigger": "limit-diagnosis",
+          "mode": "shadow",
+          "changed": false
+        },
+        {
+          "at": 4172560,
+          "trigger": "fit",
+          "mode": "shadow",
+          "changed": true
+        },
+        {
+          "at": 4259920,
+          "trigger": "fit",
+          "mode": "shadow",
+          "changed": true
+        },
+        {
+          "at": 4347280,
+          "trigger": "fit",
+          "mode": "shadow",
+          "changed": true
+        },
+        {
+          "at": 4434640,
+          "trigger": "fit",
+          "mode": "shadow",
+          "changed": true
+        },
+        {
+          "at": 4522000,
+          "trigger": "fit",
+          "mode": "shadow",
+          "changed": true
+        },
+        {
+          "at": 4609360,
+          "trigger": "fit",
+          "mode": "shadow",
+          "changed": true
+        }
+      ],
+      "ceilingDigest": "e9844feb",
+      "invalidSlots": 0,
+      "pairsDuringClockJump": 2,
+      "readingGaps": 17,
+      "quotaPeriodUsed": false,
+      "quotaPeriodRestored": false,
+      "comparison": {
+        "id": "S12-comparison",
+        "wouldBeLogs": 24,
+        "creditLimits": 1,
+        "hostLimits": [
+          {
+            "at": 1795784873000,
+            "lift": 1795788000000
+          }
+        ],
+        "clampShare": 0.9954735419224425,
+        "clockStepClampShare": null,
+        "limitedHours": 0.8688888888888889,
+        "cpuCoreHours": 5139.040583415941,
+        "gap": 0.006577885194496545,
+        "gapBilledCoreSeconds": 0,
+        "corruptionRecovered": false,
+        "ticksAfterCorruption": 0,
+        "slowestTickMs": 0,
+        "historyReadable": false,
+        "widened": true,
+        "widenCalls": 1,
+        "legacyMargin": {
+          "mul": 1.07,
+          "add": 0.1
+        },
+        "rebootPreserved": false,
+        "firstClampAfterDrift": null,
+        "episodeSettingsUnchanged": true,
+        "applied": {
+          "mul": 1.075,
+          "add": 0.0700128348463771,
+          "floor": 0.05
+        },
+        "fit": {
+          "a": 1.0612735102242699,
+          "b": 0.048594779075011196,
+          "aHi": 1.0667481836976676,
+          "sigma": [
+            0.009337463263680252,
+            0.01722902252608129
+          ],
+          "sigmaFloor": 0.0420311109921397,
+          "pairs": 665,
+          "days": 15
+        },
+        "episodes": [
+          {
+            "onset": 1795784880012,
+            "entry": 1795784970000,
+            "path": "probe",
+            "balance": 7678.211649984796,
+            "used": 16610123.460182086,
+            "settings": {
+              "mul": 1.05,
+              "add": 0.08,
+              "floor": 0.2
+            },
+            "gap": 0,
+            "mode": "off",
+            "track": 709.2263251701534,
+            "caps": [
+              {
+                "at": 1795784970000,
+                "busy": 2.4,
+                "demand": 4.799999999999999,
+                "ceiling": 460,
+                "pressing": true
+              },
+              {
+                "at": 1795786780000,
+                "busy": 2.1,
+                "demand": 2.1,
+                "ceiling": 190,
+                "pressing": false
+              }
+            ],
+            "confirmed": true,
+            "learn": true,
+            "testDelivery": {
+              "busy": 2.4,
+              "demand": 7.1
+            },
+            "firstTest": "limited",
+            "limitedAt": 1795787380000,
+            "lift": 1795788340000,
+            "recovery": {
+              "elapsedSeconds": 3370,
+              "estimatedRecoverySeconds": 3347.0838496302845,
+              "estimatedPausedSeconds": 310.0059999999994
+            },
+            "class": "credit",
+            "legacyLearned": true,
+            "diagnosis": {
+              "gap": 0.006577885194496545,
+              "source": "readings",
+              "anchor": {
+                "at": 1791792000000,
+                "balance": 34560,
+                "exact": true
+              },
+              "onset": 1795784580012,
+              "eta": 9935.654042283499,
+              "explained": false,
+              "left": 823.8415818269873,
+              "bridged": 49831,
+              "lower": 0.00408935546875
+            },
+            "liftCheck": {
+              "at": 1795793800000,
+              "predicted": 4401.876184326172,
+              "ratio": 0.7860257433682556
+            },
+            "capCount": 2,
+            "evidenceDigest": "f3659e4a"
+          }
+        ],
+        "classifications": [
+          "credit"
+        ],
+        "fallbacks": [],
+        "decisions": [
+          {
+            "at": 180240,
+            "trigger": "fit",
+            "mode": "off",
+            "changed": false
+          },
+          {
+            "at": 267600,
+            "trigger": "fit",
+            "mode": "off",
+            "changed": true
+          },
+          {
+            "at": 2460690,
+            "trigger": "cusum-alarm",
+            "mode": "off",
+            "changed": true
+          },
+          {
+            "at": 2466150,
+            "trigger": "drift-hold",
+            "mode": "off",
+            "changed": true
+          },
+          {
+            "at": 2469780,
+            "trigger": "drift-hold",
+            "mode": "off",
+            "changed": true
+          },
+          {
+            "at": 2553510,
+            "trigger": "cusum-keep",
+            "mode": "off",
+            "changed": false
+          },
+          {
+            "at": 2600820,
+            "trigger": "fit",
+            "mode": "off",
+            "changed": true
+          },
+          {
+            "at": 2688180,
+            "trigger": "fit",
+            "mode": "off",
+            "changed": true
+          },
+          {
+            "at": 2775540,
+            "trigger": "fit",
+            "mode": "off",
+            "changed": true
+          },
+          {
+            "at": 2862900,
+            "trigger": "fit",
+            "mode": "off",
+            "changed": true
+          },
+          {
+            "at": 2950260,
+            "trigger": "fit",
+            "mode": "off",
+            "changed": true
+          },
+          {
+            "at": 3037620,
+            "trigger": "fit",
+            "mode": "off",
+            "changed": true
+          },
+          {
+            "at": 3124980,
+            "trigger": "fit",
+            "mode": "off",
+            "changed": true
+          },
+          {
+            "at": 3212340,
+            "trigger": "fit",
+            "mode": "off",
+            "changed": true
+          },
+          {
+            "at": 3299700,
+            "trigger": "fit",
+            "mode": "off",
+            "changed": true
+          },
+          {
+            "at": 3387060,
+            "trigger": "fit",
+            "mode": "off",
+            "changed": true
+          },
+          {
+            "at": 3474420,
+            "trigger": "fit",
+            "mode": "off",
+            "changed": true
+          },
+          {
+            "at": 3561780,
+            "trigger": "fit",
+            "mode": "off",
+            "changed": true
+          },
+          {
+            "at": 3649140,
+            "trigger": "fit",
+            "mode": "off",
+            "changed": true
+          },
+          {
+            "at": 3911220,
+            "trigger": "fit",
+            "mode": "off",
+            "changed": true
+          },
+          {
+            "at": 4025110,
+            "trigger": "limit-classified",
+            "mode": "off",
+            "changed": false
+          },
+          {
+            "at": 4025170,
+            "trigger": "limit-diagnosis",
+            "mode": "off",
+            "changed": false
+          },
+          {
+            "at": 4172560,
+            "trigger": "fit",
+            "mode": "off",
+            "changed": true
+          },
+          {
+            "at": 4259920,
+            "trigger": "fit",
+            "mode": "off",
+            "changed": true
+          },
+          {
+            "at": 4347280,
+            "trigger": "fit",
+            "mode": "off",
+            "changed": true
+          },
+          {
+            "at": 4434640,
+            "trigger": "fit",
+            "mode": "off",
+            "changed": true
+          },
+          {
+            "at": 4522000,
+            "trigger": "fit",
+            "mode": "off",
+            "changed": true
+          },
+          {
+            "at": 4609360,
+            "trigger": "fit",
+            "mode": "off",
+            "changed": true
+          }
+        ],
+        "ceilingDigest": "e9844feb",
+        "invalidSlots": 0,
+        "pairsDuringClockJump": 2,
+        "readingGaps": 17,
+        "quotaPeriodUsed": false,
+        "quotaPeriodRestored": false
+      },
+      "assessment": {
+        "status": "pass",
+        "notes": [],
+        "cpuCostPercent": 0,
+        "limitsPrevented": 0
+      }
+    },
+    {
+      "id": "S13",
+      "wouldBeLogs": 0,
+      "creditLimits": 0,
+      "hostLimits": [],
+      "clampShare": 0.9954737103174603,
+      "clockStepClampShare": null,
+      "limitedHours": 0,
+      "cpuCoreHours": 5208.8157287685335,
+      "gap": 0,
+      "gapBilledCoreSeconds": 0,
+      "corruptionRecovered": false,
+      "ticksAfterCorruption": 0,
+      "slowestTickMs": 0,
+      "historyReadable": false,
+      "widened": false,
+      "widenCalls": 0,
+      "legacyMargin": {
+        "mul": 1.05,
+        "add": 0.08
+      },
+      "rebootPreserved": false,
+      "firstClampAfterDrift": null,
+      "episodeSettingsUnchanged": true,
+      "applied": {
+        "mul": 1.055,
+        "add": 0.06295443290321945,
+        "floor": 0.05
+      },
+      "fit": {
+        "a": 1.0483157559184944,
+        "b": 0.011665968311588948,
+        "aHi": 1.0543895074323428,
+        "sigma": [
+          0.0337037968950071,
+          0.019220404592587573
+        ],
+        "sigmaFloor": 0.05538018151411292,
+        "pairs": 664,
+        "days": 15
+      },
+      "episodes": [],
+      "classifications": [],
+      "fallbacks": [],
+      "decisions": [
+        {
+          "at": 180240,
+          "trigger": "fit",
+          "mode": "apply",
+          "changed": true
+        },
+        {
+          "at": 267600,
+          "trigger": "fit",
+          "mode": "apply",
+          "changed": true
+        },
+        {
+          "at": 3155940,
+          "trigger": "fit",
+          "mode": "apply",
+          "changed": true
+        },
+        {
+          "at": 3243300,
+          "trigger": "fit",
+          "mode": "apply",
+          "changed": true
+        },
+        {
+          "at": 3505380,
+          "trigger": "fit",
+          "mode": "apply",
+          "changed": true
+        }
+      ],
+      "ceilingDigest": "4a8cff2a",
+      "invalidSlots": 0,
+      "pairsDuringClockJump": 2,
+      "readingGaps": 17,
+      "quotaPeriodUsed": false,
+      "quotaPeriodRestored": false,
+      "comparison": {
+        "id": "S13-comparison",
+        "wouldBeLogs": 0,
+        "creditLimits": 0,
+        "hostLimits": [],
+        "clampShare": 0.9954737103174603,
+        "clockStepClampShare": null,
+        "limitedHours": 0,
+        "cpuCoreHours": 5222.997095830889,
+        "gap": 0,
+        "gapBilledCoreSeconds": 0,
+        "corruptionRecovered": false,
+        "ticksAfterCorruption": 0,
+        "slowestTickMs": 0,
+        "historyReadable": false,
+        "widened": false,
+        "widenCalls": 0,
+        "legacyMargin": {
+          "mul": 1.05,
+          "add": 0.08
+        },
+        "rebootPreserved": false,
+        "firstClampAfterDrift": null,
+        "episodeSettingsUnchanged": true,
+        "applied": {
+          "mul": 1.052,
+          "add": 0.046087681639647826,
+          "floor": 0.05
+        },
+        "fit": {
+          "a": 1.0479078078099748,
+          "b": 0.013203182080378184,
+          "aHi": 1.0519206453812078,
+          "sigma": [
+            0.022631298623551153,
+            0.01290624611137385
+          ],
+          "sigmaFloor": 0.037536069815437265,
+          "pairs": 664,
+          "days": 15
+        },
+        "episodes": [],
+        "classifications": [],
+        "fallbacks": [],
+        "decisions": [
+          {
+            "at": 180240,
+            "trigger": "fit",
+            "mode": "apply",
+            "changed": false
+          },
+          {
+            "at": 267600,
+            "trigger": "fit",
+            "mode": "apply",
+            "changed": true
+          },
+          {
+            "at": 3243300,
+            "trigger": "fit",
+            "mode": "apply",
+            "changed": true
+          },
+          {
+            "at": 3505380,
+            "trigger": "fit",
+            "mode": "apply",
+            "changed": true
+          }
+        ],
+        "ceilingDigest": "33593b1f",
+        "invalidSlots": 0,
+        "pairsDuringClockJump": 2,
+        "readingGaps": 17,
+        "quotaPeriodUsed": false,
+        "quotaPeriodRestored": false
+      },
+      "assessment": {
+        "status": "pass",
+        "notes": [],
+        "cpuCostPercent": 0.27151780485719534,
+        "limitsPrevented": 0
+      }
+    },
+    {
+      "id": "S14",
+      "wouldBeLogs": 0,
+      "creditLimits": 0,
+      "hostLimits": [],
+      "clampShare": 0.9954737103174603,
+      "clockStepClampShare": null,
+      "limitedHours": 0,
+      "cpuCoreHours": 5178.714038513412,
+      "gap": 0,
+      "gapBilledCoreSeconds": 0,
+      "corruptionRecovered": false,
+      "ticksAfterCorruption": 0,
+      "slowestTickMs": 0,
+      "historyReadable": false,
+      "widened": false,
+      "widenCalls": 0,
+      "legacyMargin": {
+        "mul": 1.05,
+        "add": 0.08
+      },
+      "rebootPreserved": false,
+      "firstClampAfterDrift": 2460690,
+      "episodeSettingsUnchanged": true,
+      "applied": {
+        "mul": 1.075,
+        "add": 0.06469752022073472,
+        "floor": 0.05
+      },
+      "fit": {
+        "a": 1.0606096280389767,
+        "b": 0.050560714464451983,
+        "aHi": 1.0660345632281865,
+        "sigma": [
+          0.008971653254585403,
+          0.018399021222649088
+        ],
+        "sigmaFloor": 0.043837673582320436,
+        "pairs": 666,
+        "days": 15
+      },
+      "episodes": [],
+      "classifications": [],
+      "fallbacks": [],
+      "decisions": [
+        {
+          "at": 180240,
+          "trigger": "fit",
+          "mode": "apply",
+          "changed": false
+        },
+        {
+          "at": 267600,
+          "trigger": "fit",
+          "mode": "apply",
+          "changed": true
+        },
+        {
+          "at": 2462520,
+          "trigger": "cusum-alarm",
+          "mode": "apply",
+          "changed": true
+        },
+        {
+          "at": 2467980,
+          "trigger": "drift-hold",
+          "mode": "apply",
+          "changed": true
+        },
+        {
+          "at": 2557140,
+          "trigger": "cusum-keep",
+          "mode": "apply",
+          "changed": false
+        },
+        {
+          "at": 2600820,
+          "trigger": "fit",
+          "mode": "apply",
+          "changed": true
+        },
+        {
+          "at": 2688180,
+          "trigger": "fit",
+          "mode": "apply",
+          "changed": true
+        },
+        {
+          "at": 2775540,
+          "trigger": "fit",
+          "mode": "apply",
+          "changed": true
+        },
+        {
+          "at": 2862900,
+          "trigger": "fit",
+          "mode": "apply",
+          "changed": true
+        },
+        {
+          "at": 2950260,
+          "trigger": "fit",
+          "mode": "apply",
+          "changed": true
+        },
+        {
+          "at": 3037620,
+          "trigger": "fit",
+          "mode": "apply",
+          "changed": true
+        },
+        {
+          "at": 3124980,
+          "trigger": "fit",
+          "mode": "apply",
+          "changed": true
+        },
+        {
+          "at": 3212340,
+          "trigger": "fit",
+          "mode": "apply",
+          "changed": true
+        },
+        {
+          "at": 3299700,
+          "trigger": "fit",
+          "mode": "apply",
+          "changed": true
+        },
+        {
+          "at": 3387060,
+          "trigger": "fit",
+          "mode": "apply",
+          "changed": true
+        },
+        {
+          "at": 3474420,
+          "trigger": "fit",
+          "mode": "apply",
+          "changed": true
+        },
+        {
+          "at": 3561780,
+          "trigger": "fit",
+          "mode": "apply",
+          "changed": true
+        },
+        {
+          "at": 3649140,
+          "trigger": "fit",
+          "mode": "apply",
+          "changed": true
+        },
+        {
+          "at": 3998580,
+          "trigger": "fit",
+          "mode": "apply",
+          "changed": true
+        },
+        {
+          "at": 4260660,
+          "trigger": "fit",
+          "mode": "apply",
+          "changed": true
+        },
+        {
+          "at": 4348020,
+          "trigger": "fit",
+          "mode": "apply",
+          "changed": true
+        },
+        {
+          "at": 4435380,
+          "trigger": "fit",
+          "mode": "apply",
+          "changed": true
+        },
+        {
+          "at": 4522740,
+          "trigger": "fit",
+          "mode": "apply",
+          "changed": true
+        }
+      ],
+      "ceilingDigest": "fb709c37",
+      "invalidSlots": 0,
+      "pairsDuringClockJump": 2,
+      "readingGaps": 17,
+      "quotaPeriodUsed": false,
+      "quotaPeriodRestored": false,
+      "comparison": {
+        "id": "S14-comparison",
+        "wouldBeLogs": 0,
+        "creditLimits": 0,
+        "hostLimits": [],
+        "clampShare": 0.9954737103174603,
+        "clockStepClampShare": null,
+        "limitedHours": 0,
+        "cpuCoreHours": 5178.222014104982,
+        "gap": 0,
+        "gapBilledCoreSeconds": 0,
+        "corruptionRecovered": false,
+        "ticksAfterCorruption": 0,
+        "slowestTickMs": 0,
+        "historyReadable": false,
+        "widened": false,
+        "widenCalls": 0,
+        "legacyMargin": {
+          "mul": 1.05,
+          "add": 0.08
+        },
+        "rebootPreserved": false,
+        "firstClampAfterDrift": null,
+        "episodeSettingsUnchanged": true,
+        "applied": {
+          "mul": 1.075,
+          "add": 0.06469752022073472,
+          "floor": 0.05
+        },
+        "fit": {
+          "a": 1.0606096280389767,
+          "b": 0.050560714464451983,
+          "aHi": 1.0660345632281865,
+          "sigma": [
+            0.008971653254585403,
+            0.018399021222649088
+          ],
+          "sigmaFloor": 0.043837673582320436,
+          "pairs": 666,
+          "days": 15
+        },
+        "episodes": [],
+        "classifications": [],
+        "fallbacks": [],
+        "decisions": [
+          {
+            "at": 180240,
+            "trigger": "fit",
+            "mode": "apply",
+            "changed": false
+          },
+          {
+            "at": 267600,
+            "trigger": "fit",
+            "mode": "apply",
+            "changed": true
+          },
+          {
+            "at": 2462520,
+            "trigger": "cusum-alarm",
+            "mode": "apply",
+            "changed": true
+          },
+          {
+            "at": 2467980,
+            "trigger": "drift-hold",
+            "mode": "apply",
+            "changed": true
+          },
+          {
+            "at": 2557140,
+            "trigger": "cusum-keep",
+            "mode": "apply",
+            "changed": false
+          },
+          {
+            "at": 2600820,
+            "trigger": "fit",
+            "mode": "apply",
+            "changed": true
+          },
+          {
+            "at": 2775540,
+            "trigger": "fit",
+            "mode": "apply",
+            "changed": true
+          },
+          {
+            "at": 2862900,
+            "trigger": "fit",
+            "mode": "apply",
+            "changed": true
+          },
+          {
+            "at": 2950260,
+            "trigger": "fit",
+            "mode": "apply",
+            "changed": true
+          },
+          {
+            "at": 3037620,
+            "trigger": "fit",
+            "mode": "apply",
+            "changed": true
+          },
+          {
+            "at": 3124980,
+            "trigger": "fit",
+            "mode": "apply",
+            "changed": true
+          },
+          {
+            "at": 3212340,
+            "trigger": "fit",
+            "mode": "apply",
+            "changed": true
+          },
+          {
+            "at": 3299700,
+            "trigger": "fit",
+            "mode": "apply",
+            "changed": true
+          },
+          {
+            "at": 3387060,
+            "trigger": "fit",
+            "mode": "apply",
+            "changed": true
+          },
+          {
+            "at": 3474420,
+            "trigger": "fit",
+            "mode": "apply",
+            "changed": true
+          },
+          {
+            "at": 3561780,
+            "trigger": "fit",
+            "mode": "apply",
+            "changed": true
+          },
+          {
+            "at": 3649140,
+            "trigger": "fit",
+            "mode": "apply",
+            "changed": true
+          },
+          {
+            "at": 3998580,
+            "trigger": "fit",
+            "mode": "apply",
+            "changed": true
+          },
+          {
+            "at": 4260660,
+            "trigger": "fit",
+            "mode": "apply",
+            "changed": true
+          },
+          {
+            "at": 4348020,
+            "trigger": "fit",
+            "mode": "apply",
+            "changed": true
+          },
+          {
+            "at": 4435380,
+            "trigger": "fit",
+            "mode": "apply",
+            "changed": true
+          },
+          {
+            "at": 4522740,
+            "trigger": "fit",
+            "mode": "apply",
+            "changed": true
+          }
+        ],
+        "ceilingDigest": "c896d08c",
+        "invalidSlots": 0,
+        "pairsDuringClockJump": 2,
+        "readingGaps": 17,
+        "quotaPeriodUsed": false,
+        "quotaPeriodRestored": false
+      },
+      "assessment": {
+        "status": "pass",
+        "notes": [],
+        "cpuCostPercent": -0.009501802106773625,
+        "limitsPrevented": 0
+      }
+    }
+  ]
+}

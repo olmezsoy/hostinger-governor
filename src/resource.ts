@@ -1,4 +1,5 @@
 // Channel-neutral report data and presentation. No bot credentials, delivery or governor control.
+import { LAW } from "./credits.ts";
 import type { PublicState } from "./governor.ts";
 
 export type Point = { at: number; v: number };
@@ -88,6 +89,17 @@ const peak = (points: Point[], fallback = 0) => Math.max(fallback, ...points.map
 const badge = (value: number, warning: number, danger: number) =>
   value >= danger ? "🔴" : value >= warning ? "🟡" : "🟢";
 
+// What the estimate can spend above the reserve, and how fast every vCPU spends it. State from
+// before v0.3 has no law: it always spent down to the legacy floor.
+export function spending(state: PublicState) {
+  const p = state.plan, c = state.credits;
+  const reserve = (c.law?.floor ?? LAW.floor) * p.capacity;
+  return {
+    reserve,
+    surplus: Math.max(0, c.balance - reserve),
+    debit: p.vcpus * c.margin.mul + c.margin.add - p.baseline,
+  };
+}
 export function buildReport(
   state: PublicState | null,
   resources: Vitals,
@@ -110,21 +122,18 @@ export function buildReport(
     const p = state.plan;
     const c = state.credits;
     const measuring = state.cpu.observedSeconds === 0;
-    const surplus = Math.max(0, c.balance - p.recovered);
-    const debit = p.vcpus * c.margin.mul + c.margin.add - p.baseline;
+    const { reserve, surplus, debit } = spending(state);
     const rate = measuring ? null : c.rate;
     const runway = debit > 0 ? surplus / debit : 0;
     report.credits = {
       estimated: true,
       balance: c.balance,
       capacity: p.capacity,
-      reserve: p.recovered,
+      reserve,
       surplus,
       rate,
       fullCpuRunwaySeconds: runway,
-      reserveEtaSeconds: rate !== null && rate > 0
-        ? Math.max(0, p.recovered - c.balance) / rate
-        : null,
+      reserveEtaSeconds: rate !== null && rate > 0 ? Math.max(0, reserve - c.balance) / rate : null,
       fullBankEtaSeconds: rate !== null && rate > 0
         ? Math.max(0, p.capacity - c.balance) / rate
         : null,
@@ -152,8 +161,8 @@ export function buildReport(
         `${number(p.baseline)} / ${p.vcpus} vCPUs · ${number(p.baseline / p.vcpus * 100)}%`,
       ],
       [
-        "Reserve / lift point",
-        `${number(p.recovered, 0)} credits · ${number(p.recovered / p.capacity * 100)}% of bank`,
+        "Spending reserve",
+        `${number(reserve, 0)} credits · ${number(reserve / p.capacity * 100)}% of bank`,
       ],
       ["Burst headroom", `${number(surplus, 0)} credits above reserve`],
       [
@@ -166,7 +175,7 @@ export function buildReport(
       ],
     ];
     if (rate !== null && rate > 0) {
-      if (c.balance < p.recovered) {
+      if (c.balance < reserve) {
         rows.push([
           "Build reserve",
           `${duration(report.credits.reserveEtaSeconds!)} at current rate`,
@@ -280,7 +289,11 @@ export function buildReport(
     if (label === "Hostinger API" && !points.length) continue;
     sections.push({
       title: `${label} history`,
-      note: label === "Hostinger API" ? "Diagnostic only; it does not reset the bank." : undefined,
+      note: label === "Hostinger API"
+        ? state?.credits.calibration?.mode === "apply"
+          ? "Tighten only; it never raises the bank."
+          : "Diagnostic only; it does not reset the bank."
+        : undefined,
       chart: sparkline(
         [...points],
         from,

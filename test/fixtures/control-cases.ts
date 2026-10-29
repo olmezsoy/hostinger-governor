@@ -289,10 +289,12 @@ Deno.test("real state write failure reaches the caller and a later pass can reco
   try {
     await s.ready;
     const before = await Deno.readTextFile(`${dir}/state.json`);
+    // A leftover temp file is removed before each write; a directory holding a file is not.
     await Deno.mkdir(`${dir}/state.json.tmp`);
+    await Deno.writeTextFile(`${dir}/state.json.tmp/held`, "");
     await assertRejects(() => s.tick(), TickError, "tick failed");
     assertEquals(await Deno.readTextFile(`${dir}/state.json`), before);
-    await Deno.remove(`${dir}/state.json.tmp`);
+    await Deno.remove(`${dir}/state.json.tmp`, { recursive: true });
     await s.tick();
   } finally {
     await s.stop();

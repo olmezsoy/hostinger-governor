@@ -1,6 +1,6 @@
 // Read-only collection for the channel-neutral resource report.
 import type { PublicState } from "./governor.ts";
-import { buildReport, type Point, renderReport, type ReportFormat } from "./resource.ts";
+import { buildReport, type Point, renderReport, type ReportFormat, spending } from "./resource.ts";
 import { vcpusSeen } from "./sample.ts";
 export { sparkline } from "./resource.ts";
 
@@ -138,8 +138,7 @@ export async function collectReport(
 
 export function creditLines(s: PublicState, clock: (ms: number) => string): string[] {
   const c = s.credits;
-  const surplus = Math.max(0, c.balance - s.plan.recovered);
-  const debit = s.plan.vcpus * c.margin.mul + c.margin.add - s.plan.baseline;
+  const { surplus, debit } = spending(s);
   return [
     `Estimated CPU credits ${c.percent}% · ${c.balance.toLocaleString("en-US")} of ${
       s.plan.capacity.toLocaleString("en-US")
@@ -160,7 +159,9 @@ export function creditLines(s: PublicState, clock: (ms: number) => string): stri
           Math.abs(c.rate).toFixed(1)
         } vCPU's worth now (baseline ${s.plan.baseline} of ${s.plan.vcpus}) · ${
           c.anchor
-            ? `Hostinger history checked ${clock(c.anchor.checkedAt)}, diagnostic only${
+            ? `Hostinger history checked ${clock(c.anchor.checkedAt)}, ${
+              c.calibration?.mode === "apply" ? "tighten only" : "diagnostic only"
+            }${
               c.anchor.difference === null
                 ? ""
                 : `, CPU difference ${c.anchor.difference.toFixed(1)} points`

@@ -1,0 +1,492 @@
+[
+  {
+    "name": "normal",
+    "throttles": 0,
+    "throttled_h": 0,
+    "paused_h": 0,
+    "min_bank": 34458,
+    "used_pct": 95.9,
+    "wasted_core_h": 33.3,
+    "batch_core_h": 655.8,
+    "services_unmet_pct": 10.31,
+    "slice_at_20pct_min": 8,
+    "probes": 23,
+    "limit_entries": 0,
+    "false_limits": 0,
+    "burn_tests": 0,
+    "margin": {
+      "mul": 1.05,
+      "add": 0.08
+    },
+    "applied": {
+      "mul": 1.05,
+      "add": 0.04,
+      "floor": 0.05
+    },
+    "gap": 0,
+    "clamp_ticks": 0,
+    "rules_mismatches": 0,
+    "classifications": []
+  },
+  {
+    "name": "noisy neighbours",
+    "throttles": 0,
+    "throttled_h": 0,
+    "paused_h": 0,
+    "min_bank": 33409,
+    "used_pct": 95.3,
+    "wasted_core_h": 38.1,
+    "batch_core_h": 652.6,
+    "services_unmet_pct": 11.78,
+    "slice_at_20pct_min": 25,
+    "probes": 75,
+    "limit_entries": 0,
+    "false_limits": 0,
+    "burn_tests": 0,
+    "margin": {
+      "mul": 1.05,
+      "add": 0.08
+    },
+    "applied": {
+      "mul": 1.05,
+      "add": 0.04,
+      "floor": 0.05
+    },
+    "gap": 0,
+    "clamp_ticks": 0,
+    "rules_mismatches": 0,
+    "classifications": []
+  },
+  {
+    "name": "hidden overhead",
+    "throttles": 2,
+    "throttled_h": 1.31,
+    "paused_h": 0.15,
+    "min_bank": 0,
+    "used_pct": 99.8,
+    "wasted_core_h": 1.1,
+    "batch_core_h": 605.8,
+    "services_unmet_pct": 11.39,
+    "slice_at_20pct_min": 9,
+    "probes": 27,
+    "limit_entries": 2,
+    "false_limits": 0,
+    "burn_tests": 8,
+    "margin": {
+      "mul": 1.1283,
+      "add": 0.12
+    },
+    "applied": {
+      "mul": 1.12,
+      "add": 0.20003575324587342,
+      "floor": 0.1
+    },
+    "gap": 0.04962114523106076,
+    "clamp_ticks": 16550,
+    "rules_mismatches": 0,
+    "classifications": [
+      "credit",
+      "credit"
+    ]
+  },
+  {
+    "name": "paused earning debits CPU, overhead",
+    "throttles": 2,
+    "throttled_h": 1.38,
+    "paused_h": 0.16,
+    "min_bank": 0,
+    "used_pct": 99.8,
+    "wasted_core_h": 1.1,
+    "batch_core_h": 604.2,
+    "services_unmet_pct": 11.41,
+    "slice_at_20pct_min": 9,
+    "probes": 27,
+    "limit_entries": 2,
+    "false_limits": 0,
+    "burn_tests": 8,
+    "margin": {
+      "mul": 1.1314,
+      "add": 0.12
+    },
+    "applied": {
+      "mul": 1.123,
+      "add": 0.20392730794787362,
+      "floor": 0.1
+    },
+    "gap": 0.0533902840574763,
+    "clamp_ticks": 16550,
+    "rules_mismatches": 0,
+    "classifications": [
+      "credit",
+      "credit"
+    ]
+  },
+  {
+    "name": "hidden overhead, per-vCPU limit",
+    "throttles": 1,
+    "throttled_h": 139.4,
+    "paused_h": 139.4,
+    "min_bank": 0,
+    "used_pct": 26.3,
+    "wasted_core_h": 1.1,
+    "batch_core_h": 121.6,
+    "services_unmet_pct": 71.8,
+    "slice_at_20pct_min": 8358,
+    "probes": 6,
+    "limit_entries": 1,
+    "false_limits": 0,
+    "burn_tests": 537,
+    "margin": {
+      "mul": 1.05,
+      "add": 0.08
+    },
+    "applied": {
+      "mul": 1.05,
+      "add": 0.04,
+      "floor": 0.05
+    },
+    "gap": 0,
+    "clamp_ticks": 0,
+    "rules_mismatches": 0,
+    "classifications": [
+      "unknown"
+    ]
+  },
+  {
+    "name": "hidden overhead, per-vCPU, spread",
+    "throttles": 2,
+    "throttled_h": 1.13,
+    "paused_h": 0.2,
+    "min_bank": 0,
+    "used_pct": 99.8,
+    "wasted_core_h": 1.1,
+    "batch_core_h": 605.6,
+    "services_unmet_pct": 11.72,
+    "slice_at_20pct_min": 9,
+    "probes": 27,
+    "limit_entries": 2,
+    "false_limits": 0,
+    "burn_tests": 8,
+    "margin": {
+      "mul": 1.1285,
+      "add": 0.12
+    },
+    "applied": {
+      "mul": 1.121,
+      "add": 0.15711606864977856,
+      "floor": 0.1
+    },
+    "gap": 0.006898018607976883,
+    "clamp_ticks": 16551,
+    "rules_mismatches": 0,
+    "classifications": [
+      "credit",
+      "credit"
+    ]
+  },
+  {
+    "name": "real baseline 30% (article wrong)",
+    "throttles": 11,
+    "throttled_h": 32.09,
+    "paused_h": 1.79,
+    "min_bank": 0,
+    "used_pct": 99.7,
+    "wasted_core_h": 0,
+    "batch_core_h": 309.9,
+    "services_unmet_pct": 17.89,
+    "slice_at_20pct_min": 234,
+    "probes": 31,
+    "limit_entries": 11,
+    "false_limits": 0,
+    "burn_tests": 145,
+    "margin": {
+      "mul": 1.9388,
+      "add": 0.3
+    },
+    "applied": {
+      "mul": 1.7742,
+      "add": 0.26,
+      "floor": 0.1
+    },
+    "gap": 0,
+    "clamp_ticks": 18561,
+    "rules_mismatches": 18,
+    "classifications": [
+      "credit",
+      "credit",
+      "credit",
+      "credit",
+      "credit",
+      "credit",
+      "credit",
+      "credit",
+      "credit",
+      "credit",
+      "credit"
+    ]
+  },
+  {
+    "name": "services outside slice +5 cores 6h",
+    "throttles": 0,
+    "throttled_h": 0,
+    "paused_h": 0,
+    "min_bank": 19559,
+    "used_pct": 96.3,
+    "wasted_core_h": 29.9,
+    "batch_core_h": 631.5,
+    "services_unmet_pct": 13.28,
+    "slice_at_20pct_min": 370,
+    "probes": 23,
+    "limit_entries": 0,
+    "false_limits": 0,
+    "burn_tests": 0,
+    "margin": {
+      "mul": 1.05,
+      "add": 0.08
+    },
+    "applied": {
+      "mul": 1.05,
+      "add": 0.04,
+      "floor": 0.05
+    },
+    "gap": 0,
+    "clamp_ticks": 0,
+    "rules_mismatches": 0,
+    "classifications": []
+  },
+  {
+    "name": "stopped 3h at a low bank",
+    "throttles": 0,
+    "throttled_h": 0,
+    "paused_h": 0,
+    "min_bank": 8642,
+    "used_pct": 95.6,
+    "wasted_core_h": 28.1,
+    "batch_core_h": 653.8,
+    "services_unmet_pct": 10.31,
+    "slice_at_20pct_min": 8,
+    "probes": 24,
+    "limit_entries": 0,
+    "false_limits": 0,
+    "burn_tests": 0,
+    "margin": {
+      "mul": 1.05,
+      "add": 0.08
+    },
+    "applied": {
+      "mul": 1.05,
+      "add": 0.04,
+      "floor": 0.05
+    },
+    "gap": 0,
+    "clamp_ticks": 16351,
+    "rules_mismatches": 0,
+    "classifications": []
+  },
+  {
+    "name": "normal, services not enrolled",
+    "throttles": 0,
+    "throttled_h": 0,
+    "paused_h": 0,
+    "min_bank": 31965,
+    "used_pct": 95.9,
+    "wasted_core_h": 33.3,
+    "batch_core_h": 649,
+    "services_unmet_pct": 0.43,
+    "slice_at_20pct_min": 142,
+    "probes": 23,
+    "limit_entries": 0,
+    "false_limits": 0,
+    "burn_tests": 0,
+    "margin": {
+      "mul": 1.05,
+      "add": 0.08
+    },
+    "applied": {
+      "mul": 1.05,
+      "add": 0.04,
+      "floor": 0.05
+    },
+    "gap": 0,
+    "clamp_ticks": 0,
+    "rules_mismatches": 0,
+    "classifications": []
+  },
+  {
+    "name": "normal, batch at idle weight",
+    "throttles": 0,
+    "throttled_h": 0,
+    "paused_h": 0,
+    "min_bank": 34458,
+    "used_pct": 95.9,
+    "wasted_core_h": 33.3,
+    "batch_core_h": 650.5,
+    "services_unmet_pct": 2.74,
+    "slice_at_20pct_min": 8,
+    "probes": 23,
+    "limit_entries": 0,
+    "false_limits": 0,
+    "burn_tests": 0,
+    "margin": {
+      "mul": 1.05,
+      "add": 0.08
+    },
+    "applied": {
+      "mul": 1.05,
+      "add": 0.04,
+      "floor": 0.05
+    },
+    "gap": 0,
+    "clamp_ticks": 0,
+    "rules_mismatches": 0,
+    "classifications": []
+  },
+  {
+    "name": "paused earning debits CPU, baseline 30%",
+    "throttles": 11,
+    "throttled_h": 32.97,
+    "paused_h": 1.83,
+    "min_bank": 0,
+    "used_pct": 99.1,
+    "wasted_core_h": 0,
+    "batch_core_h": 309.5,
+    "services_unmet_pct": 18.69,
+    "slice_at_20pct_min": 363,
+    "probes": 31,
+    "limit_entries": 11,
+    "false_limits": 0,
+    "burn_tests": 150,
+    "margin": {
+      "mul": 1.9283,
+      "add": 0.3
+    },
+    "applied": {
+      "mul": 1.7637,
+      "add": 0.26,
+      "floor": 0.1
+    },
+    "gap": 0,
+    "clamp_ticks": 18555,
+    "rules_mismatches": 13,
+    "classifications": [
+      "credit",
+      "credit",
+      "credit",
+      "credit",
+      "credit",
+      "credit",
+      "credit",
+      "credit",
+      "credit",
+      "credit",
+      "credit"
+    ]
+  },
+  {
+    "name": "baseline 30%, two weeks",
+    "throttles": 11,
+    "throttled_h": 30.43,
+    "paused_h": 1.73,
+    "min_bank": 0,
+    "used_pct": 99.8,
+    "wasted_core_h": 0,
+    "batch_core_h": 605.3,
+    "services_unmet_pct": 15.14,
+    "slice_at_20pct_min": 382,
+    "probes": 48,
+    "limit_entries": 11,
+    "false_limits": 0,
+    "burn_tests": 138,
+    "margin": {
+      "mul": 1.9471,
+      "add": 0.3
+    },
+    "applied": {
+      "mul": 1.8826,
+      "add": 0.28,
+      "floor": 0.1
+    },
+    "gap": 0,
+    "clamp_ticks": 38770,
+    "rules_mismatches": 19,
+    "classifications": [
+      "credit",
+      "credit",
+      "credit",
+      "credit",
+      "credit",
+      "credit",
+      "credit",
+      "credit",
+      "credit",
+      "credit",
+      "credit"
+    ]
+  },
+  {
+    "name": "hidden overhead + heavy neighbours",
+    "throttles": 3,
+    "throttled_h": 1.84,
+    "paused_h": 0.22,
+    "min_bank": 0,
+    "used_pct": 99.8,
+    "wasted_core_h": 1.2,
+    "batch_core_h": 606.9,
+    "services_unmet_pct": 13.42,
+    "slice_at_20pct_min": 72,
+    "probes": 92,
+    "limit_entries": 3,
+    "false_limits": 0,
+    "burn_tests": 12,
+    "margin": {
+      "mul": 1.1238,
+      "add": 0.14
+    },
+    "applied": {
+      "mul": 1.121,
+      "add": 0.16666354059027277,
+      "floor": 0.1
+    },
+    "gap": 0.016130760772558168,
+    "clamp_ticks": 16094,
+    "rules_mismatches": 0,
+    "classifications": [
+      "credit",
+      "credit",
+      "credit"
+    ]
+  },
+  {
+    "name": "hidden overhead + heavy neighbours, per-vCPU spread",
+    "throttles": 3,
+    "throttled_h": 1.68,
+    "paused_h": 0.31,
+    "min_bank": 0,
+    "used_pct": 99.7,
+    "wasted_core_h": 1.2,
+    "batch_core_h": 606.7,
+    "services_unmet_pct": 13.85,
+    "slice_at_20pct_min": 80,
+    "probes": 92,
+    "limit_entries": 3,
+    "false_limits": 0,
+    "burn_tests": 12,
+    "margin": {
+      "mul": 1.1236,
+      "add": 0.14
+    },
+    "applied": {
+      "mul": 1.121,
+      "add": 0.15049173914301583,
+      "floor": 0.1
+    },
+    "gap": 0,
+    "clamp_ticks": 16138,
+    "rules_mismatches": 0,
+    "classifications": [
+      "credit",
+      "credit",
+      "credit"
+    ]
+  }
+]

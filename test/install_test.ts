@@ -5,10 +5,7 @@ const helper = script.split("cat > /usr/local/libexec/governor-cap <<'EOF'\n")[1
 async function helperResult(args: string[]) {
   // Stub machine access and the final systemctl command, so tests cannot change the host.
   const body = helper.replace("max=$(( $(grep -c '^cpu[0-9]' /proc/stat) * 100 ))", "max=800")
-    .replace(
-      'exec systemctl set-property --runtime "$slice" "CPUQuota=$p%"',
-      'printf "%s\\n" "$slice" "CPUQuota=$p%"',
-    );
+    .replaceAll("exec systemctl ", "printf '%s\\n' ");
   return await new Deno.Command("bash", {
     args: ["-c", body, "governor-cap", ...args],
     stdout: "piped",
@@ -20,7 +17,13 @@ for (const args of [["200"], ["800", "user.slice"]]) {
   Deno.test(`cap helper permits only the managed slice: ${args.join(" ")}`, async () => {
     const out = await helperResult(args);
     assertEquals(out.code, 0);
-    assert(new TextDecoder().decode(out.stdout).startsWith("user.slice\n"));
+    assertEquals(new TextDecoder().decode(out.stdout).split("\n"), [
+      "set-property",
+      "--runtime",
+      "user.slice",
+      `CPUQuota=${args[0]}%`,
+      "",
+    ]);
   });
 }
 for (
@@ -84,4 +87,26 @@ Deno.test("installer derives the boot fallback from validated configuration inst
   assert(!boot.includes("CPUAccounting="));
   assert(script.includes('"fallback_cpu_percent": 20'));
   assert(script.indexOf('"CPUQuota=$fallback_percent%"') < script.indexOf("apt-get update"));
+});
+
+Deno.test("cap helper validates and applies only 10 ms or the default quota period", async () => {
+  for (
+    const [period, property] of [["10", "CPUQuotaPeriodSec=10ms"], [
+      "default",
+      "CPUQuotaPeriodSec=",
+    ]]
+  ) {
+    const output = await helperResult(["200", "user.slice", period]);
+    assertEquals(output.code, 0);
+    assertEquals(new TextDecoder().decode(output.stdout).trim().split("\n"), [
+      "set-property",
+      "--runtime",
+      "user.slice",
+      "CPUQuota=200%",
+      property,
+    ]);
+  }
+  for (const period of ["0", "1", "100", "10ms", "10; true", "--help"]) {
+    assertEquals((await helperResult(["200", "user.slice", period])).code, 2);
+  }
 });

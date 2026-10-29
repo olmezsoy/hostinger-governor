@@ -40,3 +40,63 @@ jobs:
       - name: Production broker sudo grant
         if: matrix.broker == 'sudo-grant'
         run: sudo --preserve-env=GITHUB_ACTIONS,RUNNER_ENVIRONMENT python3 test/broker-sudo-linux.py
+  calibration-studies:
+    # Each eight-week study takes about a minute, two with its comparison run; a changed pass or
+    # limit count fails the job.
+    name: calibration study ${{ matrix.study }}
+    strategy:
+      fail-fast: false
+      matrix:
+        study: [S1, S2, S3, S4, S5, S6, S7, S8, S9, S10, S11, S12, S13, S14]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: denoland/setup-deno@22d081ff2d3a40755e97629de92e3bcbfa7cf2ed # v2.0.5
+        with:
+          deno-version: v2.9.7
+      - run: deno task sim:check ${{ matrix.study }}
+  daemon-cpu:
+    # A simulated day of control passes without the JIT, as release binaries run, with the last
+    # anchor 30 and 90 days back; above 0.1% of a core fails.
+    name: daemon CPU budget
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: denoland/setup-deno@22d081ff2d3a40755e97629de92e3bcbfa7cf2ed # v2.0.5
+        with:
+          deno-version: v2.9.7
+      - run: deno task bench:cpu
+      - run: deno task bench:cpu 90
+  legacy-off:
+    # off must keep today's behavior: the one-week legacy scenarios in off, seed 1, against their
+    # record. About 20 seconds; an intended change means recording them again (test/sim.ts).
+    name: legacy scenarios in off
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: denoland/setup-deno@22d081ff2d3a40755e97629de92e3bcbfa7cf2ed # v2.0.5
+        with:
+          deno-version: v2.9.7
+      - run: deno task sim:legacy
+  meter-jumps:
+    # The meter-jump criteria of #13 over seeds 1-10: 80 three-week runs across the runner's cores.
+    name: meter jumps
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: denoland/setup-deno@22d081ff2d3a40755e97629de92e3bcbfa7cf2ed # v2.0.5
+        with:
+          deno-version: v2.9.7
+      - run: deno task sim:jumps

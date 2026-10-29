@@ -91,6 +91,16 @@ if governor seed 34560; then echo "consumer control unexpectedly succeeded" >&2;
 if sudo -u governor governor limit off; then echo "daemon control unexpectedly succeeded" >&2; exit 1; fi
 if governor tick; then echo "consumer tick unexpectedly succeeded" >&2; exit 1; fi
 if sudo -u governor governor tick; then echo "daemon tick CLI unexpectedly succeeded" >&2; exit 1; fi
+# A root daemon would leave state the service can't read, and a second daemon beside the service
+# would append to the same history.
+if sudo governor run >"$fixture_dir/root-run.log" 2>&1; then
+  echo "governor run unexpectedly started as root" >&2; exit 1
+fi
+grep -q "must run as the governor user" "$fixture_dir/root-run.log"
+if sudo -u governor timeout 30 governor run >"$fixture_dir/second-run.log" 2>&1; then
+  echo "a second governor run unexpectedly started" >&2; exit 1
+fi
+grep -q "another governor run is active" "$fixture_dir/second-run.log"
 # Use the production cadence and require synchronous state publication and real cgroup control.
 sudo governor limit on
 sudo governor tick
@@ -135,6 +145,16 @@ governor status --json >/dev/null
 sudo -u governor sudo -n /usr/local/libexec/governor-cap 200 user.slice
 read -r quota period < /sys/fs/cgroup/user.slice/cpu.max
 (( quota * 100 / period == 200 ))
+# The optional third argument: a 10 ms quota period while limited, then systemd's default again.
+sudo -u governor sudo -n /usr/local/libexec/governor-cap 200 user.slice 10
+read -r quota period < /sys/fs/cgroup/user.slice/cpu.max
+(( period == 10000 && quota * 100 / period == 200 ))
+sudo -u governor sudo -n /usr/local/libexec/governor-cap 200 user.slice default
+read -r quota period < /sys/fs/cgroup/user.slice/cpu.max
+(( period == 100000 && quota * 100 / period == 200 ))
+if sudo -u governor sudo -n /usr/local/libexec/governor-cap 200 user.slice 1; then
+  echo "cap helper accepted a 1 ms quota period" >&2; exit 1
+fi
 
 # An upgrade must keep the operator's fallback and mirror it into the boot quota.
 sudo python3 -c 'import json,pathlib; p=pathlib.Path("/etc/governor/config.json"); c=json.loads(p.read_text()); c["fallback_cpu_percent"]=150; p.write_text(json.dumps(c))'

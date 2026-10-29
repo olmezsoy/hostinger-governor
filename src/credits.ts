@@ -71,9 +71,13 @@ export const tightenCeiling = (ceiling: number, managedDemand: number) =>
 export const liftConfirmed = (p: Plan, burners: number, busyCores: number, steal: number) =>
   steal < LIFT_STEAL && busyCores >= Math.max(burners * 0.75, p.limit + 0.1);
 
-// A model of complete, end-stamped, 30-minute readings. Those semantics are not established by the
-// API, so the daemon uses this only as a diagnostic. Unknown intervals invalidate the model balance.
+// End-stamped readings cover the interval since the previous reading. Unknown intervals
+// invalidate the model balance; readings can never increase the acted estimate.
 export type Reading = { at: number; v: number };
+// Valid reading intervals (#13 §2): 900 to 2,700 seconds. Longer ones are gaps.
+export const MAX_SPACING_MS = 2_700_000;
+export const validSpacing = (start: number, end: number) =>
+  end - start >= 900_000 && end - start <= MAX_SPACING_MS;
 export type Anchor = { at: number; balance: number; exact: boolean };
 export function replay(p: Plan, readings: Reading[], since = RULES_SINCE): Anchor | null {
   const rs = readings.filter((r) => r.at >= since).sort((a, b) => a.at - b.at);
@@ -83,7 +87,8 @@ export function replay(p: Plan, readings: Reading[], since = RULES_SINCE): Ancho
   for (let i = 1; i < rs.length; i++) {
     const seconds = (rs[i].at - rs[i - 1].at) / 1000;
     if (
-      seconds !== 1800 || !Number.isFinite(rs[i].v) || rs[i].v < 0 || rs[i].v > 100
+      !validSpacing(rs[i - 1].at, rs[i].at) || !Number.isFinite(rs[i].v) || rs[i].v < 0 ||
+      rs[i].v > 100
     ) {
       [balance, exact] = [0, false];
       continue;
