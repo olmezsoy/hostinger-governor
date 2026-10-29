@@ -45,6 +45,12 @@ COOLDOWN_SECONDS = 60
 CHECK_WINDOW_MS = 12 * 3_600_000
 CAPABILITY = "request_command v1 supported"
 TEMPORARY_ERRORS = ("busy", "rate_limited")
+# Metrics Hostinger returned but no CPU percentage can be: the daemon raises readings-invalid for
+# them, as it does when it reads the API itself, instead of letting the feed merely go stale.
+INVALID_METRICS = "invalid_metrics"
+RESPONSE_ERRORS = TEMPORARY_ERRORS + (INVALID_METRICS,)
+# Readings may carry Hostinger's clock, a little ahead of this box's, as the daemon allows.
+CLOCK_SKEW_MS = 300_000
 USER_AGENT = "Deno/2.9.7"
 REQUEST_SECONDS = 25
 # Keep these budgets ordered with commandRequest's 25-second deadline. The
@@ -110,9 +116,9 @@ class Refused(Exception):
         self.code = code
 
 
-def require(condition, message):
+def require(condition, message, code=None):
     if not condition:
-        raise Refused(message)
+        raise Refused(message, code)
 
 
 def unique_object(pairs):
@@ -261,24 +267,32 @@ def sanitize(body, value):
         return {"cpus": cpus, "ipv4": ipv4}
     metric = body.get("cpu_usage")
     require(
-        isinstance(metric, dict)
-        and isinstance(metric.get("unit"), str)
-        and metric["unit"].strip().lower() in ("%", "percent", "percentage")
-        and isinstance(metric.get("usage"), dict),
+        isinstance(metric, dict) and isinstance(metric.get("usage"), dict),
         "Invalid upstream CPU metrics.",
+    )
+    # A unit, timestamp or value no CPU percentage can have, or a reading stamped beyond the clock
+    # skew the daemon allows, condemns the whole fetch, as it does on the daemon's own API path.
+    require(
+        isinstance(metric.get("unit"), str)
+        and metric["unit"].strip().lower() in ("%", "percent", "percentage"),
+        "Unrecognized upstream CPU metric unit.",
+        INVALID_METRICS,
     )
     usage = {}
     for timestamp, cpu in metric["usage"].items():
         require(
             re.fullmatch(r"[0-9]{1,12}", timestamp)
             and type(cpu) in (int, float)
+            # The range check first: math.isfinite raises OverflowError on an integer too large
+            # for a float, which failed the fetch as an error instead of invalid metrics.
+            and 0 <= cpu <= 100
             and math.isfinite(cpu)
-            and 0 <= cpu <= 100,
+            and int(timestamp) * 1000 <= value["to"] + CLOCK_SKEW_MS,
             "Invalid upstream CPU reading.",
+            INVALID_METRICS,
         )
         at = int(timestamp) * 1000
-        require(at <= int(time.time() * 1000), "Future upstream CPU reading.")
-        if value["from"] <= at <= value["to"]:
+        if value["from"] <= at <= value["to"] + CLOCK_SKEW_MS:
             usage[timestamp] = cpu
     return {"cpu_usage": {"unit": "%", "usage": usage}}
 
@@ -445,13 +459,13 @@ def main():
                 isinstance(response, dict)
                 and response.get("version") == 1
                 and response.get("vm_id") == value["vm_id"]
-                and ("data" in response or response.get("error") in TEMPORARY_ERRORS),
+                and ("data" in response or response.get("error") in RESPONSE_ERRORS),
                 "Invalid worker response.",
             )
         else:
             response = {"version": 1, "vm_id": value["vm_id"], "data": worker(value)}
     except Refused as error:
-        if error.code not in TEMPORARY_ERRORS:
+        if error.code not in RESPONSE_ERRORS:
             raise
         response = {"version": 1, "vm_id": value["vm_id"], "error": error.code}
     print(json.dumps(response, allow_nan=False), flush=True)

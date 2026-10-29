@@ -4,7 +4,10 @@ import {
   BROKER_CAPABILITY,
   BROKER_COOLDOWN_SECONDS,
   CHECK_WINDOW_MS,
+  CLOCK_SKEW_MS,
   cpuReadings,
+  INVALID_METRICS,
+  InvalidReadingsError,
   MAX_INTERVAL_MS,
   MAX_RESPONSE,
   MAX_TOKEN_BYTES,
@@ -152,6 +155,8 @@ Deno.test("TypeScript broker protocol bounds match the shared contract fixture",
   assertEquals(CHECK_WINDOW_MS, contract.check_window_ms);
   assertEquals(BROKER_CAPABILITY, contract.capability);
   assertEquals<readonly string[]>(TEMPORARY_ERRORS, contract.temporary_errors);
+  assertEquals(INVALID_METRICS, contract.invalid_metrics_error);
+  assertEquals(CLOCK_SKEW_MS, contract.clock_skew_ms);
 });
 
 const metric = (
@@ -173,8 +178,22 @@ Deno.test("malformed CPU metrics cannot become credit evidence", () => {
     parseReadings(metric("%", { "1000": 120, "2800": 0, "4600": 0 }), 0, 5_000_000)
   );
   assertThrows(() => parseReadings(metric("%", { "bad": 0 }), 0, 5_000_000));
+  // Keys the broker rejects as Unix seconds, though Number() would read most of them.
+  for (const key of contract.invalid_timestamp_keys) {
+    assertThrows(
+      () => parseReadings(metric("%", { [key]: 20, "1000": 20, "2800": 25 }), 0, 5_000_000),
+      InvalidReadingsError,
+      undefined,
+      JSON.stringify(key),
+    );
+  }
   assertThrows(() => parseReadings(metric(), 0, 100));
-  assertEquals(parseReadings({}, 0, 5_000_000), []);
+  // A response without the metric is a failed fetch, as the broker reports it, not an empty one or
+  // invalid readings.
+  for (const body of contract.failed_metrics_bodies) {
+    const error = assertThrows(() => parseReadings(body as never, 0, 5_000_000));
+    assert(!(error instanceof InvalidReadingsError), JSON.stringify(body));
+  }
 });
 
 const broker = (script: string) => ({ request_command: ["/bin/bash", "-c", script] });
@@ -272,6 +291,20 @@ Deno.test("only fixed busy and cooldown codes may explain a broker refusal", asy
   const src = broker(
     `IFS= read -r request; printf '%s' '{"version":1,"vm_id":123,"error":"secret-token"}'`,
   );
+  const error = await assertRejects(() => vm(src, 123), Error);
+  assertEquals(error.message, "Hostinger request command failed");
+});
+
+Deno.test("a broker's invalid-metrics code is invalid readings, as on the API path", async () => {
+  const src = broker(
+    `IFS= read -r request; printf '%s' '{"version":1,"vm_id":123,"error":"${INVALID_METRICS}"}'`,
+  );
+  await assertRejects(() => cpuReadings(src, 123, 0, 5_000_000), InvalidReadingsError);
+  // The direct path rejects the same metrics the same way.
+  for (const body of [metric("cores"), metric("%", { "1000": 101 })]) {
+    assertThrows(() => parseReadings(body, 0, 5_000_000), InvalidReadingsError);
+  }
+  // The code means nothing for VM details.
   const error = await assertRejects(() => vm(src, 123), Error);
   assertEquals(error.message, "Hostinger request command failed");
 });

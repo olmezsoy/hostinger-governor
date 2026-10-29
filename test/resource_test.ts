@@ -250,3 +250,28 @@ Deno.test("collector uses the requested window and normalizes counters without p
   assertEquals(r.resources.swap.used, 89);
   assertEquals((await collectReport(null, 12, now, io)).credits, null);
 });
+
+Deno.test("report reserve follows the spending floor while idle recovery retains the lift point", () => {
+  const state = new Governor({
+    hostinger: { vm_id: 1, token_file: "/etc/governor/hostinger-token" },
+    calibration: { mode: "apply" },
+  }, plan(8))
+    .publicState(1000);
+  state.credits.balance = 10000;
+  state.readings = [{ at: 900, v: 53 }];
+  const result = buildReport(state, fixture().resources, 12, 1000);
+  // In apply, readings can tighten the estimate, so the API history is not called diagnostic.
+  const api = result.sections.find((s) => s.title === "Hostinger API history");
+  assertEquals(api?.note, "Tighten only; it never raises the bank.");
+  assertEquals(result.credits?.reserve, state.plan.capacity * 0.05);
+  assertEquals(result.credits?.surplus, 10000 - state.plan.capacity * 0.05);
+  state.limit = { since: 0, ceiling: 200, heldFrom: 0 };
+  const recovery = buildReport(state, fixture().resources, 12, 1000).sections.find((s) =>
+    s.title === "Limit recovery"
+  );
+  assert(
+    recovery?.table?.rows.some((row) =>
+      row[0] === "Earliest idle recovery" && row[1] === "~24 min from limit start"
+    ),
+  );
+});

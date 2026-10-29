@@ -1,6 +1,16 @@
 // Hostinger VM identity checks and CPU history. Startup plan sizing uses local measurements.
 import type { Reading } from "./credits.ts";
 
+// Units, values or timestamps that cannot be Hostinger's CPU percentages. A response that fails to
+// parse is an ordinary failed fetch.
+export class InvalidReadingsError extends Error {}
+// Readings may carry Hostinger's clock, a little ahead of this box's. The broker allows the same.
+export const CLOCK_SKEW_MS = 5 * 60_000;
+const SECONDS = /^[0-9]{1,12}$/;
+export const validReading = (r: Reading, now: number) =>
+  Number.isSafeInteger(r.at) && typeof r.v === "number" && Number.isFinite(r.v) && r.v >= 0 &&
+  r.v <= 100 && r.at <= now + CLOCK_SKEW_MS;
+
 const API = "https://developers.hostinger.com/api/vps/v1/virtual-machines";
 // A token_command and the HTTP request that follows share this budget.
 export const API_TIMEOUT_MS = 15_000;
@@ -23,6 +33,9 @@ export const BROKER_COOLDOWN_SECONDS = 60;
 export const CHECK_WINDOW_MS = 12 * 3_600_000;
 export const BROKER_CAPABILITY = "request_command v1 supported";
 export const TEMPORARY_ERRORS = ["busy", "rate_limited"] as const;
+// The broker's code for metrics no CPU percentage can be, which the daemon treats as invalid
+// readings, as on its own API path.
+export const INVALID_METRICS = "invalid_metrics";
 
 export class HostingerBrokerUnavailable extends Error {
   constructor(readonly code: "busy" | "rate_limited") {
@@ -113,6 +126,11 @@ async function commandRequest(command: string[], request: HostingerRequest): Pro
       response.data === undefined && TEMPORARY_ERRORS.includes(response.error)
     ) throw new HostingerBrokerUnavailable(response.error);
     if (
+      !expired && status.success && request.operation === "metrics" &&
+      response?.version === 1 && response.vm_id === request.vm_id && response.data === undefined &&
+      response.error === INVALID_METRICS
+    ) throw new InvalidReadingsError("invalid CPU metrics from the broker");
+    if (
       expired || !status.success || !response || response.version !== 1 ||
       response.vm_id !== request.vm_id || !response.data || typeof response.data !== "object" ||
       Array.isArray(response.data)
@@ -120,7 +138,9 @@ async function commandRequest(command: string[], request: HostingerRequest): Pro
     return response.data;
   } catch (error) {
     stop();
-    if (error instanceof HostingerBrokerUnavailable) throw error;
+    if (error instanceof HostingerBrokerUnavailable || error instanceof InvalidReadingsError) {
+      throw error;
+    }
     throw new Error(
       expired ? "Hostinger request command timed out" : "Hostinger request command failed",
     );
@@ -237,6 +257,9 @@ export async function vm(
   };
 }
 
+const isRecord = (v: unknown): v is Record<string, unknown> =>
+  !!v && typeof v === "object" && !Array.isArray(v);
+
 function isIPv4Entry(item: unknown): item is { address: string } {
   const address = item && typeof item === "object" && "address" in item ? item.address : null;
   if (typeof address !== "string") return false;
@@ -252,29 +275,33 @@ export function parseReadings(
   body: { cpu_usage?: { unit?: string; usage?: Record<string, number> } },
   from: number,
   now: number,
+  includeNewest = false,
 ): Reading[] {
   const metric = body.cpu_usage;
-  if (!metric) return [];
+  // Without the metric and its usage mapping the response failed, as the broker reports it: read as
+  // empty, the same response gave the two transports different results.
+  if (!isRecord(metric) || !isRecord(metric.usage)) {
+    throw new Error("invalid Hostinger metrics response");
+  }
   if (
     typeof metric.unit !== "string" ||
     !["%", "percent", "percentage"].includes(metric.unit.trim().toLowerCase())
   ) {
-    throw new Error("unrecognized CPU metric unit");
+    throw new InvalidReadingsError("unrecognized CPU metric unit");
   }
-  const readings = Object.entries(metric.usage ?? {}).map(([t, v]) => ({
-    at: Number(t) * 1000,
+  // Unix seconds as the broker takes them, digits only: Number() alone would accept "1.5", "1e3"
+  // or " 3000".
+  const readings = Object.entries(metric.usage).map(([t, v]) => ({
+    at: SECONDS.test(t) ? Number(t) * 1000 : NaN,
     v,
   }));
-  if (
-    readings.some((r) =>
-      !Number.isFinite(r.at) || typeof r.v !== "number" || !Number.isFinite(r.v) || r.v < 0 ||
-      r.v > 100 || r.at > now
-    )
-  ) {
-    throw new Error("invalid CPU metric reading");
+  if (readings.some((r) => !validReading(r, now))) {
+    throw new InvalidReadingsError("invalid CPU metric reading");
   }
-  // Omit the newest bucket even if it looks old: completeness is not documented by this API.
-  return readings.filter((r) => r.at >= from).sort((a, b) => a.at - b.at).slice(0, -1);
+  // Callers normally omit the newest bucket. The daemon requests it separately for revision
+  // tracking and keeps it out of settled history until a later fetch returns it as settled.
+  const sorted = readings.filter((r) => r.at >= from).sort((a, b) => a.at - b.at);
+  return includeNewest ? sorted : sorted.slice(0, -1);
 }
 
 export async function cpuReadings(
@@ -282,6 +309,7 @@ export async function cpuReadings(
   id: number,
   from: number,
   now = Date.now(),
+  includeNewest = false,
 ): Promise<Reading[]> {
   validateSource(src);
   validId(id);
@@ -306,5 +334,5 @@ export async function cpuReadings(
   if (!body || typeof body !== "object" || Array.isArray(body)) {
     throw new Error("invalid Hostinger metrics response");
   }
-  return parseReadings(body, from, now);
+  return parseReadings(body, from, now, includeNewest);
 }

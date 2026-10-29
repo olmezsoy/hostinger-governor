@@ -75,7 +75,7 @@ export function fixture(config: Config = {}, paths?: { run: string; lib: string 
       mode = permissions;
       symlink = link;
       request = { action, balance: p.capacity };
-      return g.request("/fixture/request", at);
+      return g.request("/fixture/request", { at, uptime, bootId });
     },
     elapse,
     advance(
@@ -89,8 +89,8 @@ export function fixture(config: Config = {}, paths?: { run: string; lib: string 
       elapse(seconds, busy, steal, managed, wallSeconds, counterTicks);
       return g.tick();
     },
-    reboot() {
-      at += 10_800_000;
+    reboot(downtime = 10_800_000) {
+      at += downtime;
       uptime = 5000;
       bootId = "boot-b";
       counters = { busy: 0, steal: 0, total: 1000 };

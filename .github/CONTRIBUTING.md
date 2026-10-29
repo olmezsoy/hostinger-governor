@@ -48,8 +48,8 @@ happens. Use the simulator instead.
 ## Change the control law
 
 The credit estimate, the spend law and the limit heuristics live in `src/credits.ts` and
-`src/governor.ts`. The simulator drives the real `Governor` class through simulated days against a
-model of Hostinger's rules:
+`src/governor.ts`; calibration lives in `src/calibration.ts`. The simulator drives the real
+`Governor` class through simulated days against a model of Hostinger's rules:
 
 ```sh
 deno task sim
@@ -59,6 +59,23 @@ deno task sim "hidden overhead" 5 --episodes
 Include before and after numbers for the scenarios your change affects, such as `throttles`,
 `paused_h` and `used_pct`. The top of `test/sim.ts` lists the model's assumptions. A good simulation
 result is not proof of live Hostinger behavior.
+
+The calibration studies S1 to S14 take about a minute each, so CI runs them apart from
+`deno task check`. `deno task sim:check` fails when a study's outcome or limit count changes. If
+your change means to change one, run `deno task sim:record` and update `docs/calibration-results.md`
+to match.
+
+CI runs three more gates apart from `deno task check`:
+
+- `deno task sim:legacy` runs the legacy scenarios in `off` and fails when any recorded result
+  changes, from credit limits and paused hours to the logged rules mismatches. If your change means
+  to change one, run `deno task sim:legacy-record` and say why in the pull request.
+- `deno task sim:jumps` runs meter jumps of 0.25 to 1 core over ten seeds, during an outage and with
+  a broken feed, and fails when a run breaks the #13 criteria: the limits a jump may cost, the cores
+  the final margin allows, the multiplier bound, and a broken feed tightening anything.
+- `deno task bench:cpu` fails when the daemon uses more than 0.1% of one core averaged over a day,
+  with 90 days of history. If you change calibration or history, include before and after numbers
+  from it.
 
 ## Hostinger rule changes
 
@@ -78,8 +95,9 @@ The daemon never reads the article, by design. Rule changes reach servers as rev
 - Add or update tests, and say how you tested. Mention anything you ran on a real or disposable
   Linux machine.
 - Update the README and `docs/` when behavior changes. The diagram in `docs/how-it-works.svg`
-  repeats numbers from the code, such as the 30-second pass, the 20% floor and the probe and lift
-  test timings. Update it when they change. If you change `src/credits.ts` or `src/plans.ts`, run
+  repeats numbers from the code, such as the 30-second pass, the spending floors (20% in `off` and
+  `shadow`, 5% to start in `apply`) and the probe and lift test timings. Update it when they change.
+  If you change `src/credits.ts` or `src/plans.ts`, run
   `deno run --allow-read=src tools/diagram-curves.ts` and copy the new chart points into the SVG.
 - Leave `CHANGELOG.md` and the version number to me. I write both when I cut a release.
 

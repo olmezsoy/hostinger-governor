@@ -1,4 +1,4 @@
-import { assertEquals } from "@std/assert";
+import { assertAlmostEquals, assertEquals } from "@std/assert";
 import {
   allowedCores,
   charged,
@@ -58,13 +58,32 @@ Deno.test("a limit widens the margin by the drift it proves", () => {
 });
 
 Deno.test("Hostinger's readings replay to a lower bound, exact once full", () => {
-  const h = 1_800_000;
-  const at = (i: number) => RULES_SINCE + i * h;
+  const h = 1_798_000;
+  const times = [RULES_SINCE];
+  const spacings = [1798, 1520, 2101, 1911, 1670, 2300, 1807];
+  for (let i = 1; i < 30; i++) {
+    times.push(times[i - 1] + spacings[(i - 1) % spacings.length] * 1000);
+  }
+  const at = (i: number) => times[i];
   assertEquals(replay(kvm8, [{ at: RULES_SINCE - h, v: 0 }, { at: at(0), v: 0 }]), null);
   const quiet = replay(kvm8, Array.from({ length: 30 }, (_, i) => ({ at: at(i), v: 20 })))!;
   assertEquals([quiet.balance, quiet.exact], [kvm8.capacity, true]);
   const busy = replay(kvm8, Array.from({ length: 5 }, (_, i) => ({ at: at(i), v: 70 })))!;
   assertEquals([busy.balance, busy.exact], [0, false]);
+});
+
+Deno.test("each reading's charge covers its own interval, not a fixed half hour", () => {
+  // KVM 8 earns 4.8 cores: 10% of 8 vCPUs banks 4 cores, 50% banks 0.8.
+  assertEquals(kvm8.baseline, 4.8);
+  const at = RULES_SINCE;
+  const r = replay(kvm8, [
+    { at, v: 10 },
+    { at: at + 900_000, v: 10 },
+    { at: at + 3_600_000, v: 10 },
+    { at: at + 4_800_000, v: 50 },
+  ])!;
+  assertAlmostEquals(r.balance, 4 * 900 + 4 * 2700 + 0.8 * 1200, 1e-6);
+  assertEquals(r.at, at + 4_800_000);
 });
 
 Deno.test("a stopped VPS or unknown API gap cannot certify a full bank", () => {
@@ -75,7 +94,7 @@ Deno.test("a stopped VPS or unknown API gap cannot certify a full bank", () => {
 });
 
 Deno.test("a gap invalidates certainty even after an earlier full bank", () => {
-  const quiet = Array.from({ length: 10 }, (_, i) => ({ at: RULES_SINCE + i * 1_800_000, v: 0 }));
+  const quiet = Array.from({ length: 10 }, (_, i) => ({ at: RULES_SINCE + i * 1_798_000, v: 0 }));
   quiet.push({ at: RULES_SINCE + 30 * 1_800_000, v: 0 });
   assertEquals(replay(kvm8, quiet)!.exact, false);
 });

@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # An example hook. The governor runs every executable in /etc/governor/hooks.d as the governor user,
-# with the event in GOVERNOR_EVENT (limit-start, limit-end) and its public state as JSON on stdin.
+# with GOVERNOR_EVENT naming limit-start, limit-end, limit-classified, calibration,
+# rules-mismatch or readings-invalid, and its public state as JSON on stdin.
 # Use one to tell your people or pause your own work; it has 60 seconds.
 set -euo pipefail
 state=$(cat)

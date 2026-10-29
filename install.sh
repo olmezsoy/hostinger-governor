@@ -52,6 +52,8 @@ fi
 if ((uninstall)); then
   systemctl disable --now governor.service 2>/dev/null || true
   systemctl set-property --runtime user.slice CPUQuota= || true
+  # A recovery quota period may outlive the daemon; older systemd lacks the property.
+  systemctl set-property --runtime user.slice CPUQuotaPeriodSec= 2>/dev/null || true
   rm -f /etc/systemd/system/governor.service /usr/local/bin/governor \
     /usr/local/libexec/governor-cap /etc/sudoers.d/governor \
     /etc/systemd/system/user.slice.d/10-governor.conf
@@ -154,6 +156,22 @@ if [[ -z $binary ]]; then
     { echo "checksum mismatch" >&2; exit 1; }
   binary="$tmp/governor-$target"
 fi
+# Upgrade configuration check (isolated installer-test entry point).
+# A configuration the new version rejects, such as a key it doesn't know, stops the upgrade here,
+# while the running daemon still holds its ceiling.
+if [[ -f /etc/governor/config.json ]]; then
+  # Staged beside the binary's destination, not in /tmp: a noexec /tmp would refuse to run it and
+  # stop every upgrade.
+  check=$(mktemp /usr/local/bin/.governor-check.XXXXXX)
+  trap 'rm -f -- "$check"; [[ -z ${tmp:-} ]] || rm -r -f -- "$tmp"' EXIT
+  install -m 0755 "$binary" "$check"
+  if ! "$check" validate-config; then
+    echo "the new binary rejects /etc/governor/config.json or cannot run; the running governor is unchanged" >&2
+    exit 1
+  fi
+  rm -f -- "$check"
+fi
+# End upgrade configuration check.
 # Stop any old writer before retiring its persistent quota. Keep a safe runtime ceiling throughout.
 if [[ $(systemctl show governor.service --property=LoadState --value) == loaded ]]; then
   systemctl stop governor.service
@@ -165,6 +183,23 @@ install -m 0755 "$binary" /usr/local/bin/governor
 getent group governor >/dev/null || groupadd --system governor
 id governor >/dev/null 2>&1 ||
   useradd --system --gid governor --home-dir /var/lib/governor --shell /usr/sbin/nologin governor
+# State ownership repair (isolated installer-test entry point).
+# A `governor run` started by root left its state root-owned and private, which the service can't
+# read. Hand back only the governor's own files: -h changes a link itself, never what it points
+# to, and a file with other hard links is left alone. That includes the top snapshots under top/,
+# which v0.2.5 wrote too. find never follows a link, so a top/ that is a link isn't entered.
+# -execdir runs chown inside the directory find opened, on the bare name: a top/ swapped for a link
+# after find chose its files can't send chown through the link to a file elsewhere. GNU find refuses
+# -execdir when PATH holds a relative or empty entry, so it gets a fixed one.
+if [[ -d /var/lib/governor ]]; then
+  PATH=/usr/sbin:/usr/bin:/sbin:/bin find /var/lib/governor -maxdepth 1 -type f -user root -links 1 \( -name 'persist.json*' \
+    -o -name 'history.json*' -o -name 'history.log*' -o -name daemon.lock \) \
+    -execdir chown -h governor:governor -- {} +
+  PATH=/usr/sbin:/usr/bin:/sbin:/bin find /var/lib/governor -maxdepth 2 -user root \( \( -path /var/lib/governor/top -type d \) \
+    -o \( -path '/var/lib/governor/top/*.log' -type f -links 1 \) \) \
+    -execdir chown -h governor:governor -- {} +
+fi
+# End state ownership repair.
 if ((${#consumers[@]})); then echo "--consumer no longer grants control access; all users can read status"; fi
 
 install -d -o root -g governor -m 0750 /etc/governor
@@ -208,13 +243,18 @@ systemctl enable --now sysstat >/dev/null 2>&1 || true
 install -d /usr/local/libexec
 cat > /usr/local/libexec/governor-cap <<'EOF'
 #!/usr/bin/env bash
-# governor-cap <percent> [slice]: the CPU ceiling the governor sets (100 is one vCPU).
+# governor-cap <percent> [slice] [10|default]: the CPU ceiling the governor sets (100 is one vCPU).
 set -euo pipefail
-p=${1:-} slice=${2:-user.slice}
+p=${1:-} slice=${2:-user.slice} period=${3:-}
 max=$(( $(grep -c '^cpu[0-9]' /proc/stat) * 100 ))
-(( $# >= 1 && $# <= 2 )) && [[ $p =~ ^[1-9][0-9]{0,5}$ ]] && (( p >= 20 && p <= max )) && [[ $slice == user.slice ]] ||
-  { echo "usage: governor-cap 20..$max [user.slice]" >&2; exit 2; }
-exec systemctl set-property --runtime "$slice" "CPUQuota=$p%"
+(( $# >= 1 && $# <= 3 )) && [[ $p =~ ^[1-9][0-9]{0,5}$ ]] && (( p >= 20 && p <= max )) && [[ $slice == user.slice ]] ||
+  { echo "usage: governor-cap 20..$max [user.slice] [10|default]" >&2; exit 2; }
+case "$period" in
+  "") exec systemctl set-property --runtime "$slice" "CPUQuota=$p%" ;;
+  10) exec systemctl set-property --runtime "$slice" "CPUQuota=$p%" CPUQuotaPeriodSec=10ms ;;
+  default) exec systemctl set-property --runtime "$slice" "CPUQuota=$p%" CPUQuotaPeriodSec= ;;
+  *) echo "quota period must be 10 or default" >&2; exit 2 ;;
+esac
 EOF
 chmod 0755 /usr/local/libexec/governor-cap
 printf 'governor ALL=(root) NOPASSWD: /usr/local/libexec/governor-cap *\n' > /etc/sudoers.d/governor

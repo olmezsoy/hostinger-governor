@@ -2,7 +2,7 @@
   aria-labelledby="title" aria-describedby="desc">
   <title id="title">How hostinger-governor works</title>
   <desc
-    id="desc">Hostinger holds the CPU credit bank, and the VPS cannot read its balance. Every 30 seconds by default, governor.service reads CPU and steal from the kernel, keeps a cautious estimate of the bank, and sets one shared CPU quota on user.slice: every login, governor exec jobs, and services or Docker you enroll. Everything else is measured, not capped. Provider diagnostics start every 30 minutes unless limited, and a request already in flight can still finish. Diagnostics never change the estimate. Spending: every vCPU while the estimate is high, then a glide onto a 20% floor; with no governor, the same load empties the bank and Hostinger limits the VPS. After a reboot, an install or a limit, the estimate starts at 0, so the ceiling starts under the baseline. When steal follows demand during a 20-second probe at 0.2 vCPU, or reaches 60% of demand, the governor treats the VPS as limited: it holds user.slice below the host limit, down to 0.2 vCPU, until a lift test passes. If the probe does not confirm a limit, the governor stays in Spending and retries later. A saved limit resumes on start. While the daemon is not running, systemd holds user.slice, SSH included, at 0.2 vCPU by default.</desc>
+    id="desc">Hostinger holds the CPU credit bank, and the VPS cannot read its balance. Every 30 seconds by default, governor.service reads CPU and steal from the kernel, keeps a cautious estimate of the bank, and sets one shared CPU quota on user.slice: every login, governor exec jobs, and services or Docker you enroll. Everything else is measured, not capped. Provider diagnostics start every 30 minutes unless limited, and a request already in flight can still finish. Readings can only tighten the estimate in apply mode. Spending: every vCPU while the estimate is high, then a glide onto the spending floor, 20% in off or shadow and initially 5% in apply; with no governor, the same load empties the bank and Hostinger limits the VPS. After a reboot, an install or a limit, the estimate starts at 0, so the ceiling starts under the baseline. When steal follows demand during a 20-second probe at 0.2 vCPU, or reaches 60% of demand, the governor treats the VPS as limited: it holds user.slice below the host limit, down to 0.2 vCPU, until a lift test passes. At the lift it classifies the limit; a sustained-use limit gets back the estimate its reset hid. If the probe does not confirm a limit, the governor stays in Spending and retries later. A saved limit resumes on start. While the daemon is not running, systemd holds user.slice, SSH included, at 0.2 vCPU by default.</desc>
   <style>
   svg {
     --bg: #ffffff;
@@ -243,7 +243,7 @@
   <rect class="card" x="608" y="44" width="248" height="140" rx="10" />
   <text class="h" x="628" y="68">VPS API</text>
   <text x="628" y="92">VM details for verification</text>
-  <text x="628" y="112">CPU use in 30-minute buckets</text>
+  <text x="628" y="112">CPU since the previous reading</text>
   <text class="b" x="628" y="152">No balance</text>
 
   <!-- Nothing about the balance crosses this line. -->
@@ -308,17 +308,17 @@
   <circle class="badge" cx="245" cy="476" r="9" />
   <text class="num" x="245" y="480" text-anchor="middle">2</text>
   <text class="h4" x="260" y="481">Estimate</text>
-  <text x="236" y="504">a cautious model of the</text>
-  <text x="236" y="522">bank, billed 5% + 0.08</text>
-  <text x="236" y="540">vCPU above use; 0 after</text>
-  <text x="236" y="558">reboot, install or limit</text>
+  <text x="236" y="504">a cautious model, billed</text>
+  <text x="236" y="522">5% + 0.08 vCPU above use</text>
+  <text x="236" y="540">(apply: + 0.04 at first);</text>
+  <text x="236" y="558">0 after boot, install, limit</text>
 
   <circle class="badge" cx="445" cy="476" r="9" />
   <text class="num" x="445" y="480" text-anchor="middle">3</text>
   <text class="h4" x="460" y="481">Set the ceiling</text>
-  <text x="436" y="504">baseline + (estimate − 20%)</text>
+  <text x="436" y="504">baseline + (estimate − floor)</text>
   <text x="436" y="522">÷ 30 min, or ÷ 60 min below</text>
-  <text x="436" y="540">20%, so under baseline;</text>
+  <text x="436" y="540">the floor, so under baseline;</text>
   <text x="436" y="558">less margin and outside CPU</text>
 
   <line class="rule" x1="44" y1="572" x2="628" y2="572" />
@@ -330,7 +330,7 @@
   <text class="s" x="660" y="500">New fetches every 30 min.</text>
   <text class="s" x="660" y="516">No new fetch while limited.</text>
   <text class="s" x="660" y="532">Older results may arrive;</text>
-  <text class="s" x="660" y="548">never change the estimate.</text>
+  <text class="s" x="660" y="548">tighten only in apply.</text>
   <path class="arrow muted" d="M800 184V456" marker-end="url(#muted)" />
 
   <!-- Modes. -->
@@ -340,7 +340,7 @@
   <rect class="slice" x="24" y="668" width="320" height="300" rx="10" />
   <text class="h" x="44" y="694">Spending</text>
   <text class="m" x="44" y="716">Every vCPU while the estimate is high,</text>
-  <text class="m" x="44" y="734">then it glides onto the 20% floor</text>
+  <text class="m" x="44" y="734">then onto the floor: 20%, 5% in apply.</text>
 
   <!-- Chart points come from tools/diagram-curves.ts. -->
   <text class="b" x="44" y="760">Credits</text>
@@ -396,8 +396,9 @@
   <text class="s" x="420" y="870" text-anchor="middle">doubling to 1 h</text>
   <text class="b" x="428" y="904" text-anchor="middle">Lift test passes</text>
   <path class="arrow blue" d="M504 918H352" marker-end="url(#blue)" />
-  <text class="s" x="428" y="938" text-anchor="middle">runs limit-end hooks</text>
-  <text class="s" x="428" y="954" text-anchor="middle">estimate not restored</text>
+  <text class="s" x="428" y="938" text-anchor="middle">classifies it, runs hooks;</text>
+  <text class="s" x="428" y="954" text-anchor="middle">sustained use restores</text>
+  <text class="s" x="428" y="970" text-anchor="middle">the estimate it hid</text>
 
   <rect class="limited" x="512" y="668" width="344" height="300" rx="10" />
   <text class="h" x="532" y="694">Recovering</text>

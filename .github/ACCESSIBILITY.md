@@ -9,9 +9,11 @@ how I work on accessibility.
 
 - The `governor` command prints plain text. It uses no color codes, spinners or animations, and it
   never prompts for input.
-- `governor status --json` and `governor report --format json` print their information as JSON, so
-  you can pick out only the fields you need. [Resource reports](../docs/resource-reports.md)
-  describes the report's fields. For example, this prints CPU history as one reading per line:
+- `governor status --json`, `governor report --format json` and
+  `governor calibrate --explain --json` print their information as JSON, so you can pick out only
+  the fields you need. The text form of `calibrate --explain` shows the same status fields, one
+  topic per line. [Resource reports](../docs/resource-reports.md) describes the report's fields. For
+  example, this prints CPU history as one reading per line:
 
   ```sh
   governor report --format json | jq -r '.resources.cpu[] | "\(.at / 1000 | floor | todate)  CPU \(.v)%"'

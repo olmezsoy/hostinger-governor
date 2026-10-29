@@ -4,8 +4,14 @@
 //   governor tick                   run one pass now and wait for its state writes (root only)
 //   governor status [--json]        the state every consumer reads; exit 3 if the daemon is not running
 //   governor report [hours] [--format text|html|json]  read-only vitals (default 12 hours)
+//   governor calibrate --explain [--json]  replay the recorded calibration decision (read-only)
+//   governor calibrate --reset      return calibration to its configured start (root only)
 //   governor limit on|off           tell it what hPanel or Hostinger support says (root only)
 //   governor seed <core-seconds>    set the credit balance, for example when moving from another tool
+//   governor exec [--wait <s>] -- <command>  run a command in user.slice once it accepts work
+//   governor enroll-service <unit> | configure-docker  put services or Docker under the ceiling
+//   governor check-hostinger        read VM details and CPU metrics once (read-only)
+//   governor validate-config        check /etc/governor/config.json
 //   governor fallback [--print]     apply fallback as root, or print the configured quota
 //   governor version
 import {
@@ -20,13 +26,14 @@ import {
 } from "./governor.ts";
 import { requestTick, TickError } from "./control.ts";
 import { creditLines, report } from "./report.ts";
+import { explainCalibration, explainText } from "./explain.ts";
 import { reportOptions } from "./resource.ts";
 import { configureDocker, enrollService } from "./workloads.ts";
 import { readClock } from "./sample.ts";
 import { execOptions, scopeArgs, waitForAccepting } from "./exec.ts";
 import { BROKER_CAPABILITY, CHECK_WINDOW_MS, cpuReadings, vm } from "./hostinger.ts";
 
-export const VERSION = "0.2.5";
+export const VERSION = "0.3.0";
 const STALE_MS = 5 * 60_000;
 class UnsupportedStateSchema extends Error {
   constructor() {
@@ -49,7 +56,9 @@ async function state(): Promise<PublicState | null> {
 
 async function ask(body: Record<string, unknown>) {
   if (Deno.uid() !== 0) {
-    throw new Error("governor limit and seed require root; consumers can read status");
+    throw new Error(
+      "governor limit, seed and calibrate --reset require root; consumers can read status",
+    );
   }
   const name = `${Date.now()}-${crypto.randomUUID().slice(0, 8)}.json`;
   await Deno.writeTextFile(`${REQUESTS}/.${name}`, JSON.stringify(body), {
@@ -63,7 +72,7 @@ async function ask(body: Record<string, unknown>) {
 
 const usage = (): never => {
   console.error(
-    "usage: governor run | tick | status [--json] | report [hours] [--format text|html|json] | check-hostinger | limit on|off | seed <core-seconds> | exec [--wait <seconds>] -- <command> | enroll-service <unit> | configure-docker | version",
+    "usage: governor run | tick | status [--json] | report [hours] [--format text|html|json] | check-hostinger | calibrate --explain [--json] | calibrate --reset | limit on|off | seed <core-seconds> | exec [--wait <seconds>] -- <command> | enroll-service <unit> | configure-docker | version",
   );
   Deno.exit(2);
 };
@@ -79,6 +88,16 @@ try {
       if (Deno.uid() !== 0) throw new TickError("root");
       await requestTick(TICK_SOCKET);
       console.log("tick complete; state written");
+      break;
+    case "calibrate":
+      if (args.length === 1 && args[0] === "--reset") await ask({ action: "calibration-reset" });
+      else if (
+        args.includes("--explain") && new Set(args).size === args.length &&
+        args.every((a) => a === "--explain" || a === "--json")
+      ) {
+        const result = await explainCalibration(await loadConfig());
+        console.log(args.includes("--json") ? JSON.stringify(result) : explainText(result));
+      } else usage();
       break;
     case "validate-config":
       await loadConfig();

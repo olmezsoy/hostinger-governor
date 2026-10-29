@@ -13,6 +13,131 @@ BOOT = SCRIPT.split(
 )[1].split("# End boot quota generation.", 1)[0]
 
 
+UPGRADE = SCRIPT.split(
+    "# Upgrade configuration check (isolated installer-test entry point).", 1
+)[1].split("# End upgrade configuration check.", 1)[0]
+OWNERSHIP = SCRIPT.split(
+    "# State ownership repair (isolated installer-test entry point).", 1
+)[1].split("# End state ownership repair.", 1)[0]
+
+
+class UpgradeCheckTest(unittest.TestCase):
+    def run_check(self, binary_exit, config=True):
+        with tempfile.TemporaryDirectory(prefix="governor-upgrade.") as directory:
+            root = Path(directory)
+            config_path = root / "config.json"
+            if config:
+                config_path.write_text('{"tick_secnds":30}')
+            calls = root / "calls"
+            binary = root / "governor-new"
+            binary.write_text(
+                "#!/usr/bin/env bash\nprintf '%s\\n' \"$*\" >> " + str(calls)
+                + "\nexit " + str(binary_exit) + "\n"
+            )
+            bin_dir = root / "bin"
+            bin_dir.mkdir()
+            body = UPGRADE.replace("/etc/governor/config.json", str(config_path)).replace(
+                "/usr/local/bin", str(bin_dir)
+            )
+            result = subprocess.run(
+                [
+                    "bash",
+                    "-c",
+                    "set -euo pipefail\nbinary=" + str(binary) + "\n" + body + "echo reached\n",
+                ],
+                capture_output=True,
+                text=True,
+            )
+            # The staged copy is gone whether the check passed or failed.
+            self.assertEqual(list(bin_dir.iterdir()), [])
+            return result, calls.read_text() if calls.exists() else ""
+
+    def test_the_new_binary_runs_from_beside_its_destination_not_tmp(self):
+        # A noexec /tmp would refuse to run it and stop every upgrade.
+        self.assertIn("mktemp /usr/local/bin/", UPGRADE)
+        self.assertNotIn("mktemp -d", UPGRADE)
+
+    def test_a_config_the_new_binary_rejects_stops_before_the_daemon_does(self):
+        result, calls = self.run_check(1)
+        self.assertEqual(result.returncode, 1)
+        self.assertNotIn("reached", result.stdout)
+        self.assertEqual(calls, "validate-config\n")
+        self.assertIn("running governor is unchanged", result.stderr)
+        self.assertLess(
+            SCRIPT.index("# Upgrade configuration check"),
+            SCRIPT.index("systemctl stop governor.service"),
+        )
+
+    def test_an_accepted_or_absent_config_continues(self):
+        result, calls = self.run_check(0)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("reached", result.stdout)
+        self.assertEqual(calls, "validate-config\n")
+        result, calls = self.run_check(1, config=False)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(calls, "")
+
+
+class StateOwnershipTest(unittest.TestCase):
+    def test_only_the_governors_own_single_link_files_are_handed_back(self):
+        with tempfile.TemporaryDirectory(prefix="governor-state.") as directory:
+            root = Path(directory)
+            for name in ("persist.json", "history.json", "history.log", "notes.txt"):
+                (root / name).write_text("{}")
+            (root / "persist.json.bad-1").write_text("{}")
+            os.symlink(root / "notes.txt", root / "history.json.tmp")
+            os.link(root / "notes.txt", root / "history.log.bad-1")
+            # Top snapshots, as v0.2.5 and an earlier root `governor run` wrote them.
+            (root / "top").mkdir()
+            (root / "top" / "2026-10-27.log").write_text("## snapshot\n")
+            os.symlink(root / "notes.txt", root / "top" / "2026-10-26.log")
+            os.link(root / "notes.txt", root / "top" / "2026-10-25.log")
+            (root / "top" / "notes.txt").write_text("")
+            # As root the files would be root's; here they are this user's.
+            body = (
+                OWNERSHIP.replace("/var/lib/governor", str(root))
+                .replace("-user root", "-user " + str(os.getuid()))
+                .replace("chown -h governor:governor --", "printf '%s\\n'")
+            )
+            result = subprocess.run(["bash", "-c", body], capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            # Each name is relative to the directory find opened (-execdir), so a top/ swapped for a
+            # link after find chose its files can't redirect chown. GNU find prefixes ./, BSD doesn't.
+            for line in result.stdout.split():
+                self.assertNotIn("/", line.removeprefix("./"), line)
+            handed = sorted(Path(line).name for line in result.stdout.split())
+            self.assertEqual(
+                handed,
+                [
+                    "2026-10-27.log",
+                    "history.json",
+                    "history.log",
+                    "persist.json",
+                    "persist.json.bad-1",
+                    "top",
+                ],
+            )
+
+    def test_a_top_directory_that_is_a_link_is_not_entered(self):
+        with tempfile.TemporaryDirectory(prefix="governor-state.") as directory:
+            root = Path(directory) / "lib"
+            elsewhere = Path(directory) / "elsewhere"
+            root.mkdir()
+            elsewhere.mkdir()
+            (elsewhere / "2026-10-27.log").write_text("")
+            os.symlink(elsewhere, root / "top")
+            body = (
+                OWNERSHIP.replace("/var/lib/governor", str(root))
+                .replace("-user root", "-user " + str(os.getuid()))
+                .replace("chown -h governor:governor --", "printf '%s\n'")
+            )
+            result = subprocess.run(["bash", "-c", body], capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(result.stdout, "")
+        self.assertIn("-execdir chown -h governor:governor -- {} +", OWNERSHIP)
+        self.assertNotIn("-exec chown", OWNERSHIP)
+
+
 class BootFallbackTest(unittest.TestCase):
     def test_token_copy_is_refused_for_a_broker_before_installation_changes(self):
         guard = SCRIPT.split(
