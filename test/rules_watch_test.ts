@@ -16,6 +16,21 @@ import {
 } from "../tools/rules-watch.ts";
 import { plan } from "../src/plans.ts";
 
+// What the live page puts between the article body and the feedback prompt.
+const FURNITURE = `<dialog class="image-lightbox" data-image-lightbox>
+<button type="button" class="image-lightbox__close" aria-label="Close">&times;</button>
+<img class="image-lightbox__image" alt=""></dialog>
+<section class="related-articles" aria-labelledby="related-articles-title">
+<h2 id="related-articles-title" class="related-articles__title">Related Articles</h2>
+<ul class="related-articles__list">
+<li class="related-articles__item"><a class="related-articles__link" href="/cpu-use-limit/">
+<span class="related-articles__label">What is the CPU use limit for VPS at Hostinger</span>
+<svg class="related-articles__chevron" viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></svg></a></li>
+<li class="related-articles__item"><a class="related-articles__link" href="/cpu-steal/">
+<span class="related-articles__label">Understanding CPU Steal and its impact on VPS at Hostinger</span>
+<svg class="related-articles__chevron" viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></svg></a></li>
+</ul></section>`;
+
 // A stand-in for the help-center page: its structure and the sentences the facts come from, with
 // filler text instead of the article's prose.
 function page(o: {
@@ -24,7 +39,10 @@ function page(o: {
   modified?: string;
   faqLimit?: number;
   extra?: string;
+  body?: string;
+  furniture?: string;
 } = {}) {
+  const body = o.body ?? "main";
   const b = o.baseline ?? 60;
   const rows = [1, 2, 4, 8].map((v) => {
     const base = (v * b) / 100;
@@ -43,6 +61,7 @@ function page(o: {
 <header class="entry-header"><h1 class="title">How CPU credits work on <span>Hostinger VPS</span></h1>
 <p class="lede">Filler lede about bursting and recovering.</p>
 <p class="meta">${o.updated ?? "Updated 4 hours ago"}</p></header>
+<${body} class="single-article__content">
 <!-- <p>The baseline is 99% on every plan.</p> -->
 <p>Filler paragraph one explains the battery analogy in plain words, without numbers, and goes on
 long enough to look like a real introduction to the topic at hand for the reader.</p>
@@ -74,8 +93,10 @@ CPU credits are a burstable model, limiting you to ${
     o.faqLimit ?? 20
   }% capacity only when your credit
 balance is empty. Filler about abuse prevention.</p>
-<aside class="related">Related articles: CPU steal, CPU use limit</aside>
-<h2>Did this article answer your question?</h2><button>Yes</button><button>No</button>
+</${body}>
+${o.furniture ?? FURNITURE}
+<div class="single-article__feedback">
+<h2>Did this article answer your question?</h2><button>Yes</button><button>No</button></div>
 </article></main>
 <footer><a href="/web-hosting">Web hosting</a> The baseline is 10% on every plan.</footer>
 </body></html>`;
@@ -95,11 +116,52 @@ Deno.test("article text keeps the article and drops scripts, comments, navigatio
   assert(lines.includes("8 | 4.80 | 34,560 | 3 hours"));
   assert(lines.includes("baseline = vCPUs \u00d7 0.30"));
   for (
-    const gone of ["Pricing", "Search in all", "99%", "10%", "Related articles", "Yes", "script"]
+    const gone of ["Pricing", "Search in all", "99%", "10%", "Related Articles", "Yes", "script"]
   ) {
     assert(!text.includes(gone), `kept "${gone}"`);
   }
   assert(!/Updated/.test(text));
+});
+
+Deno.test("page furniture after the article body does not change the fingerprint", async () => {
+  const bare = await live({ furniture: "" });
+  assert(bare.article.text.endsWith(" Filler about abuse prevention."), bare.article.text);
+  for (const furniture of [FURNITURE, '<div class="newsletter"><p>Subscribe for tips.</p></div>']) {
+    const withFurniture = await live({ furniture });
+    assertEquals(withFurniture.article.text, bare.article.text);
+    assertEquals(withFurniture.rec.sha256, bare.rec.sha256);
+    assertEquals(report(bare.rec, withFurniture.rec, withFurniture.article.text), undefined);
+  }
+  // Without the body element, the related links' heading ends the article, then the feedback prompt.
+  assertEquals(articleText(page({ body: "div" })).text, bare.article.text);
+  const flat = articleText(page({ body: "div", furniture: "" })).text;
+  assertEquals(flat, bare.article.text);
+  // Only a heading ends the article, not the words in its text.
+  const prose = articleText(page({ extra: "<p>Related articles cover CPU steal.</p>" })).text;
+  assert(prose.endsWith(" Filler about abuse prevention."), prose);
+});
+
+Deno.test("markup that never carries article text is dropped inside the article too", () => {
+  for (
+    const tag of [
+      "script",
+      "style",
+      "noscript",
+      "svg",
+      "template",
+      "iframe",
+      "nav",
+      "aside",
+      "form",
+      "button",
+      "select",
+    ]
+  ) {
+    const text =
+      articleText(page({ extra: `<${tag} class="widget">Dropped ${tag}</${tag}>` })).text;
+    assert(!text.includes("Dropped"), `kept <${tag}>`);
+    assert(text.endsWith(" Filler about abuse prevention."), text);
+  }
 });
 
 Deno.test("article text keeps no markup from split comments or a tag cut off at the end", () => {
@@ -115,9 +177,9 @@ Deno.test("article text keeps no markup from split comments or a tag cut off at 
 Deno.test("a less-than comparison keeps the rest of the article and its facts", async () => {
   for (const comparison of ["< 20%", "<20%", "<= 20%"]) {
     const html = page().replace(
-      "<h2>Did this article answer your question?",
-      `<p>Credit balance ${comparison} of capacity.</p><p>Later baseline vCPU words.</p>` +
-        "<h2>Did this article answer your question?",
+      "Filler about abuse prevention.</p>",
+      "Filler about abuse prevention.</p>" +
+        `<p>Credit balance ${comparison} of capacity.</p><p>Later baseline vCPU words.</p>`,
     );
     const article = articleText(html);
     assert(article.text.includes(`Credit balance ${comparison} of capacity.`), article.text);

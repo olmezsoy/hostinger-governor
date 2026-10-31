@@ -95,14 +95,19 @@ const BLOCK =
 // Relative edit ages can be stale in cached HTML; they do not identify a content revision.
 const RELATIVE =
   /\bUpdated\s+(?:\d+|an?|one)\s+(?:second|minute|hour|day|week|month|year)s?\s+ago\b/gi;
-const END = /Did this article answer your question|Was this article helpful|<\/article>|<footer\b/i;
+// The article body is the <main> after the heading. Hostinger adds page furniture between it and the
+// feedback prompt, such as related links, so the body's end comes first. A <main> inside another is
+// invalid HTML, so the related links' heading also ends the article if Hostinger fixes that.
+const END =
+  /<\/main\s*>|<h[1-6]\b[^<>]*>\s*Related articles\s*<\/h[1-6]\s*>|Did this article answer your question|Was this article helpful|<\/article>|<footer\b/i;
 
 const tidy = (line: string) =>
   line.replace(RELATIVE, " ").replace(/[\s\u200b]+/g, " ").replace(/\s*\|\s*/g, " | ").trim()
     .replace(/^\|\s*/, "").replace(/\s*\|$/, "").trim();
 
-// The article's text from its page: from the heading to the feedback prompt, one block per line,
-// table cells joined with " | ".
+// The article's text from its page: from the heading to the end of the article body, or to the
+// related links or feedback prompt on a page without one. One block per line, table cells joined
+// with " | ".
 export function articleText(html: string): Article {
   const meta = (key: string) => {
     for (const tag of html.match(/<meta\b[^>]*>/gi) ?? []) {
