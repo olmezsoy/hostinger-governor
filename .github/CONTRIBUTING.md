@@ -22,19 +22,21 @@ distribution and systemd version, and the relevant lines from `journalctl -u gov
 
 ## Set up a checkout
 
-You need Deno 2.9.7, the version CI and release builds use, and Python 3 for the installer tests.
+You need the Deno version in `.tool-versions`, which CI and release builds install, and Python 3 for
+the installer tests. mise and asdf pick up `.tool-versions` on their own.
 
 ```sh
 deno task check
 python3 -m unittest discover -s test -p '*_test.py'
 ```
 
-`deno task check` runs formatting, lint, type checks and the Deno tests. The test task needs
-unrestricted `--allow-run` because Deno requires it to signal hook process groups. Tests keep
-writable data in ignored `test/.tmp` directories.
+`deno task check` runs formatting, lint, type checks and the Deno tests. Every task except the rules
+watcher's stops first under any other Deno, because formatting, type checks and permission flags
+differ between versions. The test task needs unrestricted `--allow-run` because Deno requires it to
+signal hook process groups. Tests keep writable data in ignored `test/.tmp` directories.
 
-Run `deno fmt` before you commit. It formats Markdown, YAML and the SVG diagram too, at a line width
-of 100.
+Run `deno task fmt` before you commit. It formats Markdown, YAML and the SVG diagram too, at a line
+width of 100.
 
 ## Test on Linux without risk
 

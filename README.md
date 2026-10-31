@@ -391,8 +391,9 @@ needed. Connect the output to Slack, Telegram, a web dashboard, or whatever you 
 command handling stay in your integration. The [report guide](docs/resource-reports.md) covers the
 data format and editable layout, including a browser preview template.
 
-For development, use Deno 2.9.7, matching CI and release builds. `deno task check` runs formatting,
-lint, type checks and tests. Installer migration tests also run with
+For development, use the Deno version in `.tool-versions`, which CI and release builds install.
+`deno task check` runs formatting, lint, type checks and tests, and stops under any other Deno
+version. Installer migration tests also run with
 `python3 -m unittest discover -s test -p '*_test.py'`. Release binaries need neither runtime
 installed to produce resource reports.
 
@@ -485,7 +486,8 @@ universally safe when the host limits individual vCPUs.
 
 ## Simulations
 
-Run repository checks with the Deno version pinned in CI, currently 2.9.7:
+Run repository checks with the Deno version in `.tool-versions`, which CI installs. Every task
+except the rules watcher's stops under any other version:
 
 ```sh
 deno task check
