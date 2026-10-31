@@ -1,20 +1,58 @@
 {
   "tasks": {
-    "test": "deno test --allow-env=GOVERNOR_CONFIG --allow-read=install.sh,rules,test/fixtures,test/.tmp --allow-write=test/.tmp --allow-run test/",
+    "deno:version": {
+      "description": "Stop unless the running Deno is the version in .tool-versions",
+      "command": "deno run --allow-read=.tool-versions tools/deno-version.ts"
+    },
+    "fmt": { "command": "deno fmt", "dependencies": ["deno:version"] },
+    "test": {
+      "command": "deno test --allow-env=GOVERNOR_CONFIG --allow-read=.github/workflows,install.sh,rules,test/fixtures,test/.tmp --allow-write=test/.tmp --allow-run test/",
+      "dependencies": ["deno:version"]
+    },
     "rules:check": "deno run --allow-net=www.hostinger.com --allow-read=rules tools/rules-watch.ts check",
     "rules:accept": "deno run --allow-net=www.hostinger.com --allow-read=rules --allow-write=rules tools/rules-watch.ts accept",
-    "sim": "deno run --allow-env=GOVERNOR_CONFIG --allow-read=test/.tmp --allow-write=test/.tmp test/sim.ts",
-    "sim:check": "deno run --allow-env=GOVERNOR_CONFIG --allow-read=test/.tmp,docs/calibration-results.json --allow-write=test/.tmp test/sim.ts --calibration --check",
-    "sim:record": "deno run --allow-env=GOVERNOR_CONFIG --allow-read=test/.tmp --allow-write=test/.tmp,docs/calibration-results.json test/sim.ts --calibration --record",
-    "sim:jumps": "deno run --allow-env=GOVERNOR_CONFIG --allow-read=src,test --allow-write=test/.tmp test/jump-study.ts",
-    "sim:legacy": "deno run --allow-env=GOVERNOR_CONFIG --allow-read=test/fixtures test/sim.ts --legacy-check",
-    "sim:legacy-record": "deno run --allow-env=GOVERNOR_CONFIG --allow-read=test/fixtures --allow-write=test/fixtures/legacy-off.json test/sim.ts --legacy-record",
-    "bench:cpu": "deno run --v8-flags=--jitless --allow-env=GOVERNOR_CONFIG --allow-read=test/.tmp --allow-write=test/.tmp test/daemon-cpu.ts",
-    "check": "deno fmt --check && deno lint && deno check src/main.ts tools/compile.ts tools/diagram-curves.ts tools/rules-watch.ts test/jump-study.ts test/daemon-cpu.ts && deno task test && bash -n install.sh test/smoke-linux.sh tools/rules-heartbeat.sh tools/setup-hostinger-broker.sh",
-    "compile:jitless": "deno run --allow-run tools/compile.ts jitless",
-    "compile:jit-fixture": "deno run --allow-run tools/compile.ts jit-fixture",
-    "compile": "deno task compile:jitless",
-    "smoke:linux": "bash test/smoke-linux.sh"
+    "sim": {
+      "command": "deno run --allow-env=GOVERNOR_CONFIG --allow-read=test/.tmp --allow-write=test/.tmp test/sim.ts",
+      "dependencies": ["deno:version"]
+    },
+    "sim:check": {
+      "command": "deno run --allow-env=GOVERNOR_CONFIG --allow-read=test/.tmp,docs/calibration-results.json --allow-write=test/.tmp test/sim.ts --calibration --check",
+      "dependencies": ["deno:version"]
+    },
+    "sim:record": {
+      "command": "deno run --allow-env=GOVERNOR_CONFIG --allow-read=test/.tmp --allow-write=test/.tmp,docs/calibration-results.json test/sim.ts --calibration --record",
+      "dependencies": ["deno:version"]
+    },
+    "sim:jumps": {
+      "command": "deno run --allow-env=GOVERNOR_CONFIG --allow-read=src,test --allow-write=test/.tmp test/jump-study.ts",
+      "dependencies": ["deno:version"]
+    },
+    "sim:legacy": {
+      "command": "deno run --allow-env=GOVERNOR_CONFIG --allow-read=test/fixtures test/sim.ts --legacy-check",
+      "dependencies": ["deno:version"]
+    },
+    "sim:legacy-record": {
+      "command": "deno run --allow-env=GOVERNOR_CONFIG --allow-read=test/fixtures --allow-write=test/fixtures/legacy-off.json test/sim.ts --legacy-record",
+      "dependencies": ["deno:version"]
+    },
+    "bench:cpu": {
+      "command": "deno run --v8-flags=--jitless --allow-env=GOVERNOR_CONFIG --allow-read=test/.tmp --allow-write=test/.tmp test/daemon-cpu.ts",
+      "dependencies": ["deno:version"]
+    },
+    "check": {
+      "command": "deno fmt --check && deno lint && deno check src/main.ts tools/compile.ts tools/deno-version.ts tools/diagram-curves.ts tools/rules-watch.ts test/jump-study.ts test/daemon-cpu.ts && deno task test && bash -n install.sh test/smoke-linux.sh tools/rules-heartbeat.sh tools/setup-hostinger-broker.sh",
+      "dependencies": ["deno:version"]
+    },
+    "compile:jitless": {
+      "command": "deno run --allow-run tools/compile.ts jitless",
+      "dependencies": ["deno:version"]
+    },
+    "compile:jit-fixture": {
+      "command": "deno run --allow-run tools/compile.ts jit-fixture",
+      "dependencies": ["deno:version"]
+    },
+    "compile": { "command": "deno task compile:jitless", "dependencies": ["deno:version"] },
+    "smoke:linux": { "command": "bash test/smoke-linux.sh", "dependencies": ["deno:version"] }
   },
   "fmt": { "lineWidth": 100 },
   "imports": { "@std/assert": "jsr:@std/assert@^1.0.14" }
