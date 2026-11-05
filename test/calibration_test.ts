@@ -24,6 +24,7 @@ import {
   pairReadings,
   pairSamples,
   predictRecovery,
+  pruneDiagnosisEvidence,
   replayOwn,
   replaySettled,
   resetCalibration,
@@ -36,7 +37,15 @@ import {
   validCalibrationState,
   withStart,
 } from "../src/calibration.ts";
-import { boundHistory, DAY, emptyHistory, FLAGS, type History, SLOT_MS } from "../src/history.ts";
+import {
+  boundHistory,
+  DAY,
+  emptyHistory,
+  FLAGS,
+  type History,
+  type LimitRecord,
+  SLOT_MS,
+} from "../src/history.ts";
 import { widen } from "../src/credits.ts";
 import { plan } from "../src/plans.ts";
 import { at, fit, p, record, slot } from "./calibration-fixture.ts";
@@ -1539,7 +1548,7 @@ Deno.test("readings that come back broken after an outage keep the holds", () =>
   assertEquals([recovered.state.hold, recovered.state.ownHold], [null, null]);
 });
 
-// Generate the own-count hold from a confirmed limit's billing replay. Its central gap is above
+// Generate the own-count hold from a confirmed limit's billing replay. It measures billing above
 // the stored governor charges, which can be higher than the current drift reference.
 function diagnosedOwnHold(lowerReference = false) {
   const c = calibrationConfig({ mode: "apply" });
@@ -1636,10 +1645,12 @@ Deno.test("readings that come back with the rise the own-count hold measured end
 });
 
 Deno.test("corroboration measures the rise from drift detection's reference", () => {
-  const { c, outage, back, now } = diagnosedOwnHold(true);
-  // A real 0.5-core jump measures only 0.295 cores above stored charges. Comparing that central
-  // gap with the reference residual rejects valid readings; replaying above the reference agrees.
-  assertAlmostEquals(outage.ownHold!.central!, 0.29456, 0.0001);
+  const { c, h, outage, back, now } = diagnosedOwnHold(true);
+  // A real 0.5-core jump measures only 0.295 cores above stored charges, without the allowance.
+  // Comparing that with the reference residual rejects valid readings; replaying above the
+  // reference agrees.
+  const d = h.limits.at(-1)!.diagnosis!;
+  assertAlmostEquals(d.held! - d.eta / ((d.onset - d.anchor!.at) / 1000), 0.29456, 0.0001);
   const resumed = updateCalibration(p, back(0.5), outage, c, now, 2000);
   assert(resumed.changes.some((d) => d.trigger === "readings-corroborated"));
   assertEquals(resumed.state.residualInvalid, false);
@@ -1662,6 +1673,67 @@ Deno.test("an own-count hold needs complete billing evidence from this outage to
     assertEquals(result.state.ownHold, outage.ownHold, missing);
     assertEquals(result.state.residualInvalid, true, missing);
   }
+});
+
+Deno.test("a later diagnosis that measured no hold keeps the inputs the hold replays", () => {
+  const { c, h, outage, back, now } = diagnosedOwnHold(true);
+  const held = h.limits.at(-1)!;
+  // A third limit in the same outage, after a reboot: no anchor is left, so it measures no hold,
+  // but its diagnosis is now the latest one.
+  const onset = held.lift! + 7_200_000;
+  const diagnosis = {
+    gap: null,
+    source: "unavailable" as const,
+    anchor: null,
+    onset: onset - c.learning.onset_margin_s * 1000,
+    eta: 0,
+    explained: false,
+    left: null,
+  };
+  const options = { useReadings: false, invalid: [], fullOwnStep: true };
+  h.limits.push({
+    ...record("apply"),
+    onset,
+    entry: onset + 90_000,
+    lift: onset + 3_600_000,
+    class: "credit",
+    liftCheck: { at: onset + 3_600_000, predicted: null, ratio: null },
+    diagnosis,
+    diagnosisEvidence: diagnosisEvidence(
+      h,
+      c,
+      outage.gapUpperBound,
+      outage.fit,
+      diagnosis,
+      options,
+    ),
+  });
+  assert(onset + 3_600_000 < back(0).readings.at(-4)!.at);
+  const returning = (prune: (limits: LimitRecord[]) => void) => {
+    const history = structuredClone(back(0.5));
+    prune(history.limits);
+    return { history, result: updateCalibration(p, history, outage, c, now, 2000) };
+  };
+  // Keeping only the latest diagnosis's inputs strands the hold until another limit measures one.
+  const stranded = returning((limits) => {
+    for (const r of limits) if (r.onset !== onset) delete r.diagnosisEvidence;
+  });
+  assert(!stranded.result.changes.some((d) => d.trigger === "readings-corroborated"));
+  assertEquals(stranded.result.state.ownHold, outage.ownHold);
+  // The hold's own limit keeps its inputs too, so the returning readings still corroborate it.
+  const kept = returning((limits) =>
+    pruneDiagnosisEvidence(limits, limits.find((r) => r.onset === onset)!, outage)
+  );
+  assertEquals(
+    kept.history.limits.filter((r) => r.diagnosisEvidence).map((r) => r.onset),
+    [held.onset, onset],
+  );
+  assert(kept.result.changes.some((d) => d.trigger === "readings-corroborated"));
+  assertEquals([kept.result.state.hold, kept.result.state.ownHold], [null, null]);
+  // Without a hold in force, only the latest diagnosis keeps its inputs.
+  const none = structuredClone(h.limits);
+  pruneDiagnosisEvidence(none, none.at(-1)!, { ...outage, ownHold: null });
+  assertEquals(none.filter((r) => r.diagnosisEvidence).map((r) => r.onset), [onset]);
 });
 
 Deno.test("valid but stale readings keep the own-count hold", () => {

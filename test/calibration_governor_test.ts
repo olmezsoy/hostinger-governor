@@ -3,7 +3,14 @@ import { flush } from "./async.ts";
 import { InvalidReadingsError } from "../src/hostinger.ts";
 import { Governor, openGovernor, readPersisted } from "../src/governor.ts";
 import { explainCalibration, explainText } from "../src/explain.ts";
-import { CALIBRATION, classifyLimit, marginFromFit } from "../src/calibration.ts";
+import {
+  CALIBRATION,
+  calibrationConfig,
+  classifyLimit,
+  type Evaluation,
+  marginFromFit,
+  updateCalibration,
+} from "../src/calibration.ts";
 import { MARGIN, recoveryCeiling, sliceCeiling, widen } from "../src/credits.ts";
 import {
   DAY,
@@ -598,6 +605,71 @@ Deno.test("only the newest diagnosis keeps its recorded inputs", async () => {
   assert(f.g.history.limits[1].diagnosisEvidence);
   assert(f.g.history.limits[1].diagnosis);
   await f.g.closeDiagnostics();
+});
+
+Deno.test("the own-count hold's limit keeps its inputs while the hold is in force", () => {
+  const f = fixture();
+  const evidence = {
+    config: CALIBRATION,
+    upper: 0.167,
+    fit: null,
+    anchor: null,
+    readings: [],
+    slots: [],
+    fullOwnStep: true,
+  };
+  const base = {
+    path: "evident" as const,
+    balance: 0,
+    used: 0,
+    settings: { ...CALIBRATION.start },
+    gap: 0,
+    mode: "apply" as const,
+    track: null,
+    caps: [],
+    confirmed: true,
+    learn: true,
+    class: "credit" as const,
+  };
+  const diagnosis = {
+    gap: 0.01,
+    anchor: null,
+    onset: 0,
+    eta: 0,
+    explained: false,
+    left: 0,
+  };
+  const held: LimitRecord = {
+    ...base,
+    onset: start - 2 * 86_400_000,
+    entry: start - 2 * 86_400_000,
+    lift: start - 2 * 86_400_000 + 3_600_000,
+    diagnosis: { ...diagnosis, source: "own", held: 0.5 },
+    diagnosisEvidence: structuredClone(evidence),
+  };
+  const later: LimitRecord = {
+    ...base,
+    onset: start - 86_400_000,
+    entry: start - 86_400_000,
+    lift: start - 86_400_000 + 3_600_000,
+  };
+  const adopt = (g: Governor) =>
+    (g as unknown as { adoptLimitUpdates(u: Evaluation["limits"]): void }).adoptLimitUpdates([{
+      onset: later.onset,
+      diagnosis: { ...diagnosis, gap: null, source: "unavailable", left: null },
+      diagnosisEvidence: structuredClone(evidence),
+    }]);
+  f.g.history.limits = [structuredClone(held), structuredClone(later)];
+  f.g.calibration.ownHold = { gap: 0.5, settings: { mul: 1.05, add: 0.6, floor: 0.05 } };
+  adopt(f.g);
+  assert(f.g.history.limits[0].diagnosisEvidence);
+  assert(f.g.history.limits[1].diagnosisEvidence);
+  // Once the hold has ended, only the latest diagnosis keeps its inputs again.
+  f.g.history.limits = [structuredClone(held), structuredClone(later)];
+  f.g.calibration.ownHold = null;
+  adopt(f.g);
+  assertEquals(f.g.history.limits[0].diagnosisEvidence, undefined);
+  assert(f.g.history.limits[1].diagnosisEvidence);
 });
 
 Deno.test("malformed persisted calibration restarts from the configured start", () => {
@@ -1451,6 +1523,63 @@ Deno.test("a persist.json a decision behind catches up with history on start", a
   } finally {
     await Deno.remove(dir, { recursive: true });
   }
+});
+
+Deno.test("catching up with a new reference drops sums from the previous meter", () => {
+  const cfg = {
+    ...APPLY,
+    calibration: { mode: "apply" as const, fit: { min_pairs: 2, min_days: 1 } },
+  };
+  const f = fixture(cfg);
+  const oldReference = { ...fit, a: 1.02, b: 0.02 };
+  const reference = { ...fit, a: 1.04, b: 0.02 };
+  Object.assign(f.g.calibration, {
+    fit,
+    referenceFit: oldReference,
+    fitAt: start,
+    lastPaired: start - 1_800_000,
+    serial: 1,
+    cusum: { s: 9.9, down: 62.9, residual: 0.5, own: 20, alarm: false, since: start - DAY },
+  });
+  const saved = structuredClone(f.g.s), h = emptyHistory(planKey(p), 1, start - DAY);
+  h.slots = Array.from({ length: 6 }, (_, i) => slot(start - 3_600_000 + i * 600_000, 4));
+  h.readings = Array.from({ length: 3 }, (_, i) => ({
+    at: start - (2 - i) * 1_800_000,
+    v: (reference.a * 4 + reference.b + 0.06) / p.vcpus * 100,
+  }));
+  h.calibrations = [{
+    at: start,
+    trigger: "fit",
+    inputs: {},
+    digest: "0",
+    from: { ...f.g.calibration.applied },
+    to: { ...f.g.calibration.applied },
+    mode: "apply",
+    learned: { ...f.g.calibration.applied },
+    fit,
+    referenceFit: reference,
+    serial: 2,
+  }];
+  const unchanged = structuredClone(h);
+  unchanged.calibrations[0].referenceFit = { ...oldReference };
+  const same = new Governor(cfg, p, saved, f.io);
+  same.adoptHistory(unchanged, start);
+  assertEquals(same.calibration.cusum, saved.calibration!.cusum);
+  // Only the newer decision survives. The checkpoint cannot restore its cleared CUSUM.
+  const g = new Governor(cfg, p, saved, f.io);
+  g.adoptHistory(h, start);
+  assertEquals(g.calibration.referenceFit, reference);
+  const result = updateCalibration(
+    p,
+    h,
+    g.calibration,
+    calibrationConfig(cfg.calibration),
+    start + 60_000,
+    1000,
+  );
+  // A normal reading against the new reference must not finish the previous meter's run.
+  assertEquals(result.state.pending, null);
+  assert(result.state.cusum.s < 1 && result.state.cusum.down < 1);
 });
 
 Deno.test("only a lift test that still found the limit places the cap", async () => {

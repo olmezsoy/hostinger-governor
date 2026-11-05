@@ -281,6 +281,32 @@ Deno.test("a change the margin already covered keeps the gap and margin learned 
   assert(box.state().fitAt! > fittedAt);
 });
 
+Deno.test("crossing fits keep a limit's gap and never allow more guest cores", () => {
+  const box = startTighterBox(4);
+  // This meter rises above the reference, but crosses the margin's fit above the operating load.
+  for (let n = 0; n < 96 && !box.state().pending?.verified; n++) box.step(1.07, -0.06);
+  const verified = box.state();
+  assert(verified.pending?.verified);
+  const gap = verified.gap + 0.1;
+  const taught = marginFromFit(p, verified.fit!, gap, verified.applied, box.c);
+  Object.assign(verified, { gap, applied: taught });
+  const allowed = (p.baseline - taught.add) / taught.mul;
+  for (let n = 0; n < 96 && box.state().pending; n++) box.step(1.07, -0.06);
+  const after = box.state();
+  assertEquals(after.pending, null);
+  assert(after.fit!.a * 3 + after.fit!.b < box.first.a * 3 + box.first.b);
+  assert(after.fit!.a * p.vcpus + after.fit!.b > box.first.a * p.vcpus + box.first.b);
+  assertEquals(after.gap, gap);
+  assert(after.applied.mul >= taught.mul && after.applied.add >= taught.add);
+  assert((p.baseline - after.applied.add) / after.applied.mul <= allowed);
+  // Settling refits retain the same correction too.
+  for (let n = 0; n < box.c.fit.days * 48; n++) {
+    box.step(1.07, -0.06);
+    assertEquals(box.state().gap, gap);
+    assert((p.baseline - box.state().applied.add) / box.state().applied.mul <= allowed);
+  }
+});
+
 Deno.test("the extreme-residual test and its recovery follow the drift reference", () => {
   const box = startTighterBox();
   const settled = structuredClone(box.state());

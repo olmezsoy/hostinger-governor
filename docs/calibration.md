@@ -65,7 +65,9 @@ what was gathered before:
 
 - 90 days of readings, ten-minute UTC CPU slots, reading revisions and exact interval means;
 - the last 50 limit records and the last 100 calibration decisions;
-- the inputs of the latest evaluation and of the latest gap diagnosis, for `calibrate --explain`.
+- the inputs of the latest evaluation and of the latest gap diagnosis, for `calibrate --explain`,
+  and of the limit the own-count hold came from, for its corroboration, until the first diagnosis
+  after the hold ends.
 
 `history.json` is a daily snapshot. Recorded inputs in it are references to rows it already holds,
 and its payload is compressed, so 90 days stay below 1 MB on KVM 8. Between snapshots, every write
@@ -229,8 +231,8 @@ no window mixes the meter from before a change with the meter after it.
 
 A reading at the 100% cap only bounds the meter from below. It never counts as a normal residual and
 never reaches drift detection, so a jump clipped at the cap cannot pass for valid readings; one
-already beyond 6 σ against the fit still counts as extreme. Fits keep capped readings: leaving them
-out cost S1 0.05% of CPU and helped no meter jump.
+already beyond 6 σ against drift detection's reference still counts as extreme. Fits keep capped
+readings: leaving them out cost S1 0.05% of CPU and helped no meter jump.
 
 From a fit, the margin keeps the box a premium below the baseline at the floor, by Hostinger's count
 plus the learned gap. The premium scales `premium_ref` by the measured noise. The multiplier rounds
@@ -427,15 +429,16 @@ withdrawn (`cusum-revert`) and, having changed nothing learned, leaves nothing b
 A verified change holds until a fit on the readings after its change point alone qualifies. That fit
 sets the learned margin, tightening only against the margin learned before the change. Limits during
 the change were explained by it, and the fit now carries it, so the gap they taught is dropped; the
-floor stays. A change can rise above a newer, lower reference and still read below the margin's fit
-at three guest cores and at the VM's vCPUs. That fit carries nothing the margin's fit did not, so
-the gap and margin learned during the change stay, and the fit only tightens them. Until the 14-day
-window has moved past the change point, each daily refit sets the margin the same way, against the
-one from before the change, or against the one kept at the fit for a change the margin's fit
-covered, keeping the floor and any gap learned since. A fit on the first few days can split a change
-wrongly into slope and offset, as S4's slope change was first read partly as an offset; a later fit
-replaces that split rather than adding to it. Under a rules mismatch, refits only tighten, so
-`widen()` steps stay. The status shows the change as `credits.calibration.cusum.pending`.
+floor stays. The new fit must read at least as high as the margin's fit throughout the qualifying
+load range, from three guest cores to the VM's vCPUs, and higher somewhere, to replace what limits
+taught. A change that stays below the margin's fit, or crosses it inside that range, keeps the gap
+and margin learned during the change, and the fit only tightens them. Until the 14-day window has
+moved past the change point, each daily refit sets the margin the same way, against the one from
+before the change, or against the one kept at the fit for a change the margin's fit covered, keeping
+the floor and any gap learned since. A fit on the first few days can split a change wrongly into
+slope and offset, as S4's slope change was first read partly as an offset; a later fit replaces that
+split rather than adding to it. Under a rules mismatch, refits only tighten, so `widen()` steps
+stay. The status shows the change as `credits.calibration.cusum.pending`.
 
 A residual beyond 6 σ never enters the CUSUM or a pending verification: it is not evidence of drift,
 and a bad feed must not tighten the margin. Three in a row mark readings invalid until three normal
@@ -446,21 +449,21 @@ While readings are invalid from extreme residuals, any confirmed credit limit ca
 unless a verified drift change holds. A second change opened from that change's point would let the
 fit after it mix both meters, so readings that turn extreme meanwhile stay invalid until three
 normal readings or a reset, and the own-count hold carries the box. Its replay bills the settled
-readings up to where they turned extreme and the fit plus a rise after that, from its anchor, the
-detected lift for a repeat; reading gaps before that point are bridged with the fit alone, since
-they crossed the old meter, and billing the rise there too made it come out low. It bisects the rise
-above drift detection's reference, up to the VM's vCPUs, that empties the bank at `t_lo`. The
-invalid readings play no part in it. If their mean residual over the same span is positive and
-within ±50% of that rise, either way, so neither exceeds the other by more than half, they track
-billing: they count again (`readings-corroborated`) and a verified drift change opens from where
-they turned extreme, holding the fit raised by their mean residual since. A units change cannot show
-the same rise in limits, so a broken feed stays invalid and tightens nothing. The first limit counts
-too: a 0.5-core jump turns readings extreme at low load at once, so waiting for a repeat would cost
-a second limit. Readings that are not corroborated stay out of refits. A corroborating limit learns
-nothing itself: the rise it measured empties the bank at `t_lo`, so no optimism is left for the
-floor, and the drift change it opens carries the meter. Replaying its own estimate at the old margin
-instead pinned the floor at `floor_max` after every jump of 0.75 cores or more. The rise bills the
-time after the last settled reading too, up to `t_lo`.
+readings up to where they turned extreme and drift detection's reference plus a rise after that,
+from its anchor, the detected lift for a repeat; reading gaps before that point are bridged with the
+reference alone, since they crossed the old meter, and billing the rise there too made it come out
+low. It bisects the rise above drift detection's reference, up to the VM's vCPUs, that empties the
+bank at `t_lo`. The invalid readings play no part in it. If their mean residual over the same span
+is positive and within ±50% of that rise, either way, so neither exceeds the other by more than
+half, they track billing: they count again (`readings-corroborated`) and a verified drift change
+opens from where they turned extreme, holding the fit raised by their mean residual since. A units
+change cannot show the same rise in limits, so a broken feed stays invalid and tightens nothing. The
+first limit counts too: a 0.5-core jump turns readings extreme at low load at once, so waiting for a
+repeat would cost a second limit. Readings that are not corroborated stay out of refits. A
+corroborating limit learns nothing itself: the rise it measured empties the bank at `t_lo`, so no
+optimism is left for the floor, and the drift change it opens carries the meter. Replaying its own
+estimate at the old margin instead pinned the floor at `floor_max` after every jump of 0.75 cores or
+more. The rise bills the time after the last settled reading too, up to `t_lo`.
 
 ## Running closer to the readings
 
@@ -552,16 +555,17 @@ the rise in billing, and if the readings' mean residual agrees with that rise, w
 allowance, both positive and within ±50% either way, they count again as if a limit had corroborated
 them (`readings-corroborated`), and a verified drift change carries the meter. The agreement check
 replays the retained own-count diagnosis against the drift reference and learned gap, with its
-original anchor and interval and without the uncertainty allowance. The hold's central gap alone
-measures billing above the governor's charges, which can exceed that reference. Missing or
-incomplete diagnosis inputs leave the hold in place. Otherwise the hold that keeps the box from
-limits would also keep any limit from corroborating a real jump during an outage, and the readings
-would stay invalid for good: in the jump study it held 312 hours in two of ten 0.75-core seeds. A
-units change shows no such rise. Before this, a feed that came back at 8x the meter after a two-day
-outage ended both holds, from 1.05× + 0.36 to 1.05× + 0.04, and restarted the 24-hour clock when it
-turned invalid. Neither changes the learned settings, which only tighten until an operator reset, a
-fit after a drift change, or readings that show a meter change behind a floor raised while they
-couldn't be used.
+original anchor and interval and without the uncertainty allowance. The hold itself measures billing
+above the governor's charges, which can exceed that reference. History keeps that limit's inputs
+even after a later limit's diagnosis that measured no hold, such as one a reboot left without an
+anchor, until the first diagnosis after the hold ends. Missing or incomplete diagnosis inputs leave
+the hold in place. Otherwise the hold that keeps the box from limits would also keep any limit from
+corroborating a real jump during an outage, and the readings would stay invalid for good: in the
+jump study it held 312 hours in two of ten 0.75-core seeds. A units change shows no such rise.
+Before this, a feed that came back at 8x the meter after a two-day outage ended both holds, from
+1.05× + 0.36 to 1.05× + 0.04, and restarted the 24-hour clock when it turned invalid. Neither
+changes the learned settings, which only tighten until an operator reset, a fit after a drift
+change, or readings that show a meter change behind a floor raised while they couldn't be used.
 
 A downward step in the meter can leave the readings invalid until an operator acts. Corroboration
 needs a rise, and downward CUSUM only logs. A step beyond 6 σ at the box's usual load, about 0.13
@@ -618,7 +622,8 @@ them: history keeps 50 limit records, and 49 later ones had changed a rerun's ga
 decision used; `evidence.referenceFit` is the newest qualifying fit drift detection follows; and
 `evidence.candidateFit` is a fresh candidate, which may differ when it would not tighten the margin.
 The text form shows the same status fields as the JSON, one topic per line: the settings in force
-and, under a hold, the learned ones and every hold; the readings' state; any cooldown; and the long
+and, under a hold, the learned ones and every hold; the meter's fit and, when drift detection
+follows a different one, the drift reference; the readings' state; any cooldown; and the long
 reading intervals. A configuration change takes effect in this output only after the daemon
 restarts.
 

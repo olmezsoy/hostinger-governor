@@ -71,6 +71,7 @@ import {
   classifyLimits,
   eachSampleOverlap,
   effectiveSettings,
+  emptyCusum,
   type Evaluation,
   fallbackMargin,
   initialCalibration,
@@ -80,6 +81,7 @@ import {
   MISMATCH_WINDOW_MS,
   openEstimates,
   pairSamples,
+  pruneDiagnosisEvidence,
   replayCheckpoint,
   resetCalibration,
   sustainedCooldown,
@@ -1021,7 +1023,14 @@ export class Governor {
     s.gap = Math.max(s.gap, d.gap ?? 0);
     s.rulesMismatch ||= !!d.rulesMismatch;
     // Drift detection follows the newest fit that qualified, which may be looser than the margin's.
-    if (d.referenceFit) s.referenceFit = structuredClone(d.referenceFit);
+    if (d.referenceFit) {
+      // A decision can be newer than persist.json when its checkpoint no longer verifies. Its
+      // reference must not inherit sums measured against the meter persist.json still holds.
+      if (inputsDigest(s.referenceFit ?? s.fit) !== inputsDigest(d.referenceFit)) {
+        s.cusum = emptyCusum();
+      }
+      s.referenceFit = structuredClone(d.referenceFit);
+    }
   }
   closeHistory() {
     return this.historyStore?.close() ?? Promise.resolve();
@@ -1214,11 +1223,9 @@ export class Governor {
       const record = this.history.limits.find((r) => r.onset === patch.onset);
       if (!record) continue;
       Object.assign(record, patch);
-      // Only the latest diagnosis keeps its inputs, which bounds the history file.
+      // Only the latest diagnosis keeps its inputs, and the own-count hold's limit while it holds.
       if (patch.diagnosisEvidence) {
-        for (const other of this.history.limits) {
-          if (other !== record) delete other.diagnosisEvidence;
-        }
+        pruneDiagnosisEvidence(this.history.limits, record, this.calibration);
       }
       if (patch.class) this.classified(record);
     }

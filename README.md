@@ -82,12 +82,13 @@ provider's VM details and addresses separately.
 Calibration is opt-in. See [calibration configuration, evidence and rollout](docs/calibration.md)
 for `off`, `shadow`, `apply`, and `governor calibrate --explain` or `--reset`. In apply mode, the
 margin and floor tighten from recorded readings and confirmed credit limits. Learned settings never
-loosen on their own, with two exceptions, both when Hostinger's meter changes. Fits on the readings
-after the change replace what limits taught while it was held, never going below what was learned
-before it. A floor raised while readings couldn't be used returns to where it was once returning
-readings show the change. Only `governor calibrate --reset` returns them to the start. While
-readings stay stale or invalid for a day, apply holds at least today's 1.05× + 0.08 margin, and that
-hold ends when readings resume.
+loosen on their own, with two exceptions, both when Hostinger's meter changes. A fit on the readings
+after the change replaces what limits taught while it was held, if it reads at least as high as the
+fit before it at every load a fit covers, and never goes below what was learned before it. A floor
+raised while readings couldn't be used returns to where it was once returning readings show the
+change. Only `governor calibrate --reset` returns them to the start. While readings stay stale or
+invalid for a day, apply holds at least today's 1.05× + 0.08 margin, and that hold ends when
+readings resume.
 
 ## Install
 

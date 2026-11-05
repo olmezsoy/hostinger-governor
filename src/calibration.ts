@@ -815,10 +815,7 @@ function beforeLimit(slots: Slot[], record: LimitRecord): Slot[] {
 // governor flags its slots limited until it detects the lift. Learning's replays from a lift read
 // them as unlimited; the clamp, a lower bound, keeps them.
 function afterLift(slots: Slot[], limits: LimitRecord[], anchor: Anchor): Slot[] {
-  const record = limits.find((l) =>
-    l.class === "credit" && l.lift !== undefined &&
-    (anchor.at === l.lift || anchor.at === l.limitedAt)
-  );
+  const record = limits.find((l) => l.class === "credit" && liftsAt(l, anchor.at));
   if (!record) return slots;
   let out = slots;
   const last = firstSlot(slots, record.lift!);
@@ -829,6 +826,10 @@ function afterLift(slots: Slot[], limits: LimitRecord[], anchor: Anchor): Slot[]
   }
   return out;
 }
+// Whether a lift anchor at `at` is this limit's: its detected lift, or the last test that still
+// found it.
+const liftsAt = (l: LimitRecord, at: number) =>
+  l.lift !== undefined && (l.lift === at || l.limitedAt === at);
 // The lower-bound anchor of a span that starts at a credit limit: its detected lift, where the bank
 // held at least the recovery level.
 function liftAnchor(p: Plan, h: History, anchor: Anchor, onset: number): Anchor | null {
@@ -982,9 +983,8 @@ export function diagnosisEvidence(
   const begin = Math.min(anchor.at, h.readings[first]?.at ?? anchor.at);
   // The earlier limit a replay from its lift reads (afterLift, liftAnchor): the 50 records history
   // keeps can drop it before this diagnosis is rerun.
-  const limits = h.limits.filter((l) =>
-    l.lift !== undefined && (l.lift === anchor.at || l.limitedAt === anchor.at)
-  ).map(({ diagnosisEvidence: _, ...l }) => l);
+  const limits = h.limits.filter((l) => liftsAt(l, anchor.at))
+    .map(({ diagnosisEvidence: _, ...l }) => l);
   return structuredClone({
     config: c,
     upper,
@@ -1181,8 +1181,7 @@ export type CalibrationState = {
   hold: { since: number; reason: "stale" | "invalid" } | null;
   // The full own-count step of a repeat credit limit while readings are invalid or stale, as a gap
   // and the settings it gives. Temporary like the hold: it ends when readings resume.
-  // `central` is the gap the limits measured without the allowance for estimated time.
-  ownHold: { gap: number; settings: Settings; central?: number } | null;
+  ownHold: { gap: number; settings: Settings } | null;
   invalid: boolean;
   metricInvalid: boolean;
   residualInvalid: boolean;
@@ -1420,8 +1419,7 @@ export function validCalibrationState(s: unknown): s is CalibrationState {
       !!v.hold && finite(v.hold.since) && ["stale", "invalid"].includes(v.hold.reason)) &&
     (v.ownHold === null ||
       !!v.ownHold && finite(v.ownHold.gap) && v.ownHold.gap >= 0 &&
-        validSettings(v.ownHold.settings) &&
-        (v.ownHold.central === undefined || finite(v.ownHold.central))) &&
+        validSettings(v.ownHold.settings)) &&
     (v.fit === null || validFit(v.fit)) &&
     (v.referenceFit === undefined || validFit(v.referenceFit)) &&
     (v.pending === null || validPending(v.pending)) &&
@@ -1722,7 +1720,8 @@ function trackMeter(run: Run, pairs: Pair[], usable: boolean) {
   // Invalid readings, and any residual beyond 6 sigma against drift detection's reference (or a
   // pending change's raised fit where it reads higher), never fit the meter either: like drift
   // detection, the fit must not let a bad feed tighten the margin. Only a refit or new pairs need
-  // them, so most passes never filter.
+  // them, so most passes never filter. `model` is the reference as this pass found it, before any
+  // refit below replaces it.
   const filtered = new Map<number, Pair[]>(), model = driftReference(s);
   const eligible = (from = -Infinity) => {
     const since = Math.max(from, s.fitSince ?? -Infinity);
@@ -1751,9 +1750,12 @@ function trackMeter(run: Run, pairs: Pair[], usable: boolean) {
       // Under a rules mismatch it only tightens, so widen() steps learned meanwhile stay. So does
       // a change the margin's fit already covered: drift detection follows a newer, lower fit
       // (#19), so a change can rise above it and still read below the margin's fit everywhere.
-      // Such a fit carries nothing a limit's gap could have come from, and resetting would loosen.
-      const carries = !s.fit ||
-        [c.fit.min_cores, p.vcpus].some((u) => predicts(post, u) > predicts(s.fit!, u));
+      // A crossing fit can still read lower at the operating load. Only a rise across the whole
+      // qualifying load range can supersede what a limit taught; otherwise resetting would loosen.
+      const rises = s.fit
+        ? [c.fit.min_cores, p.vcpus].map((u) => predicts(post, u) - predicts(s.fit!, u))
+        : null;
+      const carries = !rises || rises.every((rise) => rise >= 0) && rises.some((rise) => rise > 0);
       const gap = carries ? Math.max(c.gap_start, Math.min(s.gap, changed.gapFrom)) : s.gap;
       const from = carries && !s.rulesMismatch
         ? { ...changed.from, floor: s.applied.floor }
@@ -2134,23 +2136,15 @@ function holdCorroboration({ p, h, s, latest }: Run) {
   const open = s.invalidSpans.find((x) => x.to === null), fit = driftReference(s);
   if (!open || !s.residualInvalid || !fit || !s.ownHold || s.pending?.verified) return null;
   if (latest === null) return null;
-  // The hold's central gap was measured above stored governor charges, not above this reference.
-  // Replay one confirmed limit's original inputs against the reference so both rises have the
-  // same baseline. Only evidence from the current stale or invalid episode can corroborate it.
-  const record = h.limits.findLast((r) =>
-    r.class === "credit" && r.confirmed && r.learn &&
-    r.lift !== undefined && r.lift >= (s.apiStaleSince ?? open.from) &&
-    r.diagnosis?.source === "own" && r.diagnosis.held !== undefined &&
-    r.diagnosisEvidence?.fullOwnStep
-  );
+  // The hold measured billing above stored governor charges, not above this reference. Replay one
+  // confirmed limit's original inputs against the reference so both rises have the same baseline.
+  // Only evidence from the current stale or invalid episode can corroborate it.
+  const record = ownHoldSource(h.limits, s.apiStaleSince ?? open.from);
   const evidence = record?.diagnosisEvidence, anchor = evidence?.anchor;
   if (!record || !evidence || !anchor || !evidence.limits) return null;
   if (
     anchor.balance === p.recovered &&
-    !evidence.limits.some((r) =>
-      r.class === "credit" && r.lift !== undefined &&
-      (r.lift === anchor.at || r.limitedAt === anchor.at)
-    )
+    !evidence.limits.some((r) => r.class === "credit" && liftsAt(r, anchor.at))
   ) return null;
   const slots = afterLift(beforeLimit(evidence.slots, record), evidence.limits, anchor);
   const meter = { mul: fit.a, add: fit.b + s.gap };
@@ -2164,6 +2158,28 @@ function holdCorroboration({ p, h, s, latest }: Run) {
   const residual = meanResidual(p, h, fit, open.from - 1, latest);
   if (residual === null || residual <= 0 || !agree(rise, residual)) return null;
   return { open, rise, residual, to: latest };
+}
+// The newest confirmed credit limit, lifted from `since` on, whose retained own-count diagnosis
+// measured the hold: returning readings corroborate the hold against a replay of its inputs.
+function ownHoldSource(limits: LimitRecord[], since = -Infinity): LimitRecord | undefined {
+  return limits.findLast((r) =>
+    r.class === "credit" && r.confirmed && r.learn &&
+    r.lift !== undefined && r.lift >= since &&
+    r.diagnosis?.source === "own" && r.diagnosis.held !== undefined &&
+    !!r.diagnosisEvidence?.fullOwnStep
+  );
+}
+// Only the latest diagnosis keeps its inputs, which bounds the history file. While the own-count
+// hold is in force, the limit it came from keeps them too: a later limit that measured no hold,
+// such as one a reboot left without an anchor, or one more than confirm_days after the last, would
+// otherwise leave the hold nothing to corroborate it, and the readings invalid until another limit.
+export function pruneDiagnosisEvidence(
+  limits: LimitRecord[],
+  latest: LimitRecord,
+  s: CalibrationState,
+) {
+  const held = s.ownHold ? ownHoldSource(limits) : undefined;
+  for (const r of limits) if (r !== latest && r !== held) delete r.diagnosisEvidence;
 }
 function corroborate(
   { p, h, c, s, change }: Run,
@@ -2275,12 +2291,9 @@ function learn(
     // the stale fallback's 0.08, so the hold covers them plus the step as well.
     const step = d.held - (record.heldGap ?? record.gap);
     const charged = { ...record.settings, add: record.settings.add + step };
-    const span = d.anchor ? (d.onset - d.anchor.at) / 1000 : 0;
-    const central = span > 0 ? d.held - d.eta / span : d.held;
     s.ownHold = {
       gap,
       settings: maxSettings(maxSettings(s.ownHold?.settings ?? held, held), charged),
-      central: Math.max(s.ownHold?.central ?? 0, central),
     };
   }
   // The first limit has no earlier anchor, so no gap. The estimate it still showed at entry is
