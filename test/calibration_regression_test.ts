@@ -209,6 +209,28 @@ Deno.test("drift detection follows a refit the tighten-only margin discards", ()
   assert(!box.triggers.includes("cusum-revert"));
 });
 
+Deno.test("a new drift reference starts the CUSUM sums again", () => {
+  const box = startTighterBox();
+  const settled = box.state();
+  // Sums carried over from the reference before: the downward one is this box's on Nov 4.
+  const carried = { ...settled.cusum, s: 5, down: 62.9, since: settled.lastPaired };
+  const last = box.h.readings.at(-1)!.at;
+  const next = (fitAt: number) => {
+    const h = structuredClone(box.h);
+    h.slots.push(...Array.from({ length: 3 }, (_, k) => slot(last + k * SLOT_MS, 4)));
+    h.readings.push({ at: last + 1_800_000, v: (1.02 * 4 + 0.08) / p.vcpus * 100 });
+    const s = { ...structuredClone(settled), cusum: carried, fitAt };
+    return updateCalibration(p, h, s, box.c, last + 1_860_000, 30000).state;
+  };
+  // A daily refit replaces the reference, and the one pair after it starts the sums from zero.
+  const refit = next(last - DAY);
+  assert(refit.fitAt === last + 1_860_000);
+  assert(refit.cusum.s < 1 && refit.cusum.down < 1, JSON.stringify(refit.cusum));
+  // Without a refit the same pair only adds to them.
+  const kept = next(last);
+  assert(kept.cusum.s > 4 && kept.cusum.down > 60, JSON.stringify(kept.cusum));
+});
+
 Deno.test("a change the margin already covered keeps the gap and margin learned during it", () => {
   const box = startTighterBox();
   for (let n = 0; n < 12 + box.c.cusum.verify_readings; n++) box.step(1.02, 0.1);

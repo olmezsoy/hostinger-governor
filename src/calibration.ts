@@ -1774,7 +1774,10 @@ function trackMeter(run: Run, pairs: Pair[], usable: boolean) {
     if (fitted) {
       s.fitAt = now;
       // The margin may keep an older fit, but drift detection follows the newest one that qualified.
+      // Its sums start again: residuals summed against the old reference say nothing about the new
+      // one, and a run carried over from a reference that read higher raised false alarms in S1.
       s.referenceFit = fitted;
+      s.cusum = emptyCusum();
     }
     if (fitted && !s.fit) {
       change("fit", { fit: fitted, gap: s.gap }, () => {

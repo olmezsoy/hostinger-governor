@@ -403,7 +403,9 @@ A second mismatch within 30 days, by lift time, latches the rules mismatch above
 
 Each new pair updates a one-sided CUSUM of residuals against the newest fit that qualified, not the
 fit the learned margin kept. Refits run daily and the margin only tightens, so a refit that would
-loosen it is discarded from the margin; drift detection follows it anyway. Until the first fit
+loosen it is discarded from the margin; drift detection follows it anyway. Each new reference starts
+the CUSUM sums from zero: residuals summed against the one before say nothing about it, and carrying
+them over raised a false alarm in S1 and S11 that verification later withdrew. Until the first fit
 qualifies, the fit in force is the reference. Refits pause while a change is pending, so the
 reference that raised an alarm stays its old fit, and verification judges the pairs after the change
 against it. Issue #19 also offered judging against whichever of the two fits predicts the higher
