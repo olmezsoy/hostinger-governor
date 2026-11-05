@@ -404,28 +404,35 @@ A second mismatch within 30 days, by lift time, latches the rules mismatch above
 Each new pair updates a one-sided CUSUM of residuals against the newest fit that qualified, not the
 fit the learned margin kept. Refits run daily and the margin only tightens, so a refit that would
 loosen it is discarded from the margin; drift detection follows it anyway. Until the first fit
-qualifies, the fit in force is the reference. Verification judges the pairs after a change against
-the same newest fit. While a change is pending, its raised fit stands in for the extreme-residual
-test wherever it predicts the higher reading at the pair's load, so a reading the hold already
-covers never turns invalid. An alarm opens a drift change: a temporary hold, never learned state,
-since an additive jump read as a steeper slope would otherwise stay a higher multiplier. The alarm
-reads the change both ways, as a slope from the residuals since the CUSUM last left zero and as an
-offset from the clearly shifted pairs among them, and the hold covers both at every load. Only pairs
-at three or more guest cores, where a fit qualifies, read the slope: near idle, a small offset
-divided by a tiny load read as a multiplier of 2 to 3.3 on the simulated meter's own day-to-day
-wobble. Capped readings take part in neither. From three pairs on, the hold rises to their mean
-residual when that is more (`drift-hold`). After 48 pairs the change is verified (`cusum-keep`) if
-their mean residual is at least 0.5 σ against the old fit; otherwise it is withdrawn
-(`cusum-revert`) and, having changed nothing learned, leaves nothing behind.
+qualifies, the fit in force is the reference. Refits pause while a change is pending, so the
+reference that raised an alarm stays its old fit, and verification judges the pairs after the change
+against it. Issue #19 also offered judging against whichever of the two fits predicts the higher
+reading at each load; on a box whose start is tighter than its meter, the margin's fit reads higher
+at three guest cores and up, where a fit qualifies, so that would have left the reference frozen
+there as before. While a change is pending, its raised fit stands in for the extreme-residual test
+wherever it predicts the higher reading at the pair's load, so a reading the hold already covers
+never turns invalid. An alarm opens a drift change: a temporary hold, never learned state, since an
+additive jump read as a steeper slope would otherwise stay a higher multiplier. The alarm reads the
+change both ways, as a slope from the residuals since the CUSUM last left zero and as an offset from
+the clearly shifted pairs among them, and the hold covers both at every load. Only pairs at three or
+more guest cores, where a fit qualifies, read the slope: near idle, a small offset divided by a tiny
+load read as a multiplier of 2 to 3.3 on the simulated meter's own day-to-day wobble. Capped
+readings take part in neither. From three pairs on, the hold rises to their mean residual when that
+is more (`drift-hold`). After 48 pairs the change is verified (`cusum-keep`) if their mean residual
+is at least 0.5 σ against the old fit; otherwise it is withdrawn (`cusum-revert`) and, having
+changed nothing learned, leaves nothing behind.
 
 A verified change holds until a fit on the readings after its change point alone qualifies. That fit
 sets the learned margin, tightening only against the margin learned before the change. Limits during
 the change were explained by it, and the fit now carries it, so the gap they taught is dropped; the
-floor stays. Until the 14-day window has moved past the change point, each daily refit sets the
-margin the same way, against the one from before the change, keeping the floor and any gap learned
-since. A fit on the first few days can split a change wrongly into slope and offset, as S4's slope
-change was first read partly as an offset; a later fit replaces that split rather than adding to it.
-Under a rules mismatch, refits only tighten, so `widen()` steps stay. The status shows the change as
+floor stays. A change can rise above a newer, lower reference and still read below the margin's fit
+at three guest cores and at the VM's vCPUs. That fit carries nothing the margin's fit did not, so
+the gap and margin learned during the change stay, and the fit only tightens them. Until the 14-day
+window has moved past the change point, each daily refit sets the margin the same way, against the
+one from before the change, keeping the floor and any gap learned since. A fit on the first few days
+can split a change wrongly into slope and offset, as S4's slope change was first read partly as an
+offset; a later fit replaces that split rather than adding to it. Under a rules mismatch, refits
+only tighten, so `widen()` steps stay. The status shows the change as
 `credits.calibration.cusum.pending`.
 
 A residual beyond 6 σ never enters the CUSUM or a pending verification: it is not evidence of drift,
@@ -439,24 +446,24 @@ fit after it mix both meters, so readings that turn extreme meanwhile stay inval
 normal readings or a reset, and the own-count hold carries the box. Its replay bills the settled
 readings up to where they turned extreme and the fit plus a rise after that, from its anchor, the
 detected lift for a repeat; reading gaps before that point are bridged with the fit alone, since
-they crossed the old meter, and billing the rise there too made it come out low. It bisects the
-rise, up to the VM's vCPUs, that empties the bank at `t_lo`. The invalid readings play no part in
-it. If their mean residual over the same span is positive and within ±50% of that rise, either way,
-so neither exceeds the other by more than half, they track billing: they count again
-(`readings-corroborated`) and a verified drift change opens from where they turned extreme, holding
-the fit raised by their mean residual since. A units change cannot show the same rise in limits, so
-a broken feed stays invalid and tightens nothing. The first limit counts too: a 0.5-core jump turns
-readings extreme at low load at once, so waiting for a repeat would cost a second limit. Readings
-that are not corroborated stay out of refits. A corroborating limit learns nothing itself: the rise
-it measured empties the bank at `t_lo`, so no optimism is left for the floor, and the drift change
-it opens carries the meter. Replaying its own estimate at the old margin instead pinned the floor at
-`floor_max` after every jump of 0.75 cores or more. The rise bills the time after the last settled
-reading too, up to `t_lo`.
+they crossed the old meter, and billing the rise there too made it come out low. It bisects the rise
+above drift detection's reference, up to the VM's vCPUs, that empties the bank at `t_lo`. The
+invalid readings play no part in it. If their mean residual over the same span is positive and
+within ±50% of that rise, either way, so neither exceeds the other by more than half, they track
+billing: they count again (`readings-corroborated`) and a verified drift change opens from where
+they turned extreme, holding the fit raised by their mean residual since. A units change cannot show
+the same rise in limits, so a broken feed stays invalid and tightens nothing. The first limit counts
+too: a 0.5-core jump turns readings extreme at low load at once, so waiting for a repeat would cost
+a second limit. Readings that are not corroborated stay out of refits. A corroborating limit learns
+nothing itself: the rise it measured empties the bank at `t_lo`, so no optimism is left for the
+floor, and the drift change it opens carries the meter. Replaying its own estimate at the old margin
+instead pinned the floor at `floor_max` after every jump of 0.75 cores or more. The rise bills the
+time after the last settled reading too, up to `t_lo`.
 
 ## Running closer to the readings
 
-Issue #19 proposed three ways to run the box closer to what its own readings allow. The first ships
-here; the other two stay off until the evidence below exists.
+Issue #19 proposed three ways to run the box closer to what its own readings allow. The first is in
+place; the other two stay off until the evidence below exists.
 
 - **Drift detection follows the latest qualifying fit.** A fit the tighten-only margin discarded
   still becomes drift detection's reference, so a box whose start is tighter than its meter no

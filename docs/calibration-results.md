@@ -80,7 +80,7 @@ guest CPU the final margin allows at the floor, against what box A's relation pl
 | Jump       | Limits per seed | Over 10 seeds | Criterion | Allowed / correct | What handles it                                         |
 | ---------- | --------------: | ------------: | --------: | ----------------- | ------------------------------------------------------- |
 | 0.25 cores |               0 |             0 |       ≤ 1 | −0.6% to +0.4%    | CUSUM in every seed                                     |
-| 0.5 cores  |           0 – 1 |             6 |       ≤ 1 | −0.6% to +0.6%    | CUSUM in 6 seeds, corroboration at the first limit in 4 |
+| 0.5 cores  |           0 – 1 |             7 |       ≤ 1 | −0.6% to +0.6%    | CUSUM in 5 seeds, corroboration at the first limit in 5 |
 | 0.75 cores |           1 – 2 |            17 |       ≤ 3 | −0.8% to +0.6%    | Corroboration in every seed                             |
 | 1 core     |           1 – 2 |            18 |       ≤ 4 | −1.0% to +0.4%    | Corroboration in every seed                             |
 
@@ -94,12 +94,12 @@ guest CPU the final margin allows at the floor, against what box A's relation pl
   stayed, up to 0.005 above the seed without the jump.
 - **The floor.** A corroborating limit learns nothing itself, so the floor stays at 5% in every
   corroborated run. Replaying its own estimate at the old margin had pinned the floor at 10% after
-  every jump of 0.75 cores or more and in half the 0.5-core seeds. Two 0.5-core limits fall inside a
-  CUSUM drift change and raise the floor, which a drift change keeps: seed 5's to 10% and seed 3's
-  to 7.1%. Seed 3 had no limit before the fit's idle noise got its floor; at near-idle load its jump
-  now stays under 6 σ, so CUSUM, not the extreme test, sees it first.
-- **How long the drift hold lasts.** After a CUSUM alarm, verification takes 24 to 48 hours and the
-  verified hold 11 to 23 more, until a fit on the readings after the change qualifies. A
+  every jump of 0.75 cores or more and in half the 0.5-core seeds. Seed 3's 0.5-core limit falls
+  inside a CUSUM drift change and raises the floor to 7.2%, which a drift change keeps; seed 5's
+  limit leaves it at 5%. Seed 3 had no limit before the fit's idle noise got its floor; at near-idle
+  load its jump now stays under 6 σ, so CUSUM, not the extreme test, sees it first.
+- **How long the drift hold lasts.** After a CUSUM alarm, verification takes 23 to 47 hours and the
+  verified hold 11 to 24 more, until a fit on the readings after the change qualifies. A
   corroborated change holds 33 to 39 hours. The fit's slope bound resamples at least two days that
   are whole or hold a third of its pairs. Resampling a single whole day, which the first fit after a
   change could do before, made the bound equal the slope, since one day shows no day-to-day spread.

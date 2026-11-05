@@ -962,8 +962,6 @@ export class Governor {
       s.pending = pending.verified ? pending : { ...pending, readings: 0, z: 0 };
       s.fit ??= pending.oldFit;
     }
-    // Drift detection follows the newest fit that qualified, which may be looser than the margin's.
-    if (last.referenceFit) s.referenceFit = structuredClone(last.referenceFit);
     // Refits after a drift change still stop at its change point and use the margin before it.
     if (last.fitFrom && last.fitSince !== undefined) {
       s.fitSince = last.fitSince;
@@ -1017,6 +1015,7 @@ export class Governor {
     s.applied = maxSettings(s.applied, d.learned!);
     s.gap = Math.max(s.gap, d.gap ?? 0);
     s.rulesMismatch ||= !!d.rulesMismatch;
+    // Drift detection follows the newest fit that qualified, which may be looser than the margin's.
     if (d.referenceFit) s.referenceFit = structuredClone(d.referenceFit);
   }
   closeHistory() {

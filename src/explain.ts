@@ -8,6 +8,7 @@ import {
   FIT_SEED,
   fitMeter,
   historyAnchors,
+  type MeterFit,
   openEstimates,
   pairReadings,
   replayCheckpoint,
@@ -189,6 +190,12 @@ export async function explainCalibration(
 }
 
 const cores = (n: number) => String(Math.round(n * 10_000) / 10_000);
+const fitText = (f: MeterFit) =>
+  `a=${cores(f.a)}, b=${cores(f.b)}, aHi=${f.aHi}, sigma ${cores(f.sigma[0])} + ${
+    cores(f.sigma[1])
+  } per own core${
+    f.sigmaFloor !== undefined ? `, at least ${cores(f.sigmaFloor)}` : ""
+  }, ${f.pairs} pairs on ${f.days} days`;
 const percent = (n: number) => `${Math.round(n * 1000) / 10}%`;
 const time = (ms: number) => new Date(ms).toISOString();
 const settings = (s: Settings) => `x${s.mul} +${cores(s.add)} cores, floor ${percent(s.floor)}`;
@@ -306,23 +313,10 @@ export function explainText(r: Explained) {
       ]
       : []),
     ...(r.cooldownUntil !== null ? [`Sustained-use cooldown until ${time(r.cooldownUntil)}`] : []),
-    `Meter ${
-      r.fit
-        ? `a=${cores(r.fit.a)}, b=${cores(r.fit.b)}, aHi=${r.fit.aHi}, sigma ${
-          cores(r.fit.sigma[0])
-        } + ${cores(r.fit.sigma[1])} per own core${
-          r.fit.sigmaFloor !== undefined ? `, at least ${cores(r.fit.sigmaFloor)}` : ""
-        }, ${r.fit.pairs} pairs on ${r.fit.days} days`
-        : "not qualified"
-    }`,
-    ...(r.referenceFit && r.fit &&
-        (r.referenceFit.a !== r.fit.a || r.referenceFit.b !== r.fit.b ||
-          r.referenceFit.aHi !== r.fit.aHi)
-      ? [
-        `Drift reference a=${cores(r.referenceFit.a)}, b=${
-          cores(r.referenceFit.b)
-        }, aHi=${r.referenceFit.aHi}, ${r.referenceFit.pairs} pairs on ${r.referenceFit.days} days`,
-      ]
+    `Meter ${r.fit ? fitText(r.fit) : "not qualified"}`,
+    // Shown only when drift detection follows a newer fit than the margin's.
+    ...(r.referenceFit && r.fit && fitText(r.referenceFit) !== fitText(r.fit)
+      ? [`Drift reference ${fitText(r.referenceFit)}`]
       : []),
     ...(long
       ? [

@@ -1508,20 +1508,19 @@ function spacingInvalid(readings: Reading[], now: number): boolean {
   // readings were spaced.
   return invalid > DAY / 2;
 }
+const predicts = (fit: MeterFit, own: number) => fit.a * own + fit.b;
 const residualZ = (pair: Pair, fit: MeterFit) =>
   (pair.host - fit.a * pair.own - fit.b) / sigmaAt(fit, pair.own);
-// Drift detection follows the newest fit that qualified, which the tighten-only margin may have
-// discarded. A pending change's raised fit stands in where it predicts the higher reading, so a
-// reading the hold already covers never turns invalid.
-const driftMeter = (s: CalibrationState, own: number): MeterFit | null => {
-  const latest = s.referenceFit ?? s.fit, raised = s.pending?.fit;
-  if (!latest || !raised) return latest ?? raised ?? null;
-  return raised.a * own + raised.b > latest.a * own + latest.b ? raised : latest;
+// Drift detection's reference: the newest fit that qualified, which the tighten-only margin may have
+// discarded (#19).
+const driftReference = (s: CalibrationState): MeterFit | null => s.referenceFit ?? s.fit;
+// The meter a residual at `own` guest cores is judged against: the reference, or a pending change's
+// raised fit where it predicts the higher reading, so a reading the hold already covers never turns
+// invalid.
+const residualMeterAt = (s: CalibrationState, reference: MeterFit, own: number): MeterFit => {
+  const raised = s.pending?.fit;
+  return raised && predicts(raised, own) > predicts(reference, own) ? raised : reference;
 };
-// Verification judges the pairs after the change against the meter that detected it, not against
-// the temporary hold raised to cover it.
-const verifyMeter = (s: CalibrationState): MeterFit | null =>
-  s.referenceFit ?? s.pending?.oldFit ?? s.fit;
 
 // One evaluation's inputs and the operations every phase records its decisions with.
 type Run = {
@@ -1639,10 +1638,11 @@ function assessReadings(run: Run) {
       r.at >= since
     );
   // Keep checking new residuals during a residual alarm, or it could never clear itself.
-  if (s.residualInvalid && (s.referenceFit ?? s.fit)) {
+  const reference = driftReference(s);
+  if (s.residualInvalid && reference) {
     for (const pair of pairs.filter((r) => r.at > s.lastPaired)) {
       s.lastPaired = pair.at;
-      const z = residualZ(pair, driftMeter(s, pair.own) ?? s.fit!);
+      const z = residualZ(pair, residualMeterAt(s, reference, pair.own));
       if (censored(pair, z)) continue;
       if (Math.abs(z) <= EXTREME_Z) {
         if (!s.cleanReadings) s.cleanFrom = pair.at;
@@ -1720,16 +1720,15 @@ function trackMeter(run: Run, pairs: Pair[], usable: boolean) {
   // Invalid readings, and any residual beyond 6 sigma against the meter in force, never fit the
   // meter either: like drift detection, the fit must not let a bad feed tighten the margin. Only a
   // refit or new pairs need them, so most passes never filter.
-  const filtered = new Map<number, Pair[]>();
+  const filtered = new Map<number, Pair[]>(), model = driftReference(s);
   const eligible = (from = -Infinity) => {
     const since = Math.max(from, s.fitSince ?? -Infinity);
     let out = filtered.get(since);
     if (!out) {
-      out = pairs.filter((r) => {
-        const meter = driftMeter(s, r.own);
-        return r.at >= since && !inSpan(s.invalidSpans, r.at) &&
-          (!meter || Math.abs(residualZ(r, meter)) <= EXTREME_Z);
-      });
+      out = pairs.filter((r) =>
+        r.at >= since && !inSpan(s.invalidSpans, r.at) &&
+        (!model || Math.abs(residualZ(r, residualMeterAt(s, model, r.own))) <= EXTREME_Z)
+      );
       filtered.set(since, out);
     }
     return out;
@@ -1746,9 +1745,16 @@ function trackMeter(run: Run, pairs: Pair[], usable: boolean) {
       // Limits during the change were explained by it, and this fit carries it, so what they
       // taught is superseded: the gap and margin start again from before the change. The floor
       // stays, and the hold this fit replaces covered everything meanwhile.
-      // Under a rules mismatch it only tightens, so widen() steps learned meanwhile stay.
-      const gap = Math.max(c.gap_start, Math.min(s.gap, changed.gapFrom));
-      const from = s.rulesMismatch ? s.applied : { ...changed.from, floor: s.applied.floor };
+      // Under a rules mismatch it only tightens, so widen() steps learned meanwhile stay. So does
+      // a change the margin's fit already covered: drift detection follows a newer, lower fit
+      // (#19), so a change can rise above it and still read below the margin's fit everywhere.
+      // Such a fit carries nothing a limit's gap could have come from, and resetting would loosen.
+      const carries = !s.fit ||
+        [c.fit.min_cores, p.vcpus].some((u) => predicts(post, u) > predicts(s.fit!, u));
+      const gap = carries ? Math.max(c.gap_start, Math.min(s.gap, changed.gapFrom)) : s.gap;
+      const from = carries && !s.rulesMismatch
+        ? { ...changed.from, floor: s.applied.floor }
+        : s.applied;
       change("fit", { fit: post, gap, since: changed.at }, () => {
         s.fit = post;
         s.referenceFit = post;
@@ -1806,8 +1812,9 @@ function trackMeter(run: Run, pairs: Pair[], usable: boolean) {
     s.lastPaired = pair.at;
     // The extreme test needs only a fit; drift detection also needs the window to qualify, so a box
     // that went idle still catches a broken feed.
-    if (!(s.referenceFit ?? s.fit)) continue;
-    const z = residualZ(pair, driftMeter(s, pair.own) ?? s.fit!);
+    const reference = driftReference(s);
+    if (!reference) continue;
+    const z = residualZ(pair, residualMeterAt(s, reference, pair.own));
     if (censored(pair, z)) continue;
     // An extreme residual is not evidence of drift: neither CUSUM nor a pending verification sees
     // it. Three in a row make the readings invalid, from the first of them.
@@ -1853,7 +1860,7 @@ function trackMeter(run: Run, pairs: Pair[], usable: boolean) {
       // A verified change waits for its fit; drift detection resumes after it.
       if (pending.verified) continue;
       pending.readings++;
-      pending.z += residualZ(pair, verifyMeter(s) ?? pending.oldFit);
+      pending.z += residualZ(pair, pending.oldFit);
       if (pending.readings >= c.cusum.verify_readings) {
         const keep = pending.z / pending.readings >= c.cusum.verify_z;
         change(keep ? "cusum-keep" : "cusum-revert", {
@@ -1869,12 +1876,11 @@ function trackMeter(run: Run, pairs: Pair[], usable: boolean) {
       }
       continue;
     }
-    const meter = driftMeter(s, pair.own) ?? s.fit!;
-    s.cusum = cusumStep(s.cusum, pair, meter, c.cusum);
+    s.cusum = cusumStep(s.cusum, pair, reference, c.cusum);
     if (s.cusum.alarm) {
-      // The change is read against the meter that detected it, even when the margin kept an older,
-      // tighter fit.
-      const oldFit = meter, since = s.cusum.since ?? pair.at;
+      // The change is read, and later verified, against the meter that detected it, even when the
+      // margin kept an older, tighter fit.
+      const oldFit = reference, since = s.cusum.since ?? pair.at;
       // The run can start on noise before the change, so its sums understate the change. The
       // clearly shifted pairs of the run measure it, read as an offset or as a slope. Capped pairs
       // only bound the meter from below, so neither reading takes them.
@@ -2081,7 +2087,8 @@ function learnGaps(run: Run, usable: boolean) {
 // other, they track billing: a units change cannot show the same rise in limits. The readings count
 // again and the meter refits from where they turned extreme.
 function corroboration({ p, h, s }: Run, record: LimitRecord, d: GapDiagnosis) {
-  const open = s.invalidSpans.find((x) => x.to === null), fit = s.fit;
+  // The readings turned extreme against drift detection's reference, so the rise is measured from it.
+  const open = s.invalidSpans.find((x) => x.to === null), fit = driftReference(s);
   if (!open || !s.residualInvalid || !fit || !d.anchor || d.source !== "own") return null;
   // A verified change holds until its own fit. A second change opened from its point would let the
   // fit after it mix both meters, so readings that turn extreme meanwhile stay invalid.
@@ -2116,7 +2123,7 @@ function corroboration({ p, h, s }: Run, record: LimitRecord, d: GapDiagnosis) {
 // the box from the limits that could corroborate them, and readings that changed with the meter
 // would stay invalid, the hold in force, for good. A units change shows no such rise.
 function holdCorroboration({ p, h, s, latest }: Run) {
-  const open = s.invalidSpans.find((x) => x.to === null), fit = s.fit;
+  const open = s.invalidSpans.find((x) => x.to === null), fit = driftReference(s);
   if (!open || !s.residualInvalid || !fit || !s.ownHold || s.pending?.verified) return null;
   // The allowance for estimated time would inflate the rise by up to half again.
   const rise = (s.ownHold.central ?? s.ownHold.gap) - s.gap;
@@ -2132,7 +2139,8 @@ function corroborate(
   { open, residual, rise }: { open: InvalidSpan; residual: number; rise: number },
 ) {
   // Trusted again, the readings since the change measure it for the hold, over all its pairs.
-  const oldFit = s.fit!, held = meanResidual(p, h, oldFit, open.from - 1, to) ?? residual;
+  const oldFit = driftReference(s)!,
+    held = meanResidual(p, h, oldFit, open.from - 1, to) ?? residual;
   const fit = { ...oldFit, b: oldFit.b + held };
   const at = Math.min(open.from, s.pending?.at ?? Infinity);
   // An earlier drift change it adopts keeps the margin and gap from before that change, so what

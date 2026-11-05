@@ -1560,6 +1560,38 @@ Deno.test("readings that come back with the rise the own-count hold measured end
   assertEquals([normal.state.applied.floor, normal.state.provisionalFloor], [0.1, null]);
 });
 
+Deno.test("corroboration measures the rise from drift detection's reference", () => {
+  const c = calibrationConfig({ mode: "apply" });
+  const h = emptyHistory("test", 1, at);
+  h.slots = Array.from({ length: 6 * 24 * 3 }, (_, i) => slot(at + i * SLOT_MS, 3));
+  const cores = (rise: number) => (fit.a * 3 + fit.b + rise) / p.vcpus * 100;
+  h.readings = Array.from({ length: 48 }, (_, i) => ({ at: at + i * 1_800_000, v: cores(0) }));
+  const seen =
+    updateCalibration(p, h, { ...initialCalibration(c, at), fit }, c, at + DAY, 1000).state;
+  // Limits during the outage measured a 1-core rise above the meter drift detection follows, a
+  // newer fit 0.4 cores below the margin's.
+  seen.ownHold = { gap: 1.3, central: 1, settings: { mul: 1.05, add: 1.38, floor: 0.05 } };
+  const outage = updateCalibration(p, h, seen, c, at + 3 * DAY - 3_600_000, 1000).state;
+  const back = {
+    ...h,
+    readings: [
+      ...h.readings,
+      ...Array.from({ length: 4 }, (_, i) => ({
+        at: at + 3 * DAY - (4 - i) * 1_800_000 + 1_800_000 - 600_000,
+        v: cores(0.6),
+      })),
+    ],
+  };
+  const corroborated = (s: CalibrationState) =>
+    updateCalibration(p, back, s, c, at + 3 * DAY - 1, 1000).changes.some((d) =>
+      d.trigger === "readings-corroborated"
+    );
+  // 0.6 cores above the margin's fit is 1 above the reference, the rise the limits measured.
+  // Measured from the margin's fit, it reads 0.6 and disagrees.
+  assert(corroborated({ ...outage, referenceFit: { ...fit, b: fit.b - 0.4 } }));
+  assert(!corroborated(outage));
+});
+
 Deno.test("valid but stale readings keep the own-count hold", () => {
   const c = calibrationConfig({ mode: "apply" });
   const h = emptyHistory("test", 1, at);
