@@ -1204,7 +1204,9 @@ export type CalibrationState = {
   boundAt: number;
   fitAt?: number;
   // The last drift change point. Refits never reach back past it, so no window mixes the meter
-  // from before a change with the meter after it. `fitFrom` is the learned margin from before it.
+  // from before a change with the meter after it. `fitFrom` is the margin its refits start from:
+  // the learned margin from before it, or, for a change the margin's fit already covered, the
+  // margin kept at the fit that ended it.
   fitSince?: number;
   fitFrom?: Settings;
   rulesMismatch: boolean;
@@ -1691,7 +1693,7 @@ function readingsValidity(
   s.invalid = reasons.length > 0;
   const usable = !stale && !s.invalid;
   const judged = usable && (check === "corroborated" ||
-    check === "final" && s.extreme === 0 && (!s.fit || normal > 0));
+    check === "final" && s.extreme === 0 && (!driftReference(s) || normal > 0));
   if (judged) {
     s.apiStaleSince = null;
     // Readings the fit finds normal again show no meter change, so floor raises from meanwhile stay.
@@ -1717,9 +1719,10 @@ function readingsValidity(
 // Meter fit and drift detection (#13 §3, §8).
 function trackMeter(run: Run, pairs: Pair[], usable: boolean) {
   const { p, c, now, s, change } = run;
-  // Invalid readings, and any residual beyond 6 sigma against the meter in force, never fit the
-  // meter either: like drift detection, the fit must not let a bad feed tighten the margin. Only a
-  // refit or new pairs need them, so most passes never filter.
+  // Invalid readings, and any residual beyond 6 sigma against drift detection's reference (or a
+  // pending change's raised fit where it reads higher), never fit the meter either: like drift
+  // detection, the fit must not let a bad feed tighten the margin. Only a refit or new pairs need
+  // them, so most passes never filter.
   const filtered = new Map<number, Pair[]>(), model = driftReference(s);
   const eligible = (from = -Infinity) => {
     const since = Math.max(from, s.fitSince ?? -Infinity);
@@ -1761,7 +1764,9 @@ function trackMeter(run: Run, pairs: Pair[], usable: boolean) {
         s.gap = gap;
         s.applied = marginFromFit(p, post, gap, from, c);
         s.fitSince = changed.at;
-        s.fitFrom = { ...changed.from };
+        // Later settling refits keep the same baseline. A change already covered by the margin
+        // must not give back a limit's correction on the next daily refit either.
+        s.fitFrom = { ...from };
         s.pending = null;
         s.cusum = emptyCusum();
       });
@@ -2128,9 +2133,34 @@ function corroboration({ p, h, s }: Run, record: LimitRecord, d: GapDiagnosis) {
 function holdCorroboration({ p, h, s, latest }: Run) {
   const open = s.invalidSpans.find((x) => x.to === null), fit = driftReference(s);
   if (!open || !s.residualInvalid || !fit || !s.ownHold || s.pending?.verified) return null;
-  // The allowance for estimated time would inflate the rise by up to half again.
-  const rise = (s.ownHold.central ?? s.ownHold.gap) - s.gap;
-  if (rise <= 0 || latest === null) return null;
+  if (latest === null) return null;
+  // The hold's central gap was measured above stored governor charges, not above this reference.
+  // Replay one confirmed limit's original inputs against the reference so both rises have the
+  // same baseline. Only evidence from the current stale or invalid episode can corroborate it.
+  const record = h.limits.findLast((r) =>
+    r.class === "credit" && r.confirmed && r.learn &&
+    r.lift !== undefined && r.lift >= (s.apiStaleSince ?? open.from) &&
+    r.diagnosis?.source === "own" && r.diagnosis.held !== undefined &&
+    r.diagnosisEvidence?.fullOwnStep
+  );
+  const evidence = record?.diagnosisEvidence, anchor = evidence?.anchor;
+  if (!record || !evidence || !anchor || !evidence.limits) return null;
+  if (
+    anchor.balance === p.recovered &&
+    !evidence.limits.some((r) =>
+      r.class === "credit" && r.lift !== undefined &&
+      (r.lift === anchor.at || r.limitedAt === anchor.at)
+    )
+  ) return null;
+  const slots = afterLift(beforeLimit(evidence.slots, record), evidence.limits, anchor);
+  const meter = { mul: fit.a, add: fit.b + s.gap };
+  const replay = (rise: number) =>
+    replayOwn(p, slots, anchor, meter, record.diagnosis!.onset, rise, true);
+  const base = replay(0);
+  if (!base.complete || base.firstZero !== null || replay(p.vcpus).firstZero === null) return null;
+  // The original anchor and t_lo stay; the allowance for estimated time does not corroborate a
+  // reading. A missing or incomplete diagnosis therefore leaves the hold in place.
+  const rise = bisect((x) => replay(x).firstZero !== null, p.vcpus).hi;
   const residual = meanResidual(p, h, fit, open.from - 1, latest);
   if (residual === null || residual <= 0 || !agree(rise, residual)) return null;
   return { open, rise, residual, to: latest };

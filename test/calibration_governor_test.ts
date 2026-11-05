@@ -843,12 +843,14 @@ Deno.test("a lost persist.json brings a drift hold back and restarts its verific
     await Deno.mkdir(paths.lib);
     const h = emptyHistory(planKey(p), 1, start);
     const hold = { mul: 1.074, add: 0.05, floor: 0.05 };
+    // The alarm read the change against the drift reference, a refit below the margin's fit.
+    const reference = { ...fit, a: 1.03, b: 0.02, aHi: 1.04 };
     const pending = {
       at: start - 3_600_000,
       from: { ...CALIBRATION.start },
       gapFrom: 0,
-      oldFit: fit,
-      fit: { ...fit, a: 1.074, aHi: 1.074 },
+      oldFit: reference,
+      fit: { ...reference, a: 1.074, aHi: 1.074 },
       hold,
       readings: 10,
       z: 8,
@@ -868,7 +870,8 @@ Deno.test("a lost persist.json brings a drift hold back and restarts its verific
       gap: 0,
       rulesMismatch: false,
       pending,
-      referenceFit: { ...fit, a: 1.03, b: 0.02, aHi: 1.04 },
+      fit,
+      referenceFit: reference,
       // An earlier change's refits still stop at its change point.
       fitSince: start - 5 * DAY,
       fitFrom: { mul: 1.051, add: 0.04, floor: 0.05 },
@@ -883,8 +886,10 @@ Deno.test("a lost persist.json brings a drift hold back and restarts its verific
     // withdraw it.
     assertEquals(g.calibration.applied, CALIBRATION.start);
     assertEquals(g.calibration.pending, { ...pending, readings: 0, z: 0 });
+    // Refits pause while it holds, so the margin's fit comes back from the decision, not from the
+    // reference the alarm read against.
     assertEquals(g.calibration.fit, fit);
-    assertEquals(g.calibration.referenceFit, { ...fit, a: 1.03, b: 0.02, aHi: 1.04 });
+    assertEquals(g.calibration.referenceFit, reference);
     assertEquals(g.settings, hold);
     assertEquals(g.calibration.fitSince, start - 5 * DAY);
     assertEquals(g.calibration.fitFrom, { mul: 1.051, add: 0.04, floor: 0.05 });

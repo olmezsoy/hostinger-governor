@@ -927,8 +927,9 @@ export class Governor {
     );
   }
   // The newest decision since apply first ran holds the learned settings, gap and rules-mismatch
-  // latch, and a drift change still holding; off and shadow share that state from then on, and a
-  // reset's decision holds the start. Drift detection resumes with readings after the newest one.
+  // latch, a drift change still holding with the margin's fit, and the drift reference; off and
+  // shadow share that state from then on, and a reset's decision holds the start. Drift detection
+  // resumes with readings after the newest one.
   private recoverFromDecisions(now: number) {
     const s = this.calibration, decisions = this.history.calibrations;
     const spans = decisions.at(-1)?.invalidSpans;
@@ -960,7 +961,10 @@ export class Governor {
     if (last.pending) {
       const pending = structuredClone(last.pending);
       s.pending = pending.verified ? pending : { ...pending, readings: 0, z: 0 };
-      s.fit ??= pending.oldFit;
+      // Refits pause while it holds, so the margin's fit comes back too. Its `oldFit` is the drift
+      // reference (#19), which can read below the margin's fit; decisions from before #19 lack the
+      // fit, and their `oldFit` was the margin's.
+      s.fit ??= structuredClone(last.fit ?? pending.oldFit);
     }
     // Refits after a drift change still stop at its change point and use the margin before it.
     if (last.fitFrom && last.fitSince !== undefined) {
@@ -1009,7 +1013,8 @@ export class Governor {
       return null;
     }
   }
-  // The learned settings, gap and rules-mismatch latch take at least a decision's.
+  // The learned settings, gap and rules-mismatch latch take at least a decision's, and the drift
+  // reference becomes its.
   private raiseToDecision(d: Decision) {
     const s = this.calibration;
     s.applied = maxSettings(s.applied, d.learned!);
@@ -1107,6 +1112,7 @@ export class Governor {
       gap: c.gap,
       rulesMismatch: c.rulesMismatch,
       ...(c.pending ? { pending: structuredClone(c.pending) } : {}),
+      ...(c.fit ? { fit: structuredClone(c.fit) } : {}),
       ...(c.referenceFit ? { referenceFit: structuredClone(c.referenceFit) } : {}),
       ...(c.fitFrom && c.fitSince !== undefined
         ? { fitSince: c.fitSince, fitFrom: { ...c.fitFrom } }

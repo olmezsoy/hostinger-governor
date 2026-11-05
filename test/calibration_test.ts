@@ -1499,42 +1499,117 @@ Deno.test("readings that come back broken after an outage keep the holds", () =>
         })),
       ],
     };
-    const result = updateCalibration(p, back, outage, c, at + 3 * DAY - 1, 1000);
-    const triggers = result.changes.map((d) => d.trigger);
-    assert(!triggers.includes("readings-resumed"), `${count}: ${triggers}`);
-    assertEquals(effectiveSettings(result.state), held, `${count}`);
-    // The fallback's clock keeps running from the outage.
-    assertEquals(result.state.apiStaleSince, outage.apiStaleSince, `${count}`);
+    // Decision-only recovery can restore the drift reference before a margin fit qualifies.
+    for (const marginFit of [fit, null]) {
+      const result = updateCalibration(
+        p,
+        back,
+        { ...outage, fit: marginFit, referenceFit: fit },
+        c,
+        at + 3 * DAY - 1,
+        1000,
+      );
+      const triggers = result.changes.map((d) => d.trigger);
+      assert(!triggers.includes("readings-resumed"), `${count}: ${triggers}`);
+      assertEquals(effectiveSettings(result.state), held, `${count}`);
+      // The fallback's clock keeps running from the outage.
+      assertEquals(result.state.apiStaleSince, outage.apiStaleSince, `${count}`);
+    }
   }
+  const back = {
+    ...h,
+    readings: [
+      ...h.readings,
+      ...Array.from({ length: 3 }, (_, i) => ({
+        at: at + 3 * DAY - (3 - i) * 1_800_000 + 1_800_000 - 600_000,
+        v: normal,
+      })),
+    ],
+  };
+  const recovered = updateCalibration(
+    p,
+    back,
+    { ...outage, fit: null, referenceFit: fit },
+    c,
+    at + 3 * DAY - 1,
+    1000,
+  );
+  assertEquals(recovered.state.fit, null);
+  assert(recovered.changes.some((d) => d.trigger === "readings-resumed"));
+  assertEquals([recovered.state.hold, recovered.state.ownHold], [null, null]);
 });
 
-Deno.test("readings that come back with the rise the own-count hold measured end it", () => {
+// Generate the own-count hold from a confirmed limit's billing replay. Its central gap is above
+// the stored governor charges, which can be higher than the current drift reference.
+function diagnosedOwnHold(lowerReference = false) {
   const c = calibrationConfig({ mode: "apply" });
-  const h = emptyHistory("test", 1, at);
-  h.slots = Array.from({ length: 6 * 24 * 3 }, (_, i) => slot(at + i * SLOT_MS, 3));
-  const cores = (rise: number) => (fit.a * 3 + fit.b + rise) / p.vcpus * 100;
-  h.readings = Array.from({ length: 48 }, (_, i) => ({ at: at + i * 1_800_000, v: cores(0) }));
-  const seen =
-    updateCalibration(p, h, { ...initialCalibration(c, at), fit }, c, at + DAY, 1000).state;
-  // Limits during the outage measured a 0.5-core rise; the hold adds its allowance on top. The
-  // first of them left optimism the margin then in force didn't explain, raising the floor.
-  seen.ownHold = { gap: 0.8, central: 0.5, settings: { mul: 1.05, add: 0.88, floor: 0.05 } };
-  seen.applied = { ...seen.applied, floor: 0.1 };
-  seen.provisionalFloor = 0.05;
-  const outage = updateCalibration(p, h, seen, c, at + 3 * DAY - 3_600_000, 1000).state;
-  assertEquals(outage.provisionalFloor, 0.05);
+  const meter: typeof fit = {
+    ...fit,
+    a: 1.06,
+    b: 0.08,
+    aHi: 1.06,
+    sigma: [0.06266570686577386, 0],
+  };
+  const reference = lowerReference ? { ...meter, a: 1.02, aHi: 1.02 } : meter;
+  const margin = marginFromFit(p, meter, 0, c.start, c), own = 4.4;
+  const cores = (rise: number) => (reference.a * own + reference.b + rise) / p.vcpus * 100;
+  const host = reference.a * own + reference.b + 0.5;
+  const onset = at + p.recovered / (host - p.baseline) * 1000 + 300_000;
+  const lift = onset + 3_600_000, now = at + 2 * DAY;
+  const h = emptyHistory("test", 1, at - 4 * DAY);
+  h.slots = Array.from({ length: 2 * 24 * 6 + 18 }, (_, i) => ({
+    ...slot(at + i * SLOT_MS, own),
+    charged: (margin.mul * own + margin.add) * 600,
+  }));
+  h.readings = [{ at: at - 1_800_000, v: cores(0) }, { at, v: cores(0) }];
+  h.limits = [
+    { ...record("apply"), onset: at - 3_600_000, entry: at - 3_510_000, lift: at, class: "credit" },
+    { ...record("apply"), onset, entry: onset + 90_000, lift, settings: margin, class: "credit" },
+  ];
+  const learned = updateCalibration(
+    p,
+    h,
+    {
+      ...initialCalibration(c, at - 4 * DAY),
+      applied: margin,
+      fit: meter,
+      referenceFit: reference,
+      pendingLimits: [onset],
+      lastSettled: at,
+      settledSeenAt: at,
+      lastPaired: at,
+    },
+    c,
+    now,
+    2000,
+  );
+  // Adopt the diagnosis and its retained inputs, as Governor.adoptLimitUpdates does.
+  for (const patch of learned.limits) {
+    Object.assign(h.limits.find((r) => r.onset === patch.onset)!, patch);
+  }
+  const outage = learned.state;
+  assert(outage.ownHold);
+  assertEquals(outage.hold?.reason, "stale");
   const back = (rise: number) => ({
     ...h,
     readings: [
       ...h.readings,
       ...Array.from({ length: 4 }, (_, i) => ({
-        at: at + 3 * DAY - (4 - i) * 1_800_000 + 1_800_000 - 600_000,
+        at: now + i * 1_800_000,
         v: cores(rise),
       })),
     ],
   });
+  return { c, h, outage, back, now: now + 5_460_000 };
+}
+
+Deno.test("readings that come back with the rise the own-count hold measured end it", () => {
+  const { c, outage, back, now } = diagnosedOwnHold();
+  // An earlier limit left optimism the margin didn't explain, raising the floor provisionally.
+  outage.applied = { ...outage.applied, floor: 0.1 };
+  outage.provisionalFloor = 0.05;
   // The meter really rose by half a core: the readings agree, count again, and the holds end.
-  const agreed = updateCalibration(p, back(0.5), outage, c, at + 3 * DAY - 1, 1000);
+  const agreed = updateCalibration(p, back(0.5), outage, c, now, 1000);
   const triggers = agreed.changes.map((d) => d.trigger);
   assert(triggers.includes("readings-corroborated"), `${triggers}`);
   assert(triggers.includes("readings-resumed"), `${triggers}`);
@@ -1545,51 +1620,48 @@ Deno.test("readings that come back with the rise the own-count hold measured end
   // Within half of each other, either way: 0.7 cores agrees with the 0.5 the limits measured, 0.9
   // doesn't, though 0.5 is within half of 0.9.
   const corroborated = (rise: number) =>
-    updateCalibration(p, back(rise), outage, c, at + 3 * DAY - 1, 1000).changes.some((d) =>
+    updateCalibration(p, back(rise), outage, c, now, 1000).changes.some((d) =>
       d.trigger === "readings-corroborated"
     );
   assertEquals([corroborated(0.7), corroborated(0.9)], [true, false]);
   // A feed that rose by far more than any limit measured stays invalid, under both holds.
-  const broken = updateCalibration(p, back(2.5), outage, c, at + 3 * DAY - 1, 1000);
+  const broken = updateCalibration(p, back(2.5), outage, c, now, 1000);
   assert(!broken.changes.some((d) => d.trigger === "readings-resumed"));
   assertEquals(broken.state.ownHold, outage.ownHold);
   assertEquals([broken.state.applied.floor, broken.state.provisionalFloor], [0.1, 0.05]);
   // Readings that come back normal show no meter change: the optimism was real, and the floor stays.
-  const normal = updateCalibration(p, back(0), outage, c, at + 3 * DAY - 1, 1000);
+  const normal = updateCalibration(p, back(0), outage, c, now, 1000);
   assert(normal.changes.some((d) => d.trigger === "readings-resumed"));
   assertEquals([normal.state.applied.floor, normal.state.provisionalFloor], [0.1, null]);
 });
 
 Deno.test("corroboration measures the rise from drift detection's reference", () => {
-  const c = calibrationConfig({ mode: "apply" });
-  const h = emptyHistory("test", 1, at);
-  h.slots = Array.from({ length: 6 * 24 * 3 }, (_, i) => slot(at + i * SLOT_MS, 3));
-  const cores = (rise: number) => (fit.a * 3 + fit.b + rise) / p.vcpus * 100;
-  h.readings = Array.from({ length: 48 }, (_, i) => ({ at: at + i * 1_800_000, v: cores(0) }));
-  const seen =
-    updateCalibration(p, h, { ...initialCalibration(c, at), fit }, c, at + DAY, 1000).state;
-  // Limits during the outage measured a 1-core rise above the meter drift detection follows, a
-  // newer fit 0.4 cores below the margin's.
-  seen.ownHold = { gap: 1.3, central: 1, settings: { mul: 1.05, add: 1.38, floor: 0.05 } };
-  const outage = updateCalibration(p, h, seen, c, at + 3 * DAY - 3_600_000, 1000).state;
-  const back = {
-    ...h,
-    readings: [
-      ...h.readings,
-      ...Array.from({ length: 4 }, (_, i) => ({
-        at: at + 3 * DAY - (4 - i) * 1_800_000 + 1_800_000 - 600_000,
-        v: cores(0.6),
-      })),
-    ],
-  };
-  const corroborated = (s: CalibrationState) =>
-    updateCalibration(p, back, s, c, at + 3 * DAY - 1, 1000).changes.some((d) =>
-      d.trigger === "readings-corroborated"
-    );
-  // 0.6 cores above the margin's fit is 1 above the reference, the rise the limits measured.
-  // Measured from the margin's fit, it reads 0.6 and disagrees.
-  assert(corroborated({ ...outage, referenceFit: { ...fit, b: fit.b - 0.4 } }));
-  assert(!corroborated(outage));
+  const { c, outage, back, now } = diagnosedOwnHold(true);
+  // A real 0.5-core jump measures only 0.295 cores above stored charges. Comparing that central
+  // gap with the reference residual rejects valid readings; replaying above the reference agrees.
+  assertAlmostEquals(outage.ownHold!.central!, 0.29456, 0.0001);
+  const resumed = updateCalibration(p, back(0.5), outage, c, now, 2000);
+  assert(resumed.changes.some((d) => d.trigger === "readings-corroborated"));
+  assertEquals(resumed.state.residualInvalid, false);
+  assertEquals([resumed.state.hold, resumed.state.ownHold], [null, null]);
+  assertEquals(resumed.state.pending?.oldFit, outage.referenceFit);
+});
+
+Deno.test("an own-count hold needs complete billing evidence from this outage to corroborate", () => {
+  const { c, outage, back, now } = diagnosedOwnHold(true);
+  for (const missing of ["inputs", "slots", "anchor", "lifts", "episode"] as const) {
+    const returning = structuredClone(back(0.5));
+    const r = returning.limits.at(-1)!;
+    if (missing === "inputs") delete r.diagnosisEvidence;
+    if (missing === "slots") r.diagnosisEvidence!.slots = [];
+    if (missing === "anchor") r.diagnosisEvidence!.anchor = null;
+    if (missing === "lifts") r.diagnosisEvidence!.limits = [];
+    if (missing === "episode") r.lift = outage.apiStaleSince! - 1;
+    const result = updateCalibration(p, returning, outage, c, now, 2000);
+    assert(!result.changes.some((d) => d.trigger === "readings-corroborated"), missing);
+    assertEquals(result.state.ownHold, outage.ownHold, missing);
+    assertEquals(result.state.residualInvalid, true, missing);
+  }
 });
 
 Deno.test("valid but stale readings keep the own-count hold", () => {

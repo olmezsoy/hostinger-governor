@@ -134,6 +134,9 @@ export type Decision = {
   // A drift change still holding, which recovery restores; an unverified one starts verification
   // over.
   pending?: NonNullable<CalibrationState["pending"]>;
+  // The fit the learned margin was computed from. Recovery restores it for a drift change still
+  // holding, since refits pause until that change ends and its `oldFit` is the drift reference.
+  fit?: MeterFit;
   // The newest fit that qualified, which drift detection follows even when the margin kept an older
   // one.
   referenceFit?: MeterFit;
@@ -658,6 +661,7 @@ const validDecision = (r: Decision) =>
   (r.learned === undefined || validSettings(r.learned)) &&
   (r.gap === undefined || finite(r.gap)) &&
   (r.pending === undefined || validPending(r.pending)) &&
+  (r.fit === undefined || validFit(r.fit)) &&
   (r.referenceFit === undefined || validFit(r.referenceFit)) &&
   (r.fitSince === undefined || finite(r.fitSince)) &&
   (r.fitFrom === undefined || validSettings(r.fitFrom)) &&

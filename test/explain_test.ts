@@ -42,6 +42,18 @@ Deno.test("explain text shows the fit's noise and its floor", () => {
   assertStringIncludes(without, "sigma 0.0214 + 0.0119 per own core, 222 pairs");
 });
 
+Deno.test("explain text shows a recovered drift reference without a margin fit", () => {
+  const text = explainText(explained({ fit: null, referenceFit: fit }));
+  assertStringIncludes(text, "Meter not qualified");
+  assertStringIncludes(text, "Drift reference a=1.0463, b=0.0193, aHi=1.051");
+  const newer = { ...fit, a: 1.02 };
+  assertStringIncludes(
+    explainText(explained({ fit, referenceFit: newer })),
+    "Drift reference a=1.02, b=0.0193, aHi=1.051",
+  );
+  assert(!explainText(explained({ fit, referenceFit: fit })).includes("Drift reference"));
+});
+
 Deno.test("explain text shows the settings each hold gives", () => {
   const status = summary();
   const pending = {

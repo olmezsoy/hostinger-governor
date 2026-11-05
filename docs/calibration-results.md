@@ -54,8 +54,9 @@ Some passes are weaker evidence than their status suggests:
 - S14 no longer shows the clamp preventing a limit. With the clamp off, the drift used to empty the
   bank 13.2 hours after the change, after the CUSUM alarm. The alarm now opens a hold that covers
   the change as a steeper slope and as an offset at once, which is enough on this seed. The clamp
-  still acts first, at 9.5 hours; while the open estimate charges more than Hostinger's meter, it is
-  lower than the readings replay, so the clamp binds only once the meter drifts above the margin.
+  acts in the same pass as the alarm, 9.5 hours after the change; while the open estimate charges
+  more than Hostinger's meter, it is lower than the readings replay, so the clamp binds only once
+  the meter drifts above the margin.
 - S11 passes its own criteria, but the clamp is available on only 12% of passes: a rebuilt history
   has no anchor to replay from. On this workload the bank's lower bound certifies full only on day
   0, before the first job, and later anchors come only from a credit limit's lift. Without the
@@ -92,6 +93,8 @@ guest CPU the final margin allows at the floor, against what box A's relation pl
   without the jump and the one learned before the jump, which every seed meets exactly. Before
   refits after a change reset to the margin from before it, an early refit's wider slope bound
   stayed, up to 0.005 above the seed without the jump.
+- **Following the newest fit (#19).** One 0.5-core seed that CUSUM caught without a limit now pays
+  one, which corroborates its readings, so the ten seeds cost 7 limits instead of 6.
 - **The floor.** A corroborating limit learns nothing itself, so the floor stays at 5% in every
   corroborated run. Replaying its own estimate at the old margin had pinned the floor at 10% after
   every jump of 0.75 cores or more and in half the 0.5-core seeds. Seed 3's 0.5-core limit falls
@@ -107,7 +110,7 @@ guest CPU the final margin allows at the floor, against what box A's relation pl
   hold by about 12 hours, cost up to 0.13% of the CPU and added a limit in one legacy scenario. A
   fit of the offset alone, with the slope fixed, would not help: a corroborated hold already is the
   old slope with a raised offset, and after an alarm most of the time is the 48-reading
-  verification, which no fit replaces. The 11 to 23 verified hours do cover a steeper slope as well,
+  verification, which no fit replaces. The 11 to 24 verified hours do cover a steeper slope as well,
   up to 6% of the CPU at saturation at 0.25 cores, but without it a real change in slope, as in S4,
   would go uncovered until the refit.
 - **A broken feed.** Readings at 8x the meter from day 7 fire `readings-invalid` in every seed,

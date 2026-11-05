@@ -314,8 +314,8 @@ export function explainText(r: Explained) {
       : []),
     ...(r.cooldownUntil !== null ? [`Sustained-use cooldown until ${time(r.cooldownUntil)}`] : []),
     `Meter ${r.fit ? fitText(r.fit) : "not qualified"}`,
-    // Shown only when drift detection follows a newer fit than the margin's.
-    ...(r.referenceFit && r.fit && fitText(r.referenceFit) !== fitText(r.fit)
+    // Decision-only recovery can restore the reference before a margin fit qualifies again.
+    ...(r.referenceFit && (!r.fit || fitText(r.referenceFit) !== fitText(r.fit))
       ? [`Drift reference ${fitText(r.referenceFit)}`]
       : []),
     ...(long

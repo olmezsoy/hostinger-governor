@@ -141,12 +141,13 @@ Deno.test("a bad feed cannot tighten the margin through the daily refit", () => 
   assertEquals(s.applied, c.start);
 });
 
-// A box whose start is tighter than its meter: its first fit reads 1.06× + 0.08 for three days,
-// then the meter settles to 1.02× + 0.08 for three more. Each daily refit on the lower readings
-// would loosen the margin, so the margin keeps the first fit, and drift detection follows the
-// refits. Alternating noise of 0.05 cores keeps the settling under the 6-sigma extreme test.
-function startTighterBox() {
-  const c = calibrationConfig({ mode: "apply", fit: { days: 2, min_pairs: 48, min_days: 1 } });
+// A box whose meter settles below its first fit and its start: the first fit reads 1.06× + 0.08
+// for three days, then the meter settles to 1.02× + 0.08 for at least three more, where the
+// 1.05× + 0.04 start reads higher than the meter. Each daily refit on the lower readings would
+// loosen the margin, so the margin keeps the first fit, and drift detection follows the refits.
+// Alternating noise of 0.05 cores keeps the settling under the 6-sigma extreme test.
+function startTighterBox(days = 2, first = 1.06, settled = 1.02) {
+  const c = calibrationConfig({ mode: "apply", fit: { days, min_pairs: 48, min_days: 1 } });
   const h = emptyHistory("test", 1, at);
   const cores = (i: number) => 3 + i % 3;
   let i = 0, s = initialCalibration(c, at);
@@ -161,16 +162,16 @@ function startTighterBox() {
     s = r.state;
     return r;
   };
-  for (let n = 0; n < 3 * 48; n++) step(1.06);
-  const first = s.fit!, applied = { ...s.applied }, settling = triggers.length;
-  for (let n = 0; n < 3 * 48; n++) step(1.02);
+  for (let n = 0; n < 3 * 48; n++) step(first);
+  const fit = s.fit!, applied = { ...s.applied }, settling = triggers.length;
+  for (let n = 0; n < Math.max(3, days + 1) * 48; n++) step(settled);
   return {
     c,
     h,
     step,
     triggers,
     state: () => s,
-    first,
+    first: fit,
     applied,
     settled: triggers.slice(settling),
   };
@@ -209,10 +210,29 @@ Deno.test("drift detection follows a refit the tighten-only margin discards", ()
   assert(!box.triggers.includes("cusum-revert"));
 });
 
+Deno.test("drift detection follows the refits of a box whose margin is held at its start", () => {
+  // #19's box: its first fit, 1.03× + 0.08, asks for less than the 1.05× + 0.04 start, so the margin
+  // stays at the start, no refit can tighten it, and the margin's fit stays the first one for good.
+  // Drift detection used to judge against that frozen fit.
+  const box = startTighterBox(2, 1.03, 1.01);
+  const settled = box.state(), first = box.first, reference = settled.referenceFit!;
+  assertEquals(box.applied, box.c.start);
+  assertEquals(settled.applied, box.c.start);
+  assertEquals(settled.fit, first);
+  assertAlmostEquals(first.a, 1.03, 0.005);
+  assertAlmostEquals(reference.a, 1.01, 0.005);
+  for (const u of [3, 4, 5]) assert(reference.a * u + reference.b < first.a * u + first.b, `${u}`);
+  // A 0.06-core rise reads at or below the frozen first fit from three guest cores up, but the
+  // reference sees it.
+  for (let n = 0; n < 96 && !box.triggers.includes("cusum-alarm"); n++) box.step(1.01, 0.06);
+  assert(box.triggers.includes("cusum-alarm"), box.triggers.join(" "));
+  assertEquals(box.state().applied, box.c.start);
+});
+
 Deno.test("a new drift reference starts the CUSUM sums again", () => {
   const box = startTighterBox();
   const settled = box.state();
-  // Sums carried over from the reference before: the downward one is this box's on Nov 4.
+  // Sums carried over from the reference before: the downward one is #19's box's on Nov 4.
   const carried = { ...settled.cusum, s: 5, down: 62.9, since: settled.lastPaired };
   const last = box.h.readings.at(-1)!.at;
   const next = (fitAt: number) => {
@@ -232,12 +252,12 @@ Deno.test("a new drift reference starts the CUSUM sums again", () => {
 });
 
 Deno.test("a change the margin already covered keeps the gap and margin learned during it", () => {
-  const box = startTighterBox();
+  const box = startTighterBox(4);
   for (let n = 0; n < 12 + box.c.cusum.verify_readings; n++) box.step(1.02, 0.1);
   const verified = box.state();
   assert(verified.pending?.verified);
   // A limit during the change taught a gap. The fit after the change still reads below the margin's
-  // fit, so it carries nothing the gap could have come from: Rule 3's reset would loosen it.
+  // fit, so it carries nothing the gap could have come from: #13 rule 3's reset would loosen it.
   const gap = verified.gap + 0.03;
   const taught = marginFromFit(p, verified.fit!, gap, verified.applied, box.c);
   Object.assign(verified, { gap, applied: taught, fitAt: 0 });
@@ -249,6 +269,16 @@ Deno.test("a change the margin already covered keeps the gap and margin learned 
     after.applied.mul >= taught.mul && after.applied.add >= taught.add,
     JSON.stringify(after.applied),
   );
+  // Later daily refits must use the preserved margin too, while their window still reaches the
+  // change point and after it has moved past it.
+  const fittedAt = after.fitAt!;
+  for (let n = 0; n < box.c.fit.days * 48; n++) {
+    box.step(1.02, 0.1);
+    const later = box.state();
+    assertEquals(later.gap, gap);
+    assert(later.applied.mul >= taught.mul && later.applied.add >= taught.add);
+  }
+  assert(box.state().fitAt! > fittedAt);
 });
 
 Deno.test("the extreme-residual test and its recovery follow the drift reference", () => {
