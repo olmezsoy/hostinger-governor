@@ -868,6 +868,7 @@ Deno.test("a lost persist.json brings a drift hold back and restarts its verific
       gap: 0,
       rulesMismatch: false,
       pending,
+      referenceFit: { ...fit, a: 1.03, b: 0.02, aHi: 1.04 },
       // An earlier change's refits still stop at its change point.
       fitSince: start - 5 * DAY,
       fitFrom: { mul: 1.051, add: 0.04, floor: 0.05 },
@@ -883,6 +884,7 @@ Deno.test("a lost persist.json brings a drift hold back and restarts its verific
     assertEquals(g.calibration.applied, CALIBRATION.start);
     assertEquals(g.calibration.pending, { ...pending, readings: 0, z: 0 });
     assertEquals(g.calibration.fit, fit);
+    assertEquals(g.calibration.referenceFit, { ...fit, a: 1.03, b: 0.02, aHi: 1.04 });
     assertEquals(g.settings, hold);
     assertEquals(g.calibration.fitSince, start - 5 * DAY);
     assertEquals(g.calibration.fitFrom, { mul: 1.051, add: 0.04, floor: 0.05 });

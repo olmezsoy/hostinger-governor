@@ -13,7 +13,7 @@
       "clampShare": 0.9954737103174603,
       "clockStepClampShare": null,
       "limitedHours": 0,
-      "cpuCoreHours": 5222.997095830889,
+      "cpuCoreHours": 5219.415949659715,
       "gap": 0,
       "gapBilledCoreSeconds": 0,
       "corruptionRecovered": false,
@@ -35,16 +35,16 @@
         "floor": 0.05
       },
       "fit": {
-        "a": 1.0479078078099748,
-        "b": 0.013203182080378184,
-        "aHi": 1.0519206453812078,
+        "a": 1.048538407646509,
+        "b": 0.011957903331585307,
+        "aHi": 1.051919809493714,
         "sigma": [
-          0.022631298623551153,
-          0.01290624611137385
+          0.022497659459597065,
+          0.012604397852212004
         ],
-        "sigmaFloor": 0.037536069815437265,
+        "sigmaFloor": 0.0367607952482307,
         "pairs": 664,
-        "days": 15
+        "days": 14
       },
       "episodes": [],
       "classifications": [],
@@ -63,19 +63,31 @@
           "changed": true
         },
         {
-          "at": 3243300,
+          "at": 1880100,
+          "trigger": "cusum-alarm",
+          "mode": "apply",
+          "changed": true
+        },
+        {
+          "at": 1971120,
+          "trigger": "cusum-revert",
+          "mode": "apply",
+          "changed": true
+        },
+        {
+          "at": 3285150,
           "trigger": "fit",
           "mode": "apply",
           "changed": true
         },
         {
-          "at": 3505380,
+          "at": 3461700,
           "trigger": "fit",
           "mode": "apply",
           "changed": true
         }
       ],
-      "ceilingDigest": "33593b1f",
+      "ceilingDigest": "71532b16",
       "invalidSlots": 0,
       "pairsDuringClockJump": 2,
       "readingGaps": 17,
@@ -125,7 +137,7 @@
       "assessment": {
         "status": "pass",
         "notes": [],
-        "cpuCostPercent": 0.1125761927801343,
+        "cpuCostPercent": 0.1810639707268547,
         "limitsPrevented": 0
       }
     },
@@ -142,7 +154,7 @@
       "clampShare": 0.9954735419224425,
       "clockStepClampShare": null,
       "limitedHours": 0.8602777777777778,
-      "cpuCoreHours": 5194.261327421018,
+      "cpuCoreHours": 5190.595956813269,
       "gap": 0.041147389518177015,
       "gapBilledCoreSeconds": 145152.29999515924,
       "corruptionRecovered": false,
@@ -164,16 +176,16 @@
         "floor": 0.055379300596244165
       },
       "fit": {
-        "a": 1.0479425319982354,
-        "b": 0.013058226206690726,
-        "aHi": 1.0519088289239364,
+        "a": 1.0485439776195602,
+        "b": 0.011829847645353553,
+        "aHi": 1.0519098337438475,
         "sigma": [
-          0.022502143301005986,
-          0.012921627857932516
+          0.022717124514552166,
+          0.012565873904518856
         ],
-        "sigmaFloor": 0.03739223636455804,
+        "sigmaFloor": 0.03690121342308022,
         "pairs": 664,
-        "days": 15
+        "days": 14
       },
       "episodes": [
         {
@@ -243,7 +255,7 @@
             "ratio": 1.009207206184302
           },
           "capCount": 2,
-          "evidenceDigest": "95ab1799"
+          "evidenceDigest": "f5ea735d"
         }
       ],
       "classifications": [
@@ -276,19 +288,31 @@
           "changed": true
         },
         {
-          "at": 3328690,
+          "at": 1879990,
+          "trigger": "cusum-alarm",
+          "mode": "apply",
+          "changed": true
+        },
+        {
+          "at": 1970980,
+          "trigger": "cusum-revert",
+          "mode": "apply",
+          "changed": true
+        },
+        {
+          "at": 3285010,
           "trigger": "fit",
           "mode": "apply",
           "changed": true
         },
         {
-          "at": 3503410,
+          "at": 3459730,
           "trigger": "fit",
           "mode": "apply",
           "changed": true
         }
       ],
-      "ceilingDigest": "5cc4662a",
+      "ceilingDigest": "29661fc0",
       "invalidSlots": 0,
       "pairsDuringClockJump": 2,
       "readingGaps": 17,
@@ -313,7 +337,7 @@
       "clampShare": 0.9954735419224425,
       "clockStepClampShare": null,
       "limitedHours": 0.8841666666666667,
-      "cpuCoreHours": 5140.8188006804,
+      "cpuCoreHours": 5137.226449408952,
       "gap": 0.1173149238737771,
       "gapBilledCoreSeconds": 483840.999959153,
       "corruptionRecovered": false,
@@ -335,16 +359,16 @@
         "floor": 0.05381352253362602
       },
       "fit": {
-        "a": 1.0479226634030907,
-        "b": 0.013191075159293408,
-        "aHi": 1.0519587760656741,
+        "a": 1.0480562621837883,
+        "b": 0.01279780164396671,
+        "aHi": 1.051078741893881,
         "sigma": [
-          0.02236593062426578,
-          0.012965505482875896
+          0.021158897942888,
+          0.012667129325842743
         ],
-        "sigmaFloor": 0.037383189420978,
-        "pairs": 664,
-        "days": 15
+        "sigmaFloor": 0.03660689745829018,
+        "pairs": 665,
+        "days": 14
       },
       "episodes": [
         {
@@ -447,19 +471,31 @@
           "changed": true
         },
         {
-          "at": 3328480,
+          "at": 1879780,
+          "trigger": "cusum-alarm",
+          "mode": "apply",
+          "changed": true
+        },
+        {
+          "at": 1968940,
+          "trigger": "cusum-revert",
+          "mode": "apply",
+          "changed": true
+        },
+        {
+          "at": 3283000,
           "trigger": "fit",
           "mode": "apply",
           "changed": true
         },
         {
-          "at": 3503200,
+          "at": 3370360,
           "trigger": "fit",
           "mode": "apply",
           "changed": true
         }
       ],
-      "ceilingDigest": "f31f0d26",
+      "ceilingDigest": "fc2728e8",
       "invalidSlots": 0,
       "pairsDuringClockJump": 2,
       "readingGaps": 17,
@@ -479,7 +515,7 @@
       "clampShare": 0.9954737103174603,
       "clockStepClampShare": null,
       "limitedHours": 0,
-      "cpuCoreHours": 5178.714038513412,
+      "cpuCoreHours": 5177.269779507188,
       "gap": 0,
       "gapBilledCoreSeconds": 0,
       "corruptionRecovered": false,
@@ -493,22 +529,22 @@
         "add": 0.08
       },
       "rebootPreserved": false,
-      "firstClampAfterDrift": 2460690,
+      "firstClampAfterDrift": 2453400,
       "episodeSettingsUnchanged": true,
       "applied": {
         "mul": 1.075,
-        "add": 0.06469752022073472,
+        "add": 0.06470858599711349,
         "floor": 0.05
       },
       "fit": {
-        "a": 1.0606096280389767,
-        "b": 0.050560714464451983,
-        "aHi": 1.0660345632281865,
+        "a": 1.060615037916457,
+        "b": 0.050550211169122505,
+        "aHi": 1.0660411167798476,
         "sigma": [
-          0.008971653254585403,
-          0.018399021222649088
+          0.00896224203490948,
+          0.018399946721757446
         ],
-        "sigmaFloor": 0.043837673582320436,
+        "sigmaFloor": 0.04384010438499265,
         "pairs": 666,
         "days": 15
       },
@@ -529,7 +565,19 @@
           "changed": true
         },
         {
-          "at": 2462520,
+          "at": 1880100,
+          "trigger": "cusum-alarm",
+          "mode": "apply",
+          "changed": true
+        },
+        {
+          "at": 1971120,
+          "trigger": "cusum-revert",
+          "mode": "apply",
+          "changed": true
+        },
+        {
+          "at": 2453400,
           "trigger": "cusum-alarm",
           "mode": "apply",
           "changed": true
@@ -541,7 +589,13 @@
           "changed": true
         },
         {
-          "at": 2557140,
+          "at": 2471610,
+          "trigger": "drift-hold",
+          "mode": "apply",
+          "changed": true
+        },
+        {
+          "at": 2544420,
           "trigger": "cusum-keep",
           "mode": "apply",
           "changed": false
@@ -625,6 +679,12 @@
           "changed": true
         },
         {
+          "at": 3823860,
+          "trigger": "fit",
+          "mode": "apply",
+          "changed": true
+        },
+        {
           "at": 3998580,
           "trigger": "fit",
           "mode": "apply",
@@ -655,7 +715,7 @@
           "changed": true
         }
       ],
-      "ceilingDigest": "fb709c37",
+      "ceilingDigest": "835dc87e",
       "invalidSlots": 0,
       "pairsDuringClockJump": 2,
       "readingGaps": 17,
@@ -675,7 +735,7 @@
       "clampShare": 0.9954733173762603,
       "clockStepClampShare": null,
       "limitedHours": 0,
-      "cpuCoreHours": 5214.168840952351,
+      "cpuCoreHours": 5210.404630898555,
       "gap": 0,
       "gapBilledCoreSeconds": 0,
       "corruptionRecovered": false,
@@ -697,16 +757,16 @@
         "floor": 0.05
       },
       "fit": {
-        "a": 1.0479318787318315,
-        "b": 0.013114406184055127,
-        "aHi": 1.0519124552855577,
+        "a": 1.0480449198981325,
+        "b": 0.012756077256300458,
+        "aHi": 1.0510325285659436,
         "sigma": [
-          0.02263894816437306,
-          0.01288487591049225
+          0.021182762368173746,
+          0.012646250236829833
         ],
-        "sigmaFloor": 0.03742425868177379,
-        "pairs": 663,
-        "days": 15
+        "sigmaFloor": 0.036537908601358096,
+        "pairs": 666,
+        "days": 14
       },
       "episodes": [
         {
@@ -769,11 +829,11 @@
           ],
           "confirmed": true,
           "learn": true,
+          "firstTest": "unknown",
           "testDelivery": {
             "busy": 6,
             "demand": 7.1000000000000005
           },
-          "firstTest": "unknown",
           "limitedAt": 1792411000000,
           "lift": 1792411960000,
           "recovery": {
@@ -811,19 +871,31 @@
           "changed": false
         },
         {
-          "at": 3327790,
+          "at": 1879060,
+          "trigger": "cusum-alarm",
+          "mode": "apply",
+          "changed": true
+        },
+        {
+          "at": 1970080,
+          "trigger": "cusum-revert",
+          "mode": "apply",
+          "changed": true
+        },
+        {
+          "at": 3282280,
           "trigger": "fit",
           "mode": "apply",
           "changed": true
         },
         {
-          "at": 3502510,
+          "at": 3369640,
           "trigger": "fit",
           "mode": "apply",
           "changed": true
         }
       ],
-      "ceilingDigest": "a6200997",
+      "ceilingDigest": "f6fa8d15",
       "invalidSlots": 0,
       "pairsDuringClockJump": 2,
       "readingGaps": 17,
@@ -831,7 +903,7 @@
       "quotaPeriodRestored": false,
       "comparison": {
         "id": "S5-comparison",
-        "wouldBeLogs": 3,
+        "wouldBeLogs": 5,
         "creditLimits": 0,
         "hostLimits": [],
         "clampShare": 0.9954733173762603,
@@ -854,21 +926,21 @@
         "firstClampAfterDrift": null,
         "episodeSettingsUnchanged": true,
         "applied": {
-          "mul": 1.053,
+          "mul": 1.052,
           "add": 0.04551714135934848,
           "floor": 0.05
         },
         "fit": {
-          "a": 1.048063105712733,
-          "b": 0.012888450745149438,
-          "aHi": 1.052161875505526,
+          "a": 1.0482004801544498,
+          "b": 0.012454276676341358,
+          "aHi": 1.0512117441093771,
           "sigma": [
-            0.02110693494554099,
-            0.013387743691669455
+            0.01987059300523931,
+            0.013091751181839799
           ],
-          "sigmaFloor": 0.037630609035921886,
-          "pairs": 663,
-          "days": 15
+          "sigmaFloor": 0.0367467363341584,
+          "pairs": 666,
+          "days": 14
         },
         "episodes": [
           {
@@ -931,11 +1003,11 @@
             ],
             "confirmed": true,
             "learn": true,
+            "firstTest": "unknown",
             "testDelivery": {
               "busy": 6,
               "demand": 7.1000000000000005
             },
-            "firstTest": "unknown",
             "limitedAt": 1792411000000,
             "lift": 1792411960000,
             "recovery": {
@@ -973,13 +1045,25 @@
             "changed": false
           },
           {
-            "at": 3327790,
+            "at": 1879060,
+            "trigger": "cusum-alarm",
+            "mode": "off",
+            "changed": true
+          },
+          {
+            "at": 1968250,
+            "trigger": "cusum-revert",
+            "mode": "off",
+            "changed": true
+          },
+          {
+            "at": 3282280,
             "trigger": "fit",
             "mode": "off",
             "changed": true
           },
           {
-            "at": 3502510,
+            "at": 3369640,
             "trigger": "fit",
             "mode": "off",
             "changed": true
@@ -995,7 +1079,7 @@
       "assessment": {
         "status": "pass",
         "notes": [],
-        "cpuCostPercent": -1.3126186870740943,
+        "cpuCostPercent": -1.2394791341614524,
         "limitsPrevented": 0
       }
     },
@@ -1007,7 +1091,7 @@
       "clampShare": 0.9954736261215177,
       "clockStepClampShare": null,
       "limitedHours": 0,
-      "cpuCoreHours": 5216.719600633849,
+      "cpuCoreHours": 5213.035699517061,
       "gap": 0,
       "gapBilledCoreSeconds": 0,
       "corruptionRecovered": false,
@@ -1029,16 +1113,16 @@
         "floor": 0.05
       },
       "fit": {
-        "a": 1.0479815245061521,
-        "b": 0.012913010241242695,
-        "aHi": 1.0519092820540572,
+        "a": 1.048612058979818,
+        "b": 0.011672685650828463,
+        "aHi": 1.0519087861837257,
         "sigma": [
-          0.022815289901140536,
-          0.012853057637772171
+          0.022878237360807675,
+          0.012514032161494411
         ],
-        "sigmaFloor": 0.03757408630103181,
-        "pairs": 664,
-        "days": 15
+        "sigmaFloor": 0.036968206522467816,
+        "pairs": 663,
+        "days": 14
       },
       "episodes": [
         {
@@ -1103,19 +1187,31 @@
           "changed": false
         },
         {
-          "at": 3243470,
+          "at": 1878470,
+          "trigger": "cusum-alarm",
+          "mode": "apply",
+          "changed": true
+        },
+        {
+          "at": 1971290,
+          "trigger": "cusum-revert",
+          "mode": "apply",
+          "changed": true
+        },
+        {
+          "at": 3285350,
           "trigger": "fit",
           "mode": "apply",
           "changed": true
         },
         {
-          "at": 3505550,
+          "at": 3460070,
           "trigger": "fit",
           "mode": "apply",
           "changed": true
         }
       ],
-      "ceilingDigest": "476bfc56",
+      "ceilingDigest": "8edf1d26",
       "invalidSlots": 0,
       "pairsDuringClockJump": 2,
       "readingGaps": 17,
@@ -1123,7 +1219,7 @@
       "quotaPeriodRestored": false,
       "comparison": {
         "id": "S6-comparison",
-        "wouldBeLogs": 4,
+        "wouldBeLogs": 6,
         "creditLimits": 0,
         "hostLimits": [],
         "clampShare": 0.9954736261215177,
@@ -1151,16 +1247,16 @@
           "floor": 0.05
         },
         "fit": {
-          "a": 1.0481075132870186,
-          "b": 0.01269765422704916,
+          "a": 1.04878292767618,
+          "b": 0.0113231564934817,
           "aHi": 1.0521526417346134,
           "sigma": [
-            0.02132960003076746,
-            0.013342187195419934
+            0.021483384431241166,
+            0.012976626272198455
           ],
-          "sigmaFloor": 0.037868471658765314,
-          "pairs": 664,
-          "days": 15
+          "sigmaFloor": 0.03726548341831289,
+          "pairs": 663,
+          "days": 14
         },
         "episodes": [
           {
@@ -1224,19 +1320,31 @@
             "changed": false
           },
           {
-            "at": 3243470,
+            "at": 1878470,
+            "trigger": "cusum-alarm",
+            "mode": "off",
+            "changed": true
+          },
+          {
+            "at": 1969490,
+            "trigger": "cusum-revert",
+            "mode": "off",
+            "changed": true
+          },
+          {
+            "at": 3285350,
             "trigger": "fit",
             "mode": "off",
             "changed": true
           },
           {
-            "at": 3418190,
+            "at": 3372710,
             "trigger": "fit",
             "mode": "off",
             "changed": true
           },
           {
-            "at": 3505550,
+            "at": 3460070,
             "trigger": "fit",
             "mode": "off",
             "changed": true
@@ -1252,7 +1360,7 @@
       "assessment": {
         "status": "pass",
         "notes": [],
-        "cpuCostPercent": -1.3723815546296472,
+        "cpuCostPercent": -1.300795221031202,
         "limitsPrevented": 0
       }
     },
@@ -1363,7 +1471,7 @@
       "clampShare": 0.9943317829457364,
       "clockStepClampShare": null,
       "limitedHours": 0,
-      "cpuCoreHours": 5222.180343029778,
+      "cpuCoreHours": 5218.426777550548,
       "gap": 0,
       "gapBilledCoreSeconds": 0,
       "corruptionRecovered": false,
@@ -1385,16 +1493,16 @@
         "floor": 0.05
       },
       "fit": {
-        "a": 1.0478658686317883,
-        "b": 0.013417436513058156,
-        "aHi": 1.0519201692167834,
+        "a": 1.048014975011694,
+        "b": 0.012862840960118582,
+        "aHi": 1.0510062265346103,
         "sigma": [
-          0.022613852151902352,
-          0.012910072839873585
+          0.02115846945828922,
+          0.012665217767273486
         ],
-        "sigmaFloor": 0.03743359508366172,
-        "pairs": 664,
-        "days": 15
+        "sigmaFloor": 0.036592510340350964,
+        "pairs": 665,
+        "days": 14
       },
       "episodes": [],
       "classifications": [],
@@ -1413,19 +1521,31 @@
           "changed": true
         },
         {
-          "at": 3326670,
+          "at": 1879770,
+          "trigger": "cusum-alarm",
+          "mode": "apply",
+          "changed": true
+        },
+        {
+          "at": 1970760,
+          "trigger": "cusum-revert",
+          "mode": "apply",
+          "changed": true
+        },
+        {
+          "at": 3282990,
           "trigger": "fit",
           "mode": "apply",
           "changed": true
         },
         {
-          "at": 3501390,
+          "at": 3370350,
           "trigger": "fit",
           "mode": "apply",
           "changed": true
         }
       ],
-      "ceilingDigest": "129c8b5b",
+      "ceilingDigest": "2d46bade",
       "invalidSlots": 0,
       "pairsDuringClockJump": 2,
       "readingGaps": 17,
@@ -1509,7 +1629,7 @@
         "clampShare": 0.9954737103174603,
         "clockStepClampShare": null,
         "limitedHours": 0,
-        "cpuCoreHours": 5222.997095830889,
+        "cpuCoreHours": 5219.415949659715,
         "gap": 0,
         "gapBilledCoreSeconds": 0,
         "corruptionRecovered": false,
@@ -1531,16 +1651,16 @@
           "floor": 0.05
         },
         "fit": {
-          "a": 1.0479078078099748,
-          "b": 0.013203182080378184,
-          "aHi": 1.0519206453812078,
+          "a": 1.048538407646509,
+          "b": 0.011957903331585307,
+          "aHi": 1.051919809493714,
           "sigma": [
-            0.022631298623551153,
-            0.01290624611137385
+            0.022497659459597065,
+            0.012604397852212004
           ],
-          "sigmaFloor": 0.037536069815437265,
+          "sigmaFloor": 0.0367607952482307,
           "pairs": 664,
-          "days": 15
+          "days": 14
         },
         "episodes": [],
         "classifications": [],
@@ -1559,19 +1679,31 @@
             "changed": true
           },
           {
-            "at": 3243300,
+            "at": 1880100,
+            "trigger": "cusum-alarm",
+            "mode": "apply",
+            "changed": true
+          },
+          {
+            "at": 1971120,
+            "trigger": "cusum-revert",
+            "mode": "apply",
+            "changed": true
+          },
+          {
+            "at": 3285150,
             "trigger": "fit",
             "mode": "apply",
             "changed": true
           },
           {
-            "at": 3505380,
+            "at": 3461700,
             "trigger": "fit",
             "mode": "apply",
             "changed": true
           }
         ],
-        "ceilingDigest": "33593b1f",
+        "ceilingDigest": "71532b16",
         "invalidSlots": 0,
         "pairsDuringClockJump": 2,
         "readingGaps": 17,
@@ -1581,7 +1713,7 @@
       "assessment": {
         "status": "pass",
         "notes": [],
-        "cpuCostPercent": 0.09384392160082392,
+        "cpuCostPercent": 0.025296300225645267,
         "limitsPrevented": 0
       }
     },
@@ -1593,7 +1725,7 @@
       "clampShare": 0.9954737103174603,
       "clockStepClampShare": 1,
       "limitedHours": 0,
-      "cpuCoreHours": 5222.997095830889,
+      "cpuCoreHours": 5219.415949659715,
       "gap": 0,
       "gapBilledCoreSeconds": 0,
       "corruptionRecovered": false,
@@ -1615,16 +1747,16 @@
         "floor": 0.05
       },
       "fit": {
-        "a": 1.0479078078099748,
-        "b": 0.013203182080378184,
-        "aHi": 1.0519206453812078,
+        "a": 1.048538407646509,
+        "b": 0.011957903331585307,
+        "aHi": 1.051919809493714,
         "sigma": [
-          0.022631298623551153,
-          0.01290624611137385
+          0.022497659459597065,
+          0.012604397852212004
         ],
-        "sigmaFloor": 0.037536069815437265,
+        "sigmaFloor": 0.0367607952482307,
         "pairs": 664,
-        "days": 15
+        "days": 14
       },
       "episodes": [],
       "classifications": [],
@@ -1643,19 +1775,31 @@
           "changed": true
         },
         {
-          "at": 3243300,
+          "at": 1880100,
+          "trigger": "cusum-alarm",
+          "mode": "apply",
+          "changed": true
+        },
+        {
+          "at": 1971120,
+          "trigger": "cusum-revert",
+          "mode": "apply",
+          "changed": true
+        },
+        {
+          "at": 3285150,
           "trigger": "fit",
           "mode": "apply",
           "changed": true
         },
         {
-          "at": 3505380,
+          "at": 3461700,
           "trigger": "fit",
           "mode": "apply",
           "changed": true
         }
       ],
-      "ceilingDigest": "33593b1f",
+      "ceilingDigest": "71532b16",
       "invalidSlots": 7,
       "pairsDuringClockJump": 0,
       "readingGaps": 17,
@@ -1675,12 +1819,12 @@
       "clampShare": 0.12047371031746032,
       "clockStepClampShare": null,
       "limitedHours": 0,
-      "cpuCoreHours": 5211.290109864979,
+      "cpuCoreHours": 5210.778493345278,
       "gap": 0,
       "gapBilledCoreSeconds": 0,
       "corruptionRecovered": true,
       "ticksAfterCorruption": 141120,
-      "slowestTickMs": 53.36854199995287,
+      "slowestTickMs": 24.388999999966472,
       "historyReadable": true,
       "widened": false,
       "widenCalls": 0,
@@ -1731,7 +1875,7 @@
           "changed": true
         }
       ],
-      "ceilingDigest": "5d98580f",
+      "ceilingDigest": "5fbc34e7",
       "invalidSlots": 0,
       "pairsDuringClockJump": 2,
       "readingGaps": 16,
@@ -1836,6 +1980,10 @@
           },
           "class": "credit",
           "legacyLearned": true,
+          "legacyMargin": {
+            "mul": 1.07,
+            "add": 0.1
+          },
           "diagnosis": {
             "gap": 0.006577885194496545,
             "source": "readings",
@@ -1878,14 +2026,20 @@
           "changed": true
         },
         {
-          "at": 2460690,
+          "at": 1880100,
           "trigger": "cusum-alarm",
           "mode": "shadow",
           "changed": true
         },
         {
-          "at": 2466150,
-          "trigger": "drift-hold",
+          "at": 1969290,
+          "trigger": "cusum-revert",
+          "mode": "shadow",
+          "changed": true
+        },
+        {
+          "at": 2453400,
+          "trigger": "cusum-alarm",
           "mode": "shadow",
           "changed": true
         },
@@ -1896,7 +2050,7 @@
           "changed": true
         },
         {
-          "at": 2553510,
+          "at": 2544420,
           "trigger": "cusum-keep",
           "mode": "shadow",
           "changed": false
@@ -1951,12 +2105,6 @@
         },
         {
           "at": 3299700,
-          "trigger": "fit",
-          "mode": "shadow",
-          "changed": true
-        },
-        {
-          "at": 3387060,
           "trigger": "fit",
           "mode": "shadow",
           "changed": true
@@ -2133,6 +2281,10 @@
             },
             "class": "credit",
             "legacyLearned": true,
+            "legacyMargin": {
+              "mul": 1.07,
+              "add": 0.1
+            },
             "diagnosis": {
               "gap": 0.006577885194496545,
               "source": "readings",
@@ -2175,14 +2327,20 @@
             "changed": true
           },
           {
-            "at": 2460690,
+            "at": 1880100,
             "trigger": "cusum-alarm",
             "mode": "off",
             "changed": true
           },
           {
-            "at": 2466150,
-            "trigger": "drift-hold",
+            "at": 1969290,
+            "trigger": "cusum-revert",
+            "mode": "off",
+            "changed": true
+          },
+          {
+            "at": 2453400,
+            "trigger": "cusum-alarm",
             "mode": "off",
             "changed": true
           },
@@ -2193,7 +2351,7 @@
             "changed": true
           },
           {
-            "at": 2553510,
+            "at": 2544420,
             "trigger": "cusum-keep",
             "mode": "off",
             "changed": false
@@ -2248,12 +2406,6 @@
           },
           {
             "at": 3299700,
-            "trigger": "fit",
-            "mode": "off",
-            "changed": true
-          },
-          {
-            "at": 3387060,
             "trigger": "fit",
             "mode": "off",
             "changed": true
@@ -2435,7 +2587,7 @@
         "clampShare": 0.9954737103174603,
         "clockStepClampShare": null,
         "limitedHours": 0,
-        "cpuCoreHours": 5222.997095830889,
+        "cpuCoreHours": 5219.415949659715,
         "gap": 0,
         "gapBilledCoreSeconds": 0,
         "corruptionRecovered": false,
@@ -2457,16 +2609,16 @@
           "floor": 0.05
         },
         "fit": {
-          "a": 1.0479078078099748,
-          "b": 0.013203182080378184,
-          "aHi": 1.0519206453812078,
+          "a": 1.048538407646509,
+          "b": 0.011957903331585307,
+          "aHi": 1.051919809493714,
           "sigma": [
-            0.022631298623551153,
-            0.01290624611137385
+            0.022497659459597065,
+            0.012604397852212004
           ],
-          "sigmaFloor": 0.037536069815437265,
+          "sigmaFloor": 0.0367607952482307,
           "pairs": 664,
-          "days": 15
+          "days": 14
         },
         "episodes": [],
         "classifications": [],
@@ -2485,19 +2637,31 @@
             "changed": true
           },
           {
-            "at": 3243300,
+            "at": 1880100,
+            "trigger": "cusum-alarm",
+            "mode": "apply",
+            "changed": true
+          },
+          {
+            "at": 1971120,
+            "trigger": "cusum-revert",
+            "mode": "apply",
+            "changed": true
+          },
+          {
+            "at": 3285150,
             "trigger": "fit",
             "mode": "apply",
             "changed": true
           },
           {
-            "at": 3505380,
+            "at": 3461700,
             "trigger": "fit",
             "mode": "apply",
             "changed": true
           }
         ],
-        "ceilingDigest": "33593b1f",
+        "ceilingDigest": "71532b16",
         "invalidSlots": 0,
         "pairsDuringClockJump": 2,
         "readingGaps": 17,
@@ -2507,7 +2671,7 @@
       "assessment": {
         "status": "pass",
         "notes": [],
-        "cpuCostPercent": 0.27151780485719534,
+        "cpuCostPercent": 0.20309208910381,
         "limitsPrevented": 0
       }
     },
@@ -2519,7 +2683,7 @@
       "clampShare": 0.9954737103174603,
       "clockStepClampShare": null,
       "limitedHours": 0,
-      "cpuCoreHours": 5178.714038513412,
+      "cpuCoreHours": 5177.269779507188,
       "gap": 0,
       "gapBilledCoreSeconds": 0,
       "corruptionRecovered": false,
@@ -2533,22 +2697,22 @@
         "add": 0.08
       },
       "rebootPreserved": false,
-      "firstClampAfterDrift": 2460690,
+      "firstClampAfterDrift": 2453400,
       "episodeSettingsUnchanged": true,
       "applied": {
         "mul": 1.075,
-        "add": 0.06469752022073472,
+        "add": 0.06470858599711349,
         "floor": 0.05
       },
       "fit": {
-        "a": 1.0606096280389767,
-        "b": 0.050560714464451983,
-        "aHi": 1.0660345632281865,
+        "a": 1.060615037916457,
+        "b": 0.050550211169122505,
+        "aHi": 1.0660411167798476,
         "sigma": [
-          0.008971653254585403,
-          0.018399021222649088
+          0.00896224203490948,
+          0.018399946721757446
         ],
-        "sigmaFloor": 0.043837673582320436,
+        "sigmaFloor": 0.04384010438499265,
         "pairs": 666,
         "days": 15
       },
@@ -2569,7 +2733,19 @@
           "changed": true
         },
         {
-          "at": 2462520,
+          "at": 1880100,
+          "trigger": "cusum-alarm",
+          "mode": "apply",
+          "changed": true
+        },
+        {
+          "at": 1971120,
+          "trigger": "cusum-revert",
+          "mode": "apply",
+          "changed": true
+        },
+        {
+          "at": 2453400,
           "trigger": "cusum-alarm",
           "mode": "apply",
           "changed": true
@@ -2581,7 +2757,13 @@
           "changed": true
         },
         {
-          "at": 2557140,
+          "at": 2471610,
+          "trigger": "drift-hold",
+          "mode": "apply",
+          "changed": true
+        },
+        {
+          "at": 2544420,
           "trigger": "cusum-keep",
           "mode": "apply",
           "changed": false
@@ -2665,6 +2847,12 @@
           "changed": true
         },
         {
+          "at": 3823860,
+          "trigger": "fit",
+          "mode": "apply",
+          "changed": true
+        },
+        {
           "at": 3998580,
           "trigger": "fit",
           "mode": "apply",
@@ -2695,7 +2883,7 @@
           "changed": true
         }
       ],
-      "ceilingDigest": "fb709c37",
+      "ceilingDigest": "835dc87e",
       "invalidSlots": 0,
       "pairsDuringClockJump": 2,
       "readingGaps": 17,
@@ -2709,7 +2897,7 @@
         "clampShare": 0.9954737103174603,
         "clockStepClampShare": null,
         "limitedHours": 0,
-        "cpuCoreHours": 5178.222014104982,
+        "cpuCoreHours": 5177.269779507188,
         "gap": 0,
         "gapBilledCoreSeconds": 0,
         "corruptionRecovered": false,
@@ -2727,18 +2915,18 @@
         "episodeSettingsUnchanged": true,
         "applied": {
           "mul": 1.075,
-          "add": 0.06469752022073472,
+          "add": 0.06470858599711349,
           "floor": 0.05
         },
         "fit": {
-          "a": 1.0606096280389767,
-          "b": 0.050560714464451983,
-          "aHi": 1.0660345632281865,
+          "a": 1.060615037916457,
+          "b": 0.050550211169122505,
+          "aHi": 1.0660411167798476,
           "sigma": [
-            0.008971653254585403,
-            0.018399021222649088
+            0.00896224203490948,
+            0.018399946721757446
           ],
-          "sigmaFloor": 0.043837673582320436,
+          "sigmaFloor": 0.04384010438499265,
           "pairs": 666,
           "days": 15
         },
@@ -2759,7 +2947,19 @@
             "changed": true
           },
           {
-            "at": 2462520,
+            "at": 1880100,
+            "trigger": "cusum-alarm",
+            "mode": "apply",
+            "changed": true
+          },
+          {
+            "at": 1971120,
+            "trigger": "cusum-revert",
+            "mode": "apply",
+            "changed": true
+          },
+          {
+            "at": 2453400,
             "trigger": "cusum-alarm",
             "mode": "apply",
             "changed": true
@@ -2771,13 +2971,25 @@
             "changed": true
           },
           {
-            "at": 2557140,
+            "at": 2471610,
+            "trigger": "drift-hold",
+            "mode": "apply",
+            "changed": true
+          },
+          {
+            "at": 2544420,
             "trigger": "cusum-keep",
             "mode": "apply",
             "changed": false
           },
           {
             "at": 2600820,
+            "trigger": "fit",
+            "mode": "apply",
+            "changed": true
+          },
+          {
+            "at": 2688180,
             "trigger": "fit",
             "mode": "apply",
             "changed": true
@@ -2849,6 +3061,12 @@
             "changed": true
           },
           {
+            "at": 3823860,
+            "trigger": "fit",
+            "mode": "apply",
+            "changed": true
+          },
+          {
             "at": 3998580,
             "trigger": "fit",
             "mode": "apply",
@@ -2879,7 +3097,7 @@
             "changed": true
           }
         ],
-        "ceilingDigest": "c896d08c",
+        "ceilingDigest": "c4d19e3d",
         "invalidSlots": 0,
         "pairsDuringClockJump": 2,
         "readingGaps": 17,
@@ -2889,7 +3107,7 @@
       "assessment": {
         "status": "pass",
         "notes": [],
-        "cpuCostPercent": -0.009501802106773625,
+        "cpuCostPercent": 0,
         "limitsPrevented": 0
       }
     }

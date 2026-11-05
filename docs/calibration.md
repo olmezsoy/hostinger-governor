@@ -401,17 +401,22 @@ A second mismatch within 30 days, by lift time, latches the rules mismatch above
 
 ## Drift detection
 
-Each new pair updates a one-sided CUSUM of residuals against the last fit. An alarm opens a drift
-change: a temporary hold, never learned state, since an additive jump read as a steeper slope would
-otherwise stay a higher multiplier. The alarm reads the change both ways, as a slope from the
-residuals since the CUSUM last left zero and as an offset from the clearly shifted pairs among them,
-and the hold covers both at every load. Only pairs at three or more guest cores, where a fit
-qualifies, read the slope: near idle, a small offset divided by a tiny load read as a multiplier of
-2 to 3.3 on the simulated meter's own day-to-day wobble. Capped readings take part in neither. From
-three pairs on, the hold rises to their mean residual when that is more (`drift-hold`). After 48
-pairs the change is verified (`cusum-keep`) if their mean residual is at least 0.5 σ against the old
-fit; otherwise it is withdrawn (`cusum-revert`) and, having changed nothing learned, leaves nothing
-behind.
+Each new pair updates a one-sided CUSUM of residuals against the newest fit that qualified, not the
+fit the learned margin kept. Refits run daily and the margin only tightens, so a refit that would
+loosen it is discarded from the margin; drift detection follows it anyway. Until the first fit
+qualifies, the fit in force is the reference. Verification judges the pairs after a change against
+the same newest fit. While a change is pending, its raised fit stands in for the extreme-residual
+test wherever it predicts the higher reading at the pair's load, so a reading the hold already
+covers never turns invalid. An alarm opens a drift change: a temporary hold, never learned state,
+since an additive jump read as a steeper slope would otherwise stay a higher multiplier. The alarm
+reads the change both ways, as a slope from the residuals since the CUSUM last left zero and as an
+offset from the clearly shifted pairs among them, and the hold covers both at every load. Only pairs
+at three or more guest cores, where a fit qualifies, read the slope: near idle, a small offset
+divided by a tiny load read as a multiplier of 2 to 3.3 on the simulated meter's own day-to-day
+wobble. Capped readings take part in neither. From three pairs on, the hold rises to their mean
+residual when that is more (`drift-hold`). After 48 pairs the change is verified (`cusum-keep`) if
+their mean residual is at least 0.5 σ against the old fit; otherwise it is withdrawn
+(`cusum-revert`) and, having changed nothing learned, leaves nothing behind.
 
 A verified change holds until a fit on the readings after its change point alone qualifies. That fit
 sets the learned margin, tightening only against the margin learned before the change. Limits during
@@ -447,6 +452,29 @@ it measured empties the bank at `t_lo`, so no optimism is left for the floor, an
 it opens carries the meter. Replaying its own estimate at the old margin instead pinned the floor at
 `floor_max` after every jump of 0.75 cores or more. The rise bills the time after the last settled
 reading too, up to `t_lo`.
+
+## Running closer to the readings
+
+Issue #19 proposed three ways to run the box closer to what its own readings allow. The first ships
+here; the other two stay off until the evidence below exists.
+
+- **Drift detection follows the latest qualifying fit.** A fit the tighten-only margin discarded
+  still becomes drift detection's reference, so a box whose start is tighter than its meter no
+  longer leaves the reference frozen at its first fit. The margin itself does not loosen.
+- **The fit may set the multiplier below `start.mul`.** Not yet. Evidence needed: a confirmed credit
+  limit on this box, diagnosed from valid settled readings, whose onset the readings replay at the
+  fit's `aHi` and the learned gap predicts within the onset margin, with no positive gap left
+  unexplained. That would show the fitted relation describes a bank that really emptied, not merely
+  that a refit reads lower. Until a limit measures the gap, the box's gap is unknown, and
+  `start.mul` is the only limit-free bound; lowering it would trade measured evidence for an
+  assumption.
+- **Readings may raise the acted estimate.** Not yet. The rule that readings never raise the
+  estimate stays. Evidence needed: record each confirmed credit limit's onset against the empty
+  point the readings replay predicts, and report the error in `calibrate --explain`. After at least
+  three limits land within a chosen tolerance, readings could raise the acted estimate up to that
+  replay less a margin derived from the observed error. An opt-in `calibrate --probe-limit` is a
+  later option: it deliberately spends one limit per probe, recovered at 30% CPU, and needs the
+  passive error distribution first. This box has had no credit limits to measure.
 
 ## Estimates
 
@@ -552,12 +580,13 @@ settings, and mode.
 
 `state.json` adds `credits.law.floor` and `credits.calibration`: mode, start, the settings in force
 (`applied`: in `off` and `shadow`, the legacy margin and 20% floor) and the learned ones
-(`learned`), any stale or invalid `hold`, the gap and its upper bound, the fit, the CUSUM state,
-`apiStaleSince`, `readingsInvalid`, `newestFinal`, `longIntervals`, the estimates, `rulesMismatch`,
-`mismatches`, `invalidSpans`, `ownHold`, any sustained-use cooldown, the last limit's class and
-diagnosis, and `failing`, the time a failing evaluation began and the margin below the open estimate
-it holds, or null. In `apply`, `credits.balance`, `percent` and `minutesAtFull` report the acted
-estimate; the open estimate is in `credits.calibration.estimates.open`.
+(`learned`), any stale or invalid `hold`, the gap and its upper bound, the fit and the newer
+`referenceFit` drift detection follows, the CUSUM state, `apiStaleSince`, `readingsInvalid`,
+`newestFinal`, `longIntervals`, the estimates, `rulesMismatch`, `mismatches`, `invalidSpans`,
+`ownHold`, any sustained-use cooldown, the last limit's class and diagnosis, and `failing`, the time
+a failing evaluation began and the margin below the open estimate it holds, or null. In `apply`,
+`credits.balance`, `percent` and `minutesAtFull` report the acted estimate; the open estimate is in
+`credits.calibration.estimates.open`.
 
 ## Explain and reset
 
@@ -573,11 +602,12 @@ state, configuration and evidence, verifies its digest, and recomputes the curre
 last diagnosis from the inputs it recorded, the earlier limit a replay from its lift reads among
 them: history keeps 50 limit records, and 49 later ones had changed a rerun's gap from 0.140 to
 0.044. Two runs on the same files give the same output. `evidence.fit` is the fit the replayed
-decision used; `evidence.candidateFit` is a fresh candidate, which may differ when it would not
-tighten the margin. The text form shows the same status fields as the JSON, one topic per line: the
-settings in force and, under a hold, the learned ones and every hold; the readings' state; any
-cooldown; and the long reading intervals. A configuration change takes effect in this output only
-after the daemon restarts.
+decision used; `evidence.referenceFit` is the newest qualifying fit drift detection follows; and
+`evidence.candidateFit` is a fresh candidate, which may differ when it would not tighten the margin.
+The text form shows the same status fields as the JSON, one topic per line: the settings in force
+and, under a hold, the learned ones and every hold; the readings' state; any cooldown; and the long
+reading intervals. A configuration change takes effect in this output only after the daemon
+restarts.
 
 To return the calibration margin, floor and learned gap to the configured start:
 

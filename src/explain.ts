@@ -141,6 +141,7 @@ export async function explainCalibration(
       digest: checkpoint.digest,
       verified: true,
       fit: calibration.fit,
+      referenceFit: calibration.referenceFit ?? null,
       candidateFit: fitMeter(
         pairReadings(
           p,
@@ -314,6 +315,15 @@ export function explainText(r: Explained) {
         }, ${r.fit.pairs} pairs on ${r.fit.days} days`
         : "not qualified"
     }`,
+    ...(r.referenceFit && r.fit &&
+        (r.referenceFit.a !== r.fit.a || r.referenceFit.b !== r.fit.b ||
+          r.referenceFit.aHi !== r.fit.aHi)
+      ? [
+        `Drift reference a=${cores(r.referenceFit.a)}, b=${
+          cores(r.referenceFit.b)
+        }, aHi=${r.referenceFit.aHi}, ${r.referenceFit.pairs} pairs on ${r.referenceFit.days} days`,
+      ]
+      : []),
     ...(long
       ? [
         `Long reading intervals ${long.count}${

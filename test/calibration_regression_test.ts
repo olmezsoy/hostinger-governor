@@ -1,8 +1,9 @@
-import { assert, assertEquals } from "@std/assert";
+import { assert, assertAlmostEquals, assertEquals } from "@std/assert";
 import {
   calibrationConfig,
   classifyLimit,
   initialCalibration,
+  marginFromFit,
   updateCalibration,
 } from "../src/calibration.ts";
 import { DAY, emptyHistory, FLAGS, SLOT_MS } from "../src/history.ts";
@@ -137,6 +138,58 @@ Deno.test("a bad feed cannot tighten the margin through the daily refit", () => 
   // The refit runs daily here. It must see the streak marked invalid first, and never fit it.
   assert(triggers.includes("readings-invalid"), triggers.join(" "));
   assertEquals(s.applied, c.start);
+});
+
+Deno.test("drift detection follows a refit the tighten-only margin discards", () => {
+  const c = calibrationConfig({ mode: "apply", fit: { min_pairs: 2, min_days: 1 } });
+  const h = emptyHistory("test", 1, at);
+  const cores = (i: number) => 3 + i % 3;
+  // Small alternating noise keeps a 0.1-core jump under the 6-sigma extreme test.
+  const noise = (i: number) => i % 2 ? 0.02 : -0.02;
+  const slots = (i: number) =>
+    Array.from({ length: 3 }, (_, k) => slot(at + (i * 3 + k) * SLOT_MS, cores(i)));
+  const reading = (i: number, jump = 0) => ({
+    at: at + (i + 1) * 1_800_000,
+    v: (1.02 * cores(i) + 0.08 + noise(i) + jump) / p.vcpus * 100,
+  });
+  h.slots = Array.from({ length: 96 }, (_, i) => slots(i)).flat();
+  h.readings = Array.from({ length: 96 }, (_, i) => reading(i));
+  // The margin learned from this box's first fit, which read higher than its meter.
+  const oldFit = { ...fit, a: 1.06, b: 0.08, aHi: 1.06 };
+  const s = initialCalibration(c, at - 3 * DAY);
+  const applied = marginFromFit(p, oldFit, 0, s.applied, c);
+  Object.assign(s, { fit: oldFit, applied, fitAt: at - DAY, lastPaired: h.readings.at(-2)!.at });
+  const fitted = updateCalibration(p, h, s, c, h.readings.at(-1)!.at + 60_000, 30000);
+  // The margin keeps the tighter old fit; drift detection follows the newer, lower one.
+  assertEquals(fitted.state.fit, oldFit);
+  assertEquals(fitted.state.applied, applied);
+  assert(fitted.state.referenceFit !== undefined);
+  assertAlmostEquals(fitted.state.referenceFit!.a, 1.02, 0.005);
+  assertAlmostEquals(fitted.state.referenceFit!.b, 0.08, 0.03);
+  assert(!fitted.changes.some((d) => d.trigger === "fit"));
+  // A 0.1-core rise is still below the old fit, but above the meter's current readings. The
+  // reference sees it accumulate; the discarded old fit never does.
+  const triggers: string[] = [];
+  let next = fitted.state;
+  for (let i = 96; i < 102; i++) {
+    h.slots.push(...slots(i));
+    h.readings.push(reading(i, 0.1));
+    const r = updateCalibration(p, h, next, c, h.readings.at(-1)!.at + 60_000, 30000);
+    triggers.push(...r.changes.map((d) => d.trigger));
+    next = r.state;
+  }
+  assert(triggers.includes("cusum-alarm"), triggers.join(" "));
+  assert(next.pending !== null);
+  const frozen = updateCalibration(
+    p,
+    h,
+    { ...fitted.state, referenceFit: oldFit },
+    c,
+    h.readings.at(-1)!.at + 60_000,
+    30000,
+  ).state;
+  assertEquals(frozen.pending, null);
+  assertEquals(frozen.cusum.alarm, false);
 });
 
 Deno.test("fresh normal residuals recover from the invalid-reading latch", () => {

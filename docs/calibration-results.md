@@ -30,40 +30,41 @@ falls below 4.3 cores.
 
 | Study | Scenario                          | Result | Credit limits | Learned gap | Evidence                                                                                                                                                                                                                                      |
 | ----- | --------------------------------- | ------ | ------------: | ----------: | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| S1    | gap 0                             | pass   |             0 |           0 | CPU 0.11% below static 1.05× + 0.04 at 5%, inside the 0.3% budget.                                                                                                                                                                            |
+| S1    | gap 0                             | pass   |             0 |           0 | CPU 0.18% below static 1.05× + 0.04 at 5%, inside the 0.3% budget.                                                                                                                                                                            |
 | S2    | gap 0.03                          | pass   |             1 |     0.04115 | One limit on day 3.0 teaches 0.041; the floor rises to 5.5%. The lift check predicts its recovery within 1%.                                                                                                                                  |
 | S3    | gap 0.10                          | pass   |             1 |     0.11731 | One limit on day 0.6 teaches 0.117. Recovery took 0.90 times the lift check's prediction.                                                                                                                                                     |
-| S4    | slope 1.046 to 1.07 at week 4     | pass   |             0 |           0 | The clamp acts 11.5 hours after the change and CUSUM alarms at 12.0; the hold is verified on day 29.6 and refits end at 1.075× + 0.065.                                                                                                       |
+| S4    | slope 1.046 to 1.07 at week 4     | pass   |             0 |           0 | The clamp and CUSUM act 9.5 hours after the change; the hold is verified on day 29.4 and refits end at 1.075× + 0.065.                                                                                                                        |
 | S5    | sustained-use limit               | pass   |             0 |           0 | Classified sustained-use in apply and off; nothing learned, no off-mode widening.                                                                                                                                                             |
 | S6    | neighbour steal                   | pass   |             0 |           0 | The first lift test passes; classified unknown, nothing learned.                                                                                                                                                                              |
 | S7    | 48-hour API outage                | pass   |             0 |           0 | The stale fallback starts on day 15.0 and ends when readings resume on day 16.0.                                                                                                                                                              |
 | S8    | reboot                            | pass   |             0 |           0 | History and calibration survive 15 minutes of downtime, checked at the first pass after it; the estimate restarts at 0 and the clamp from an empty bank, available on 99.4% of passes.                                                        |
-| S9    | irregular spacing, 62-minute gaps | pass   |             0 |           0 | A fit qualifies across 97 intervals over 2,700 seconds, within 0.0011 of the slope and 0.0024 cores of the offset that the same seed fits with regular spacing; CPU is 0.09% lower. The clamp bridges the gaps, available on 99.5% of passes. |
+| S9    | irregular spacing, 62-minute gaps | pass   |             0 |           0 | A fit qualifies across 97 intervals over 2,700 seconds, within 0.0011 of the slope and 0.0024 cores of the offset that the same seed fits with regular spacing; CPU is 0.03% lower. The clamp bridges the gaps, available on 99.5% of passes. |
 | S10   | clock jump of an hour             | pass   |             0 |           0 | Seven slots are marked invalid and no pair uses the jump. The clamp bridges them, available on 99.5% of passes.                                                                                                                               |
 | S11   | corrupted `history.json`          | pass   |             0 |           0 | The file is quarantined and rebuilt; passes continue. The clamp is unavailable after the rebuild.                                                                                                                                             |
 | S12   | shadow against off                | pass   |             1 |     0.00658 | Identical ceilings through the same credit limit; 24 would-be changes logged.                                                                                                                                                                 |
-| S13   | readings 50% noisier              | pass   |             0 |           0 | No limit. The fit's noise at 3 cores is 1.49 times the regular run's, and the premium raises the addition from 0.046 to 0.063, at 0.27% of CPU.                                                                                               |
+| S13   | readings 50% noisier              | pass   |             0 |           0 | No limit. The fit's noise at 3 cores is 1.49 times the regular run's, and the premium raises the addition from 0.046 to 0.063, at 0.20% of CPU.                                                                                               |
 | S14   | clamp on against clamp off        | pass   |             0 |           0 | No limit either way: the drift hold covers the change at the alarm. CPU with the clamp is within 0.01% of CPU without it.                                                                                                                     |
 
 Some passes are weaker evidence than their status suggests:
 
-- S1 must stay within 0.3% of static CPU. It uses 0.11% less: the simulated meter is box A's, so the
-  fit asks for 1.052× + 0.046, close to the 1.05× + 0.04 start.
+- S1 must stay within 0.3% of static CPU. It uses 0.18% less: the simulated meter is box A's, so the
+  fit asks for 1.052× + 0.046, close to the 1.05× + 0.04 start. A later refit reads lower than the
+  fit the margin kept, and drift detection follows it; verification withdraws the alarm it raises on
+  day 21.7.
 - S14 no longer shows the clamp preventing a limit. With the clamp off, the drift used to empty the
-  bank 13.2 hours after the change, after the CUSUM alarm at 12.0 hours. The alarm now opens a hold
-  that covers the change as a steeper slope and as an offset at once, which is enough on this seed.
-  The clamp still acts first, at 11.5 hours; while the open estimate charges more than Hostinger's
-  meter, it is lower than the readings replay, so the clamp binds only once the meter drifts above
-  the margin.
+  bank 13.2 hours after the change, after the CUSUM alarm. The alarm now opens a hold that covers
+  the change as a steeper slope and as an offset at once, which is enough on this seed. The clamp
+  still acts first, at 9.5 hours; while the open estimate charges more than Hostinger's meter, it is
+  lower than the readings replay, so the clamp binds only once the meter drifts above the margin.
 - S11 passes its own criteria, but the clamp is available on only 12% of passes: a rebuilt history
   has no anchor to replay from. On this workload the bank's lower bound certifies full only on day
   0, before the first job, and later anchors come only from a credit limit's lift. Without the
   clamp, the governor acts on the open estimate, as v0.2.5 did. S10's clock jump no longer stops the
   clamp: it bridges the clock-invalid hour with the guest's own count.
 - S11 raises a CUSUM alarm on day 21.7 that verification withdraws on day 22.8. While it is pending,
-  its hold costs 2.8 core-hours, 0.05% of the CPU. After the history rebuild, drift detection judges
-  residuals against the four-day fit from day 10.1 until a refit changes the margin, which none
-  does.
+  its hold costs 2.8 core-hours, 0.05% of the CPU. After the history rebuild, drift detection
+  follows the four-day fit from day 10.1 and any later qualifying refit, while the margin keeps that
+  fit because no refit tightens it.
 - S12 compares ceilings in shadow and off with the S4 drift. Its single limit, on day 46.6, comes
   from the drift that off mode cannot see; shadow logs the tightening it would have made, including
   each refit in the 14 days after the change.

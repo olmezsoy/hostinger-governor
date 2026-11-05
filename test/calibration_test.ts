@@ -1403,6 +1403,7 @@ Deno.test("a reset during a residual alarm ends it, and the next fit judges new 
   const s = {
     ...initialCalibration(c, at - 3 * DAY),
     fit,
+    referenceFit: { ...fit, a: 1.03 },
     fitAt: at - DAY,
     fitSince: at - 2 * DAY,
     fitFrom: { ...c.start },
@@ -1411,6 +1412,8 @@ Deno.test("a reset during a residual alarm ends it, and the next fit judges new 
     extreme: 3,
     invalidSpans: [{ from: at - DAY, to: null, applied: { ...c.start }, gap: 0 }],
   };
+  assert(validCalibrationState(s));
+  assert(!validCalibrationState({ ...s, referenceFit: { ...fit, aHi: NaN } }));
   const reset = resetCalibration(c, s, at);
   assertEquals(reset.fit, null);
   assertEquals(reset.residualInvalid, false);
@@ -1419,7 +1422,9 @@ Deno.test("a reset during a residual alarm ends it, and the next fit judges new 
   // The meter's change point stays, so the next fit can't mix the meters either side of it; the
   // margin from before the change goes with the learned settings.
   assertEquals(reset.fitSince, at - 2 * DAY);
-  assert(!("fitAt" in reset) && !("fitFrom" in reset));
+  assert(
+    !("fitAt" in reset) && !("fitFrom" in reset) && !("referenceFit" in reset),
+  );
   assert(validCalibrationState(reset));
   // A reset returns the floor to the start, so nothing is left for a corroboration to undo.
   assertEquals(resetCalibration(c, { ...s, provisionalFloor: 0.05 }, at).provisionalFloor, null);
