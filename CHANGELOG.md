@@ -1,5 +1,37 @@
 # Changelog
 
+## v0.3.1
+
+- Address issue #19: drift detection follows the newest meter fit that qualified, not only the fit
+  the learned margin kept. Refits run daily and the margin only tightens, so on a box whose start is
+  tighter than its meter the margin keeps its first fit, and drift detection judged every reading
+  against that frozen fit: an upward jump had to be that much bigger before it alarmed. CUSUM, a
+  drift change's verification, the extreme-residual test, the refit's 6σ filter and corroboration
+  now judge against the newest qualifying fit, and the CUSUM sums start again at each new one. The
+  margin still only tightens. After a verified drift change, the fit on the readings after it
+  replaces what limits taught during the change only when it reads at least as high as the margin's
+  fit from three guest cores to the VM's vCPUs; otherwise the gap and margin they taught stay.
+  `status --json` shows the new reference as `credits.calibration.referenceFit`, and
+  `calibrate --explain` as `evidence.referenceFit` and, in its text form, a `Drift reference` line
+  when it differs from the margin's fit. Recovery without `persist.json` restores the reference and,
+  for a drift change still holding, the margin's fit; a catch-up that changes the reference starts
+  the sums again.
+- The own-count hold corroborates returning readings against a replay of its limit's recorded inputs
+  above the drift reference. It compared them with its own gap, measured above the governor's
+  charges, and a real 0.5-core jump read as 0.295 cores there and failed to agree. History keeps
+  that limit's inputs until the first diagnosis after the hold ends, so a later limit in the same
+  outage can't leave the readings invalid. `ownHold.central` is no longer reported.
+- The fit still can't set the multiplier below `start.mul`, and readings still never raise the acted
+  estimate. [Calibration](docs/calibration.md#running-closer-to-the-readings) says what evidence
+  each needs first.
+- In the calibration studies, S4's clamp and CUSUM act 9.5 hours after its slope change instead of
+  11.5 and 12.0, and S12 logs 22 would-be changes instead of 24. The 0.5-core meter jump costs 7
+  limits over ten seeds, one more than v0.3.0; every jump still meets the criteria.
+
+Upgrade by running the installer again. Configuration, credit estimates, the legacy margin and the
+learned calibration are kept. Until the first refit after the upgrade, drift detection judges
+against the margin's fit, as v0.3.0 did.
+
 ## v0.3.0
 
 - Address issue #13: calibrate the margin and spending floor from this VPS's own record, opt-in

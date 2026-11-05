@@ -815,10 +815,7 @@ function beforeLimit(slots: Slot[], record: LimitRecord): Slot[] {
 // governor flags its slots limited until it detects the lift. Learning's replays from a lift read
 // them as unlimited; the clamp, a lower bound, keeps them.
 function afterLift(slots: Slot[], limits: LimitRecord[], anchor: Anchor): Slot[] {
-  const record = limits.find((l) =>
-    l.class === "credit" && l.lift !== undefined &&
-    (anchor.at === l.lift || anchor.at === l.limitedAt)
-  );
+  const record = limits.find((l) => l.class === "credit" && liftsAt(l, anchor.at));
   if (!record) return slots;
   let out = slots;
   const last = firstSlot(slots, record.lift!);
@@ -829,6 +826,10 @@ function afterLift(slots: Slot[], limits: LimitRecord[], anchor: Anchor): Slot[]
   }
   return out;
 }
+// Whether a lift anchor at `at` is this limit's: its detected lift, or the last test that still
+// found it.
+const liftsAt = (l: LimitRecord, at: number) =>
+  l.lift !== undefined && (l.lift === at || l.limitedAt === at);
 // The lower-bound anchor of a span that starts at a credit limit: its detected lift, where the bank
 // held at least the recovery level.
 function liftAnchor(p: Plan, h: History, anchor: Anchor, onset: number): Anchor | null {
@@ -982,9 +983,8 @@ export function diagnosisEvidence(
   const begin = Math.min(anchor.at, h.readings[first]?.at ?? anchor.at);
   // The earlier limit a replay from its lift reads (afterLift, liftAnchor): the 50 records history
   // keeps can drop it before this diagnosis is rerun.
-  const limits = h.limits.filter((l) =>
-    l.lift !== undefined && (l.lift === anchor.at || l.limitedAt === anchor.at)
-  ).map(({ diagnosisEvidence: _, ...l }) => l);
+  const limits = h.limits.filter((l) => liftsAt(l, anchor.at))
+    .map(({ diagnosisEvidence: _, ...l }) => l);
   return structuredClone({
     config: c,
     upper,
@@ -1147,6 +1147,9 @@ export type CalibrationState = {
   gap: number;
   gapUpperBound: number;
   fit: MeterFit | null;
+  // The newest fit that qualified, which drift detection follows even when the margin kept an
+  // older, tighter fit. `fit` stays the fit the learned margin was computed from.
+  referenceFit?: MeterFit;
   cusum: Cusum;
   // A drift change (#13 §8): a CUSUM alarm awaiting verification, or a verified or corroborated
   // change waiting for a fit on the readings after `at`. `fit` is the meter in force meanwhile and
@@ -1178,8 +1181,7 @@ export type CalibrationState = {
   hold: { since: number; reason: "stale" | "invalid" } | null;
   // The full own-count step of a repeat credit limit while readings are invalid or stale, as a gap
   // and the settings it gives. Temporary like the hold: it ends when readings resume.
-  // `central` is the gap the limits measured without the allowance for estimated time.
-  ownHold: { gap: number; settings: Settings; central?: number } | null;
+  ownHold: { gap: number; settings: Settings } | null;
   invalid: boolean;
   metricInvalid: boolean;
   residualInvalid: boolean;
@@ -1201,7 +1203,9 @@ export type CalibrationState = {
   boundAt: number;
   fitAt?: number;
   // The last drift change point. Refits never reach back past it, so no window mixes the meter
-  // from before a change with the meter after it. `fitFrom` is the learned margin from before it.
+  // from before a change with the meter after it. `fitFrom` is the margin its refits start from:
+  // the learned margin from before it, or, for a change the margin's fit already covered, the
+  // margin kept at the fit that ended it.
   fitSince?: number;
   fitFrom?: Settings;
   rulesMismatch: boolean;
@@ -1279,7 +1283,9 @@ export function resetCalibration(
   const start = initialCalibration(c, now, inherited);
   // The meter's change point stays: it is a fact about the meter, not a learned setting, and a refit
   // reaching back past it would mix the meters from before and after the change (#13 §3).
-  const { fitAt: _at, fitFrom: _from, ...kept } = structuredClone(previous);
+  const { fitAt: _at, fitFrom: _from, referenceFit: _reference, ...kept } = structuredClone(
+    previous,
+  );
   // A verified drift change is a change point too, though no fit after it has qualified yet. The
   // reset drops its hold, but the next fit must not mix the meters on either side of it.
   const changed = previous.pending?.verified ? previous.pending.at : undefined;
@@ -1413,9 +1419,9 @@ export function validCalibrationState(s: unknown): s is CalibrationState {
       !!v.hold && finite(v.hold.since) && ["stale", "invalid"].includes(v.hold.reason)) &&
     (v.ownHold === null ||
       !!v.ownHold && finite(v.ownHold.gap) && v.ownHold.gap >= 0 &&
-        validSettings(v.ownHold.settings) &&
-        (v.ownHold.central === undefined || finite(v.ownHold.central))) &&
+        validSettings(v.ownHold.settings)) &&
     (v.fit === null || validFit(v.fit)) &&
+    (v.referenceFit === undefined || validFit(v.referenceFit)) &&
     (v.pending === null || validPending(v.pending)) &&
     !!cusum && finite(cusum.s, cusum.down, cusum.residual, cusum.own) &&
     typeof cusum.alarm === "boolean" && (cusum.since === undefined || finite(cusum.since)) &&
@@ -1502,8 +1508,19 @@ function spacingInvalid(readings: Reading[], now: number): boolean {
   // readings were spaced.
   return invalid > DAY / 2;
 }
+const predicts = (fit: MeterFit, own: number) => fit.a * own + fit.b;
 const residualZ = (pair: Pair, fit: MeterFit) =>
   (pair.host - fit.a * pair.own - fit.b) / sigmaAt(fit, pair.own);
+// Drift detection's reference: the newest fit that qualified, which the tighten-only margin may have
+// discarded (#19).
+const driftReference = (s: CalibrationState): MeterFit | null => s.referenceFit ?? s.fit;
+// The meter a residual at `own` guest cores is judged against: the reference, or a pending change's
+// raised fit where it predicts the higher reading, so a reading the hold already covers never turns
+// invalid.
+const residualMeterAt = (s: CalibrationState, reference: MeterFit, own: number): MeterFit => {
+  const raised = s.pending?.fit;
+  return raised && predicts(raised, own) > predicts(reference, own) ? raised : reference;
+};
 
 // One evaluation's inputs and the operations every phase records its decisions with.
 type Run = {
@@ -1621,10 +1638,11 @@ function assessReadings(run: Run) {
       r.at >= since
     );
   // Keep checking new residuals during a residual alarm, or it could never clear itself.
-  if (s.residualInvalid && s.fit) {
+  const reference = driftReference(s);
+  if (s.residualInvalid && reference) {
     for (const pair of pairs.filter((r) => r.at > s.lastPaired)) {
       s.lastPaired = pair.at;
-      const z = residualZ(pair, s.pending?.fit ?? s.fit);
+      const z = residualZ(pair, residualMeterAt(s, reference, pair.own));
       if (censored(pair, z)) continue;
       if (Math.abs(z) <= EXTREME_Z) {
         if (!s.cleanReadings) s.cleanFrom = pair.at;
@@ -1673,7 +1691,7 @@ function readingsValidity(
   s.invalid = reasons.length > 0;
   const usable = !stale && !s.invalid;
   const judged = usable && (check === "corroborated" ||
-    check === "final" && s.extreme === 0 && (!s.fit || normal > 0));
+    check === "final" && s.extreme === 0 && (!driftReference(s) || normal > 0));
   if (judged) {
     s.apiStaleSince = null;
     // Readings the fit finds normal again show no meter change, so floor raises from meanwhile stay.
@@ -1699,18 +1717,19 @@ function readingsValidity(
 // Meter fit and drift detection (#13 §3, §8).
 function trackMeter(run: Run, pairs: Pair[], usable: boolean) {
   const { p, c, now, s, change } = run;
-  // Invalid readings, and any residual beyond 6 sigma against the meter in force, never fit the
-  // meter either: like drift detection, the fit must not let a bad feed tighten the margin. Only a
-  // refit or new pairs need them, so most passes never filter.
-  const model = s.pending?.fit ?? s.fit;
-  const filtered = new Map<number, Pair[]>();
+  // Invalid readings, and any residual beyond 6 sigma against drift detection's reference (or a
+  // pending change's raised fit where it reads higher), never fit the meter either: like drift
+  // detection, the fit must not let a bad feed tighten the margin. Only a refit or new pairs need
+  // them, so most passes never filter. `model` is the reference as this pass found it, before any
+  // refit below replaces it.
+  const filtered = new Map<number, Pair[]>(), model = driftReference(s);
   const eligible = (from = -Infinity) => {
     const since = Math.max(from, s.fitSince ?? -Infinity);
     let out = filtered.get(since);
     if (!out) {
       out = pairs.filter((r) =>
         r.at >= since && !inSpan(s.invalidSpans, r.at) &&
-        (!model || Math.abs(residualZ(r, model)) <= EXTREME_Z)
+        (!model || Math.abs(residualZ(r, residualMeterAt(s, model, r.own))) <= EXTREME_Z)
       );
       filtered.set(since, out);
     }
@@ -1728,15 +1747,28 @@ function trackMeter(run: Run, pairs: Pair[], usable: boolean) {
       // Limits during the change were explained by it, and this fit carries it, so what they
       // taught is superseded: the gap and margin start again from before the change. The floor
       // stays, and the hold this fit replaces covered everything meanwhile.
-      // Under a rules mismatch it only tightens, so widen() steps learned meanwhile stay.
-      const gap = Math.max(c.gap_start, Math.min(s.gap, changed.gapFrom));
-      const from = s.rulesMismatch ? s.applied : { ...changed.from, floor: s.applied.floor };
+      // Under a rules mismatch it only tightens, so widen() steps learned meanwhile stay. So does
+      // a change the margin's fit already covered: drift detection follows a newer, lower fit
+      // (#19), so a change can rise above it and still read below the margin's fit everywhere.
+      // A crossing fit can still read lower at the operating load. Only a rise across the whole
+      // qualifying load range can supersede what a limit taught; otherwise resetting would loosen.
+      const rises = s.fit
+        ? [c.fit.min_cores, p.vcpus].map((u) => predicts(post, u) - predicts(s.fit!, u))
+        : null;
+      const carries = !rises || rises.every((rise) => rise >= 0) && rises.some((rise) => rise > 0);
+      const gap = carries ? Math.max(c.gap_start, Math.min(s.gap, changed.gapFrom)) : s.gap;
+      const from = carries && !s.rulesMismatch
+        ? { ...changed.from, floor: s.applied.floor }
+        : s.applied;
       change("fit", { fit: post, gap, since: changed.at }, () => {
         s.fit = post;
+        s.referenceFit = post;
         s.gap = gap;
         s.applied = marginFromFit(p, post, gap, from, c);
         s.fitSince = changed.at;
-        s.fitFrom = { ...changed.from };
+        // Later settling refits keep the same baseline. A change already covered by the margin
+        // must not give back a limit's correction on the next daily refit either.
+        s.fitFrom = { ...from };
         s.pending = null;
         s.cusum = emptyCusum();
       });
@@ -1746,7 +1778,14 @@ function trackMeter(run: Run, pairs: Pair[], usable: boolean) {
       usable && (!s.fit || (pairs.at(-1)?.at ?? 0) > s.lastPaired && now - (s.fitAt ?? 0) >= DAY)
         ? fitMeter(eligible(), c.fit, FIT_SEED, now)
         : null;
-    if (fitted) s.fitAt = now;
+    if (fitted) {
+      s.fitAt = now;
+      // The margin may keep an older fit, but drift detection follows the newest one that qualified.
+      // Its sums start again: residuals summed against the old reference say nothing about the new
+      // one, and a run carried over from a reference that read higher raised false alarms in S1.
+      s.referenceFit = fitted;
+      s.cusum = emptyCusum();
+    }
     if (fitted && !s.fit) {
       change("fit", { fit: fitted, gap: s.gap }, () => {
         s.fit = fitted;
@@ -1783,8 +1822,9 @@ function trackMeter(run: Run, pairs: Pair[], usable: boolean) {
     s.lastPaired = pair.at;
     // The extreme test needs only a fit; drift detection also needs the window to qualify, so a box
     // that went idle still catches a broken feed.
-    if (!s.fit) continue;
-    const z = residualZ(pair, s.pending?.fit ?? s.fit);
+    const reference = driftReference(s);
+    if (!reference) continue;
+    const z = residualZ(pair, residualMeterAt(s, reference, pair.own));
     if (censored(pair, z)) continue;
     // An extreme residual is not evidence of drift: neither CUSUM nor a pending verification sees
     // it. Three in a row make the readings invalid, from the first of them.
@@ -1846,9 +1886,11 @@ function trackMeter(run: Run, pairs: Pair[], usable: boolean) {
       }
       continue;
     }
-    s.cusum = cusumStep(s.cusum, pair, s.fit, c.cusum);
+    s.cusum = cusumStep(s.cusum, pair, reference, c.cusum);
     if (s.cusum.alarm) {
-      const oldFit = s.fit, since = s.cusum.since ?? pair.at;
+      // The change is read, and later verified, against the meter that detected it, even when the
+      // margin kept an older, tighter fit.
+      const oldFit = reference, since = s.cusum.since ?? pair.at;
       // The run can start on noise before the change, so its sums understate the change. The
       // clearly shifted pairs of the run measure it, read as an offset or as a slope. Capped pairs
       // only bound the meter from below, so neither reading takes them.
@@ -2055,7 +2097,8 @@ function learnGaps(run: Run, usable: boolean) {
 // other, they track billing: a units change cannot show the same rise in limits. The readings count
 // again and the meter refits from where they turned extreme.
 function corroboration({ p, h, s }: Run, record: LimitRecord, d: GapDiagnosis) {
-  const open = s.invalidSpans.find((x) => x.to === null), fit = s.fit;
+  // The readings turned extreme against drift detection's reference, so the rise is measured from it.
+  const open = s.invalidSpans.find((x) => x.to === null), fit = driftReference(s);
   if (!open || !s.residualInvalid || !fit || !d.anchor || d.source !== "own") return null;
   // A verified change holds until its own fit. A second change opened from its point would let the
   // fit after it mix both meters, so readings that turn extreme meanwhile stay invalid.
@@ -2090,14 +2133,53 @@ function corroboration({ p, h, s }: Run, record: LimitRecord, d: GapDiagnosis) {
 // the box from the limits that could corroborate them, and readings that changed with the meter
 // would stay invalid, the hold in force, for good. A units change shows no such rise.
 function holdCorroboration({ p, h, s, latest }: Run) {
-  const open = s.invalidSpans.find((x) => x.to === null), fit = s.fit;
+  const open = s.invalidSpans.find((x) => x.to === null), fit = driftReference(s);
   if (!open || !s.residualInvalid || !fit || !s.ownHold || s.pending?.verified) return null;
-  // The allowance for estimated time would inflate the rise by up to half again.
-  const rise = (s.ownHold.central ?? s.ownHold.gap) - s.gap;
-  if (rise <= 0 || latest === null) return null;
+  if (latest === null) return null;
+  // The hold measured billing above stored governor charges, not above this reference. Replay one
+  // confirmed limit's original inputs against the reference so both rises have the same baseline.
+  // Only evidence from the current stale or invalid episode can corroborate it.
+  const record = ownHoldSource(h.limits, s.apiStaleSince ?? open.from);
+  const evidence = record?.diagnosisEvidence, anchor = evidence?.anchor;
+  if (!record || !evidence || !anchor || !evidence.limits) return null;
+  if (
+    anchor.balance === p.recovered &&
+    !evidence.limits.some((r) => r.class === "credit" && liftsAt(r, anchor.at))
+  ) return null;
+  const slots = afterLift(beforeLimit(evidence.slots, record), evidence.limits, anchor);
+  const meter = { mul: fit.a, add: fit.b + s.gap };
+  const replay = (rise: number) =>
+    replayOwn(p, slots, anchor, meter, record.diagnosis!.onset, rise, true);
+  const base = replay(0);
+  if (!base.complete || base.firstZero !== null || replay(p.vcpus).firstZero === null) return null;
+  // The original anchor and t_lo stay; the allowance for estimated time does not corroborate a
+  // reading. A missing or incomplete diagnosis therefore leaves the hold in place.
+  const rise = bisect((x) => replay(x).firstZero !== null, p.vcpus).hi;
   const residual = meanResidual(p, h, fit, open.from - 1, latest);
   if (residual === null || residual <= 0 || !agree(rise, residual)) return null;
   return { open, rise, residual, to: latest };
+}
+// The newest confirmed credit limit, lifted from `since` on, whose retained own-count diagnosis
+// measured the hold: returning readings corroborate the hold against a replay of its inputs.
+function ownHoldSource(limits: LimitRecord[], since = -Infinity): LimitRecord | undefined {
+  return limits.findLast((r) =>
+    r.class === "credit" && r.confirmed && r.learn &&
+    r.lift !== undefined && r.lift >= since &&
+    r.diagnosis?.source === "own" && r.diagnosis.held !== undefined &&
+    !!r.diagnosisEvidence?.fullOwnStep
+  );
+}
+// Only the latest diagnosis keeps its inputs, which bounds the history file. While the own-count
+// hold is in force, the limit it came from keeps them too: a later limit that measured no hold,
+// such as one a reboot left without an anchor, or one more than confirm_days after the last, would
+// otherwise leave the hold nothing to corroborate it, and the readings invalid until another limit.
+export function pruneDiagnosisEvidence(
+  limits: LimitRecord[],
+  latest: LimitRecord,
+  s: CalibrationState,
+) {
+  const held = s.ownHold ? ownHoldSource(limits) : undefined;
+  for (const r of limits) if (r !== latest && r !== held) delete r.diagnosisEvidence;
 }
 function corroborate(
   { p, h, c, s, change }: Run,
@@ -2106,7 +2188,8 @@ function corroborate(
   { open, residual, rise }: { open: InvalidSpan; residual: number; rise: number },
 ) {
   // Trusted again, the readings since the change measure it for the hold, over all its pairs.
-  const oldFit = s.fit!, held = meanResidual(p, h, oldFit, open.from - 1, to) ?? residual;
+  const oldFit = driftReference(s)!,
+    held = meanResidual(p, h, oldFit, open.from - 1, to) ?? residual;
   const fit = { ...oldFit, b: oldFit.b + held };
   const at = Math.min(open.from, s.pending?.at ?? Infinity);
   // An earlier drift change it adopts keeps the margin and gap from before that change, so what
@@ -2208,12 +2291,9 @@ function learn(
     // the stale fallback's 0.08, so the hold covers them plus the step as well.
     const step = d.held - (record.heldGap ?? record.gap);
     const charged = { ...record.settings, add: record.settings.add + step };
-    const span = d.anchor ? (d.onset - d.anchor.at) / 1000 : 0;
-    const central = span > 0 ? d.held - d.eta / span : d.held;
     s.ownHold = {
       gap,
       settings: maxSettings(maxSettings(s.ownHold?.settings ?? held, held), charged),
-      central: Math.max(s.ownHold?.central ?? 0, central),
     };
   }
   // The first limit has no earlier anchor, so no gap. The estimate it still showed at entry is
@@ -2474,6 +2554,8 @@ export type CalibrationStatus = {
   gap: number;
   gapUpperBound: number;
   fit: MeterFit | null;
+  // The newest fit that qualified, which drift detection follows when the margin kept an older one.
+  referenceFit: MeterFit | null;
   cusum: Cusum & { pending: CalibrationState["pending"] };
   apiStaleSince: number | null;
   readingsInvalid: boolean;
@@ -2526,6 +2608,7 @@ export function calibrationSummary(
     gap: state.gap,
     gapUpperBound: state.gapUpperBound,
     fit: state.fit,
+    referenceFit: state.referenceFit ?? null,
     cusum: { ...state.cusum, pending: state.pending },
     apiStaleSince: state.apiStaleSince,
     readingsInvalid: state.invalid,

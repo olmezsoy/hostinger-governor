@@ -1,8 +1,10 @@
-import { assert, assertEquals } from "@std/assert";
+import { assert, assertAlmostEquals, assertEquals } from "@std/assert";
 import {
   calibrationConfig,
+  type CalibrationState,
   classifyLimit,
   initialCalibration,
+  marginFromFit,
   updateCalibration,
 } from "../src/calibration.ts";
 import { DAY, emptyHistory, FLAGS, SLOT_MS } from "../src/history.ts";
@@ -137,6 +139,195 @@ Deno.test("a bad feed cannot tighten the margin through the daily refit", () => 
   // The refit runs daily here. It must see the streak marked invalid first, and never fit it.
   assert(triggers.includes("readings-invalid"), triggers.join(" "));
   assertEquals(s.applied, c.start);
+});
+
+// A box whose meter settles below its first fit and its start: the first fit reads 1.06× + 0.08
+// for three days, then the meter settles to 1.02× + 0.08 for at least three more, where the
+// 1.05× + 0.04 start reads higher than the meter. Each daily refit on the lower readings would
+// loosen the margin, so the margin keeps the first fit, and drift detection follows the refits.
+// Alternating noise of 0.05 cores keeps the settling under the 6-sigma extreme test.
+function startTighterBox(days = 2, first = 1.06, settled = 1.02) {
+  const c = calibrationConfig({ mode: "apply", fit: { days, min_pairs: 48, min_days: 1 } });
+  const h = emptyHistory("test", 1, at);
+  const cores = (i: number) => 3 + i % 3;
+  let i = 0, s = initialCalibration(c, at);
+  const triggers: string[] = [];
+  const step = (a: number, jump = 0, noisy = true) => {
+    for (let k = 0; k < 3; k++) h.slots.push(slot(at + (i * 3 + k) * SLOT_MS, cores(i)));
+    const host = a * cores(i) + 0.08 + (noisy ? i % 2 ? 0.05 : -0.05 : 0) + jump;
+    h.readings.push({ at: at + (i + 1) * 1_800_000, v: host / p.vcpus * 100 });
+    i++;
+    const r = updateCalibration(p, h, s, c, h.readings.at(-1)!.at + 60_000, 30000);
+    triggers.push(...r.changes.map((d) => d.trigger));
+    s = r.state;
+    return r;
+  };
+  for (let n = 0; n < 3 * 48; n++) step(first);
+  const fit = s.fit!, applied = { ...s.applied }, settling = triggers.length;
+  for (let n = 0; n < Math.max(3, days + 1) * 48; n++) step(settled);
+  return {
+    c,
+    h,
+    step,
+    triggers,
+    state: () => s,
+    first: fit,
+    applied,
+    settled: triggers.slice(settling),
+  };
+}
+
+Deno.test("drift detection follows a refit the tighten-only margin discards", () => {
+  const box = startTighterBox();
+  const settled = box.state();
+  // The first fit qualified on its own, and the margin keeps it.
+  assertAlmostEquals(box.first.a, 1.06, 0.005);
+  assertEquals(settled.fit, box.first);
+  assertEquals(settled.applied, box.applied);
+  assertEquals(box.settled, []);
+  assertAlmostEquals(settled.referenceFit!.a, 1.02, 0.005);
+  assertAlmostEquals(settled.referenceFit!.b, 0.08, 0.03);
+  // A 0.1-core rise is still below the first fit, but above the meter's current readings. The
+  // reference sees it accumulate; the frozen first fit never does.
+  for (let n = 0; n < 12; n++) box.step(1.02, 0.1);
+  assert(box.triggers.includes("cusum-alarm"), box.triggers.join(" "));
+  const alarmed = box.state();
+  assertEquals(alarmed.pending!.oldFit, settled.referenceFit);
+  const frozen = updateCalibration(
+    p,
+    box.h,
+    { ...settled, referenceFit: settled.fit! },
+    box.c,
+    box.h.readings.at(-1)!.at + 60_000,
+    30000,
+  ).state;
+  assertEquals(frozen.pending, null);
+  assertEquals(frozen.cusum.alarm, false);
+  // Verification judges the change against the meter that detected it. Against the first fit the
+  // rise reads below zero and would be withdrawn.
+  for (let n = 0; n < box.c.cusum.verify_readings; n++) box.step(1.02, 0.1);
+  assert(box.triggers.includes("cusum-keep"), box.triggers.join(" "));
+  assert(!box.triggers.includes("cusum-revert"));
+});
+
+Deno.test("drift detection follows the refits of a box whose margin is held at its start", () => {
+  // #19's box: its first fit, 1.03× + 0.08, asks for less than the 1.05× + 0.04 start, so the margin
+  // stays at the start, no refit can tighten it, and the margin's fit stays the first one for good.
+  // Drift detection used to judge against that frozen fit.
+  const box = startTighterBox(2, 1.03, 1.01);
+  const settled = box.state(), first = box.first, reference = settled.referenceFit!;
+  assertEquals(box.applied, box.c.start);
+  assertEquals(settled.applied, box.c.start);
+  assertEquals(settled.fit, first);
+  assertAlmostEquals(first.a, 1.03, 0.005);
+  assertAlmostEquals(reference.a, 1.01, 0.005);
+  for (const u of [3, 4, 5]) assert(reference.a * u + reference.b < first.a * u + first.b, `${u}`);
+  // A 0.06-core rise reads at or below the frozen first fit from three guest cores up, but the
+  // reference sees it.
+  for (let n = 0; n < 96 && !box.triggers.includes("cusum-alarm"); n++) box.step(1.01, 0.06);
+  assert(box.triggers.includes("cusum-alarm"), box.triggers.join(" "));
+  assertEquals(box.state().applied, box.c.start);
+});
+
+Deno.test("a new drift reference starts the CUSUM sums again", () => {
+  const box = startTighterBox();
+  const settled = box.state();
+  // Sums carried over from the reference before: the downward one is #19's box's on Nov 4.
+  const carried = { ...settled.cusum, s: 5, down: 62.9, since: settled.lastPaired };
+  const last = box.h.readings.at(-1)!.at;
+  const next = (fitAt: number) => {
+    const h = structuredClone(box.h);
+    h.slots.push(...Array.from({ length: 3 }, (_, k) => slot(last + k * SLOT_MS, 4)));
+    h.readings.push({ at: last + 1_800_000, v: (1.02 * 4 + 0.08) / p.vcpus * 100 });
+    const s = { ...structuredClone(settled), cusum: carried, fitAt };
+    return updateCalibration(p, h, s, box.c, last + 1_860_000, 30000).state;
+  };
+  // A daily refit replaces the reference, and the one pair after it starts the sums from zero.
+  const refit = next(last - DAY);
+  assert(refit.fitAt === last + 1_860_000);
+  assert(refit.cusum.s < 1 && refit.cusum.down < 1, JSON.stringify(refit.cusum));
+  // Without a refit the same pair only adds to them.
+  const kept = next(last);
+  assert(kept.cusum.s > 4 && kept.cusum.down > 60, JSON.stringify(kept.cusum));
+});
+
+Deno.test("a change the margin already covered keeps the gap and margin learned during it", () => {
+  const box = startTighterBox(4);
+  for (let n = 0; n < 12 + box.c.cusum.verify_readings; n++) box.step(1.02, 0.1);
+  const verified = box.state();
+  assert(verified.pending?.verified);
+  // A limit during the change taught a gap. The fit after the change still reads below the margin's
+  // fit, so it carries nothing the gap could have come from: #13 rule 3's reset would loosen it.
+  const gap = verified.gap + 0.03;
+  const taught = marginFromFit(p, verified.fit!, gap, verified.applied, box.c);
+  Object.assign(verified, { gap, applied: taught, fitAt: 0 });
+  for (let n = 0; n < 48 && box.state().pending; n++) box.step(1.02, 0.1);
+  const after = box.state();
+  assertEquals(after.pending, null);
+  assertEquals(after.gap, gap);
+  assert(
+    after.applied.mul >= taught.mul && after.applied.add >= taught.add,
+    JSON.stringify(after.applied),
+  );
+  // Later daily refits must use the preserved margin too, while their window still reaches the
+  // change point and after it has moved past it.
+  const fittedAt = after.fitAt!;
+  for (let n = 0; n < box.c.fit.days * 48; n++) {
+    box.step(1.02, 0.1);
+    const later = box.state();
+    assertEquals(later.gap, gap);
+    assert(later.applied.mul >= taught.mul && later.applied.add >= taught.add);
+  }
+  assert(box.state().fitAt! > fittedAt);
+});
+
+Deno.test("crossing fits keep a limit's gap and never allow more guest cores", () => {
+  const box = startTighterBox(4);
+  // This meter rises above the reference, but crosses the margin's fit above the operating load.
+  for (let n = 0; n < 96 && !box.state().pending?.verified; n++) box.step(1.07, -0.06);
+  const verified = box.state();
+  assert(verified.pending?.verified);
+  const gap = verified.gap + 0.1;
+  const taught = marginFromFit(p, verified.fit!, gap, verified.applied, box.c);
+  Object.assign(verified, { gap, applied: taught });
+  const allowed = (p.baseline - taught.add) / taught.mul;
+  for (let n = 0; n < 96 && box.state().pending; n++) box.step(1.07, -0.06);
+  const after = box.state();
+  assertEquals(after.pending, null);
+  assert(after.fit!.a * 3 + after.fit!.b < box.first.a * 3 + box.first.b);
+  assert(after.fit!.a * p.vcpus + after.fit!.b > box.first.a * p.vcpus + box.first.b);
+  assertEquals(after.gap, gap);
+  assert(after.applied.mul >= taught.mul && after.applied.add >= taught.add);
+  assert((p.baseline - after.applied.add) / after.applied.mul <= allowed);
+  // Settling refits retain the same correction too.
+  for (let n = 0; n < box.c.fit.days * 48; n++) {
+    box.step(1.07, -0.06);
+    assertEquals(box.state().gap, gap);
+    assert((p.baseline - box.state().applied.add) / box.state().applied.mul <= allowed);
+  }
+});
+
+Deno.test("the extreme-residual test and its recovery follow the drift reference", () => {
+  const box = startTighterBox();
+  const settled = structuredClone(box.state());
+  // 0.42 cores above the meter is beyond 6 sigma of the reference, but within it of the first fit.
+  for (let n = 0; n < 3; n++) box.step(1.02, 0.42, false);
+  assert(box.triggers.includes("readings-invalid"), box.triggers.join(" "));
+  assert(box.state().residualInvalid);
+  for (let n = 0; n < 4; n++) box.step(1.02);
+  assert(box.triggers.includes("readings-resumed"), box.triggers.join(" "));
+  assert(!box.state().residualInvalid);
+  // Against the frozen first fit the same three readings were never extreme. No daily refit moves
+  // the reference off it meanwhile.
+  const h = structuredClone(box.h), all = h.readings;
+  const from = all.findIndex((r) => r.at > settled.lastPaired);
+  let s: CalibrationState = { ...settled, referenceFit: settled.fit!, fitAt: all.at(-1)!.at };
+  for (let k = from; k < from + 3; k++) {
+    h.readings = all.slice(0, k + 1);
+    s = updateCalibration(p, h, s, box.c, all[k].at + 60_000, 30000).state;
+    assertEquals(s.extreme, 0);
+  }
+  assert(!s.residualInvalid);
 });
 
 Deno.test("fresh normal residuals recover from the invalid-reading latch", () => {

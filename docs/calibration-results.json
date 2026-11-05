@@ -243,7 +243,7 @@
             "ratio": 1.009207206184302
           },
           "capCount": 2,
-          "evidenceDigest": "95ab1799"
+          "evidenceDigest": "f5ea735d"
         }
       ],
       "classifications": [
@@ -479,7 +479,7 @@
       "clampShare": 0.9954737103174603,
       "clockStepClampShare": null,
       "limitedHours": 0,
-      "cpuCoreHours": 5178.714038513412,
+      "cpuCoreHours": 5180.880897901202,
       "gap": 0,
       "gapBilledCoreSeconds": 0,
       "corruptionRecovered": false,
@@ -493,22 +493,22 @@
         "add": 0.08
       },
       "rebootPreserved": false,
-      "firstClampAfterDrift": 2460690,
+      "firstClampAfterDrift": 2453400,
       "episodeSettingsUnchanged": true,
       "applied": {
         "mul": 1.075,
-        "add": 0.06469752022073472,
+        "add": 0.06470858599711349,
         "floor": 0.05
       },
       "fit": {
-        "a": 1.0606096280389767,
-        "b": 0.050560714464451983,
-        "aHi": 1.0660345632281865,
+        "a": 1.060615037916457,
+        "b": 0.050550211169122505,
+        "aHi": 1.0660411167798476,
         "sigma": [
-          0.008971653254585403,
-          0.018399021222649088
+          0.00896224203490948,
+          0.018399946721757446
         ],
-        "sigmaFloor": 0.043837673582320436,
+        "sigmaFloor": 0.04384010438499265,
         "pairs": 666,
         "days": 15
       },
@@ -529,7 +529,7 @@
           "changed": true
         },
         {
-          "at": 2462520,
+          "at": 2453400,
           "trigger": "cusum-alarm",
           "mode": "apply",
           "changed": true
@@ -541,7 +541,13 @@
           "changed": true
         },
         {
-          "at": 2557140,
+          "at": 2471610,
+          "trigger": "drift-hold",
+          "mode": "apply",
+          "changed": true
+        },
+        {
+          "at": 2544420,
           "trigger": "cusum-keep",
           "mode": "apply",
           "changed": false
@@ -625,6 +631,12 @@
           "changed": true
         },
         {
+          "at": 3823860,
+          "trigger": "fit",
+          "mode": "apply",
+          "changed": true
+        },
+        {
           "at": 3998580,
           "trigger": "fit",
           "mode": "apply",
@@ -655,7 +667,7 @@
           "changed": true
         }
       ],
-      "ceilingDigest": "fb709c37",
+      "ceilingDigest": "b2204c42",
       "invalidSlots": 0,
       "pairsDuringClockJump": 2,
       "readingGaps": 17,
@@ -769,11 +781,11 @@
           ],
           "confirmed": true,
           "learn": true,
+          "firstTest": "unknown",
           "testDelivery": {
             "busy": 6,
             "demand": 7.1000000000000005
           },
-          "firstTest": "unknown",
           "limitedAt": 1792411000000,
           "lift": 1792411960000,
           "recovery": {
@@ -931,11 +943,11 @@
             ],
             "confirmed": true,
             "learn": true,
+            "firstTest": "unknown",
             "testDelivery": {
               "busy": 6,
               "demand": 7.1000000000000005
             },
-            "firstTest": "unknown",
             "limitedAt": 1792411000000,
             "lift": 1792411960000,
             "recovery": {
@@ -1675,12 +1687,12 @@
       "clampShare": 0.12047371031746032,
       "clockStepClampShare": null,
       "limitedHours": 0,
-      "cpuCoreHours": 5211.290109864979,
+      "cpuCoreHours": 5214.046345054043,
       "gap": 0,
       "gapBilledCoreSeconds": 0,
       "corruptionRecovered": true,
       "ticksAfterCorruption": 141120,
-      "slowestTickMs": 53.36854199995287,
+      "slowestTickMs": 17.230749999987893,
       "historyReadable": true,
       "widened": false,
       "widenCalls": 0,
@@ -1717,21 +1729,9 @@
           "trigger": "fit",
           "mode": "apply",
           "changed": true
-        },
-        {
-          "at": 1878810,
-          "trigger": "cusum-alarm",
-          "mode": "apply",
-          "changed": true
-        },
-        {
-          "at": 1969800,
-          "trigger": "cusum-revert",
-          "mode": "apply",
-          "changed": true
         }
       ],
-      "ceilingDigest": "5d98580f",
+      "ceilingDigest": "7b264d43",
       "invalidSlots": 0,
       "pairsDuringClockJump": 2,
       "readingGaps": 16,
@@ -1745,7 +1745,7 @@
     },
     {
       "id": "S12",
-      "wouldBeLogs": 24,
+      "wouldBeLogs": 22,
       "creditLimits": 1,
       "hostLimits": [
         {
@@ -1836,6 +1836,10 @@
           },
           "class": "credit",
           "legacyLearned": true,
+          "legacyMargin": {
+            "mul": 1.07,
+            "add": 0.1
+          },
           "diagnosis": {
             "gap": 0.006577885194496545,
             "source": "readings",
@@ -1878,14 +1882,8 @@
           "changed": true
         },
         {
-          "at": 2460690,
+          "at": 2453400,
           "trigger": "cusum-alarm",
-          "mode": "shadow",
-          "changed": true
-        },
-        {
-          "at": 2466150,
-          "trigger": "drift-hold",
           "mode": "shadow",
           "changed": true
         },
@@ -1896,7 +1894,7 @@
           "changed": true
         },
         {
-          "at": 2553510,
+          "at": 2544420,
           "trigger": "cusum-keep",
           "mode": "shadow",
           "changed": false
@@ -1951,12 +1949,6 @@
         },
         {
           "at": 3299700,
-          "trigger": "fit",
-          "mode": "shadow",
-          "changed": true
-        },
-        {
-          "at": 3387060,
           "trigger": "fit",
           "mode": "shadow",
           "changed": true
@@ -2042,7 +2034,7 @@
       "quotaPeriodRestored": false,
       "comparison": {
         "id": "S12-comparison",
-        "wouldBeLogs": 24,
+        "wouldBeLogs": 22,
         "creditLimits": 1,
         "hostLimits": [
           {
@@ -2133,6 +2125,10 @@
             },
             "class": "credit",
             "legacyLearned": true,
+            "legacyMargin": {
+              "mul": 1.07,
+              "add": 0.1
+            },
             "diagnosis": {
               "gap": 0.006577885194496545,
               "source": "readings",
@@ -2175,14 +2171,8 @@
             "changed": true
           },
           {
-            "at": 2460690,
+            "at": 2453400,
             "trigger": "cusum-alarm",
-            "mode": "off",
-            "changed": true
-          },
-          {
-            "at": 2466150,
-            "trigger": "drift-hold",
             "mode": "off",
             "changed": true
           },
@@ -2193,7 +2183,7 @@
             "changed": true
           },
           {
-            "at": 2553510,
+            "at": 2544420,
             "trigger": "cusum-keep",
             "mode": "off",
             "changed": false
@@ -2248,12 +2238,6 @@
           },
           {
             "at": 3299700,
-            "trigger": "fit",
-            "mode": "off",
-            "changed": true
-          },
-          {
-            "at": 3387060,
             "trigger": "fit",
             "mode": "off",
             "changed": true
@@ -2519,7 +2503,7 @@
       "clampShare": 0.9954737103174603,
       "clockStepClampShare": null,
       "limitedHours": 0,
-      "cpuCoreHours": 5178.714038513412,
+      "cpuCoreHours": 5180.880897901202,
       "gap": 0,
       "gapBilledCoreSeconds": 0,
       "corruptionRecovered": false,
@@ -2533,22 +2517,22 @@
         "add": 0.08
       },
       "rebootPreserved": false,
-      "firstClampAfterDrift": 2460690,
+      "firstClampAfterDrift": 2453400,
       "episodeSettingsUnchanged": true,
       "applied": {
         "mul": 1.075,
-        "add": 0.06469752022073472,
+        "add": 0.06470858599711349,
         "floor": 0.05
       },
       "fit": {
-        "a": 1.0606096280389767,
-        "b": 0.050560714464451983,
-        "aHi": 1.0660345632281865,
+        "a": 1.060615037916457,
+        "b": 0.050550211169122505,
+        "aHi": 1.0660411167798476,
         "sigma": [
-          0.008971653254585403,
-          0.018399021222649088
+          0.00896224203490948,
+          0.018399946721757446
         ],
-        "sigmaFloor": 0.043837673582320436,
+        "sigmaFloor": 0.04384010438499265,
         "pairs": 666,
         "days": 15
       },
@@ -2569,7 +2553,7 @@
           "changed": true
         },
         {
-          "at": 2462520,
+          "at": 2453400,
           "trigger": "cusum-alarm",
           "mode": "apply",
           "changed": true
@@ -2581,7 +2565,13 @@
           "changed": true
         },
         {
-          "at": 2557140,
+          "at": 2471610,
+          "trigger": "drift-hold",
+          "mode": "apply",
+          "changed": true
+        },
+        {
+          "at": 2544420,
           "trigger": "cusum-keep",
           "mode": "apply",
           "changed": false
@@ -2665,6 +2655,12 @@
           "changed": true
         },
         {
+          "at": 3823860,
+          "trigger": "fit",
+          "mode": "apply",
+          "changed": true
+        },
+        {
           "at": 3998580,
           "trigger": "fit",
           "mode": "apply",
@@ -2695,7 +2691,7 @@
           "changed": true
         }
       ],
-      "ceilingDigest": "fb709c37",
+      "ceilingDigest": "b2204c42",
       "invalidSlots": 0,
       "pairsDuringClockJump": 2,
       "readingGaps": 17,
@@ -2709,7 +2705,7 @@
         "clampShare": 0.9954737103174603,
         "clockStepClampShare": null,
         "limitedHours": 0,
-        "cpuCoreHours": 5178.222014104982,
+        "cpuCoreHours": 5180.880897901202,
         "gap": 0,
         "gapBilledCoreSeconds": 0,
         "corruptionRecovered": false,
@@ -2727,18 +2723,18 @@
         "episodeSettingsUnchanged": true,
         "applied": {
           "mul": 1.075,
-          "add": 0.06469752022073472,
+          "add": 0.06470858599711349,
           "floor": 0.05
         },
         "fit": {
-          "a": 1.0606096280389767,
-          "b": 0.050560714464451983,
-          "aHi": 1.0660345632281865,
+          "a": 1.060615037916457,
+          "b": 0.050550211169122505,
+          "aHi": 1.0660411167798476,
           "sigma": [
-            0.008971653254585403,
-            0.018399021222649088
+            0.00896224203490948,
+            0.018399946721757446
           ],
-          "sigmaFloor": 0.043837673582320436,
+          "sigmaFloor": 0.04384010438499265,
           "pairs": 666,
           "days": 15
         },
@@ -2759,7 +2755,7 @@
             "changed": true
           },
           {
-            "at": 2462520,
+            "at": 2453400,
             "trigger": "cusum-alarm",
             "mode": "apply",
             "changed": true
@@ -2771,13 +2767,25 @@
             "changed": true
           },
           {
-            "at": 2557140,
+            "at": 2471610,
+            "trigger": "drift-hold",
+            "mode": "apply",
+            "changed": true
+          },
+          {
+            "at": 2544420,
             "trigger": "cusum-keep",
             "mode": "apply",
             "changed": false
           },
           {
             "at": 2600820,
+            "trigger": "fit",
+            "mode": "apply",
+            "changed": true
+          },
+          {
+            "at": 2688180,
             "trigger": "fit",
             "mode": "apply",
             "changed": true
@@ -2849,6 +2857,12 @@
             "changed": true
           },
           {
+            "at": 3823860,
+            "trigger": "fit",
+            "mode": "apply",
+            "changed": true
+          },
+          {
             "at": 3998580,
             "trigger": "fit",
             "mode": "apply",
@@ -2879,7 +2893,7 @@
             "changed": true
           }
         ],
-        "ceilingDigest": "c896d08c",
+        "ceilingDigest": "9655e325",
         "invalidSlots": 0,
         "pairsDuringClockJump": 2,
         "readingGaps": 17,
@@ -2889,7 +2903,7 @@
       "assessment": {
         "status": "pass",
         "notes": [],
-        "cpuCostPercent": -0.009501802106773625,
+        "cpuCostPercent": 0,
         "limitsPrevented": 0
       }
     }
