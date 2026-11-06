@@ -449,7 +449,8 @@ Deno.test("shutdown waits for the broker to finish before a subsequent request",
     await flush();
     assertEquals(closed, false);
     await Deno.writeTextFile(release, "");
-    await within(shutdown);
+    // The broker still has to notice the release, exit and be read, so allow as long as its start.
+    await within(shutdown, 1000);
     assert((await Deno.stat(finished)).isFile);
     await f.advance(1800);
     assertEquals(requests, 1);
