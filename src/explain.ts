@@ -37,7 +37,7 @@ async function readState<T>(path: string, read: () => Promise<T>): Promise<T> {
       throw new Error(`${path} does not exist yet: the daemon has not saved its state`);
     }
     if (error instanceof Deno.errors.PermissionDenied) {
-      throw new Error(
+      throw new Deno.errors.PermissionDenied(
         `cannot read ${path}: calibrate --explain needs root or the governor user, ` +
           "as in sudo governor calibrate --explain",
       );

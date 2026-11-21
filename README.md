@@ -28,7 +28,7 @@ full use. At zero the whole VPS drops to a fraction of its CPU (30% on KVM 2, 4 
 balance rebuilds, and while work keeps pressing on that limit, nothing is earned. A busy server can
 stay limited for as long as the load lasts.
 
-![Diagram of how hostinger-governor works. Hostinger holds the CPU credit bank, and the VPS cannot read its balance. Every 30 seconds by default, governor.service reads CPU and steal from the kernel, keeps a cautious estimate of the bank, and sets one shared CPU quota on user.slice: every login, governor exec jobs, and services or Docker you enroll. Everything else is measured, not capped. Provider diagnostics start every 30 minutes unless limited, and a request already in flight can still finish. Readings can only tighten the estimate in apply mode. Spending: every vCPU while the estimate is high, then a glide onto the spending floor, 20% in off or shadow and initially 5% in apply; with no governor, the same load empties the bank and Hostinger limits the VPS. After a reboot, an install or a limit, the estimate starts at 0, so the ceiling starts under the baseline. When steal follows demand during a 20-second probe at 0.2 vCPU, or reaches 60% of demand, the governor treats the VPS as limited: it holds user.slice below the host limit, down to 0.2 vCPU, until a lift test passes. At the lift it classifies the limit; a sustained-use limit gets back the estimate its reset hid. If the probe does not confirm a limit, the governor stays in Spending and retries later. A saved limit resumes on start. While the daemon is not running, systemd holds user.slice, SSH included, at 0.2 vCPU by default.](docs/how-it-works.svg)
+![Diagram of how hostinger-governor works. Hostinger holds the CPU credit bank, and the VPS cannot read its balance. Every 30 seconds by default, governor.service reads CPU and steal from the kernel, keeps a cautious estimate of the bank, and sets one shared CPU quota on user.slice: every login, governor exec jobs, and services or Docker you enroll. Everything else is measured, not capped. Provider diagnostics start every 30 minutes unless limited, and a request already in flight can still finish. Readings can only tighten the estimate in apply mode. Spending: every vCPU while the estimate is high, then a glide onto the spending floor, 20% in off or shadow and initially 5% in apply; with no governor, the same load empties the bank and Hostinger limits the VPS. After a reboot, an install or a limit, the estimate starts at 0, so the ceiling starts under the baseline. When steal follows demand during a 20-second probe at 0.2 vCPU, which runs only while user.slice has work to cut, or reaches 60% of demand and a quarter of the host limit, or the whole VPS sits at the host limit while work outside an idle user.slice presses on it, the governor treats the VPS as limited: it holds user.slice below the host limit, down to 0.2 vCPU, until a lift test passes. At the lift it classifies the limit; a sustained-use limit gets back the estimate its reset hid. If the probe does not confirm a limit, the governor stays in Spending and retries later. A saved limit resumes on start. While the daemon is not running, systemd holds user.slice, SSH included, at 0.2 vCPU by default.](docs/how-it-works.svg)
 
 The governor measures the whole machine and caps workloads placed under `user.slice`:
 
@@ -54,23 +54,34 @@ The governor measures the whole machine and caps workloads placed under `user.sl
   not a guarantee of live Hostinger behavior.
 - **Tells a limit from noisy neighbours.** Steal can come from either. When steal appears, the
   governor compares steal with demand, cuts the quota for 20 seconds, then restores it. A limit's
-  steal should follow demand. This is a heuristic; the guest cannot read the host's count of
-  throttled scheduling periods.
+  steal should follow demand. The probe runs only while the slice's own demand, its busy CPU and its
+  share of the steal, is at least 0.4 cores (0.3 cores on KVM 1 and 2): below that the cut removes
+  too little, and on an idle box neighbour noise alone used to confirm false limits. Steal of 60% of
+  demand counts as a limit without a probe only when it is also a quarter of the host limit in
+  cores; otherwise a busy slice is still probed. Work outside an idle slice can still press on a
+  limit: when the whole VM sits near the host limit (85% of it up to +0.1 cores) with 15% steal or
+  more, the governor confirms the cap with its burners before entering so noisy neighbours near the
+  cap cannot cause false limits. After a confirmed credit lift, for as long as full use takes to
+  spend the 20% a lift leaves (36 minutes at cost on every plan, about 31 with the margin on KVM 8,
+  measured from the last failed lift test), only evident steal starts a limit. Failed probes and cap
+  checks back off from 10 minutes, doubling to an hour. This is a heuristic; the guest cannot read
+  the host's count of throttled scheduling periods.
 - **Helps the VPS recover.** Under a limit it reduces login and enrolled-workload demand so earning
   can resume. It accounts for services outside the slice and tightens every minute while demand
-  still presses on the limit, down to a 20% quota of one core. A load test requires less than 15%
-  demand steal and actual CPU delivery above the host limit. Tests start at the estimated recovery
-  point, or after the earliest possible idle recovery time. Failed tests back off for 2, 4, 8, then
-  15 minutes from completion. Probe and test intervals still count toward billed CPU, but cannot
-  tighten the quota or masquerade as outside demand. Obvious or sharply increased steal can bypass a
-  neighbour-probe cooldown. These remain heuristics, so detection can be delayed and neighbours can
-  cause false alarms. A limit teaches only when a lift test during it fails with limited evidence
-  and, at the lift, its delivered CPU stayed flat within 0.3 cores of the plan's limit, or flat
-  below it: a credit limit. A cap that starts high or falls marks sustained-use throttling, which
-  teaches nothing and keeps the allowance at or below the baseline for three hours after the lift.
-  Its entry reset the estimate to 0 although the bank wasn't empty, so the estimate it hid comes
-  back, replayed on the guest's own count. Unknown limits teach nothing and alert. A first test that
-  passes leaves the margin unchanged and never restores old credits.
+  still presses on the limit, down to a 20% quota of one core, where the slice's own demand would
+  feel the tighter quota. A load test requires less than 15% demand steal and actual CPU delivery
+  above the host limit. Tests start at the estimated recovery point, or after the earliest possible
+  idle recovery time. Failed tests back off for 2, 4, 8, then 15 minutes from completion. Probe and
+  test intervals still count toward billed CPU, but cannot tighten the quota or masquerade as
+  outside demand. Obvious or sharply increased steal can bypass a neighbour-probe cooldown. These
+  remain heuristics, so detection can be delayed and neighbours can cause false alarms. A limit
+  teaches only when a lift test during it fails with limited evidence and, at the lift, its
+  delivered CPU stayed flat within 0.3 cores of the plan's limit, or flat below it: a credit limit.
+  A cap that starts high or falls marks sustained-use throttling, which teaches nothing and keeps
+  the allowance at or below the baseline for three hours after the lift. Its entry reset the
+  estimate to 0 although the bank wasn't empty, so the estimate it hid comes back, replayed on the
+  guest's own count. Unknown limits teach nothing and alert. A first test that passes leaves the
+  margin unchanged and never restores old credits.
 - **Keeps a fallback quota.** The default is 20% of one core before startup, after shutdown or a
   crash, and early in boot. Operators can choose a different fallback. The helper can change only
   `user.slice`; recovery and probe floors still use 20%.
@@ -544,6 +555,9 @@ billing.
   per-vCPU case remains limited even at the 20% slice floor, because uncapped system work shares the
   same throttled vCPU. Aggregate outside CPU can look harmless while a single vCPU is overloaded.
   Reduce or reroute that work and verify the deployed rules; probe backoff alone cannot fix it.
+- Limit detection's thresholds are in cores: a probe needs 0.4 cores of slice demand, and the
+  pinned-at-the-cap entry a band of -0.15 to +0.1 cores around the host limit. The simulator models
+  KVM 8 only, so on smaller plans, where the host limit is 0.4 to 1.2 cores, they are unvalidated.
 - Hostinger may change its rules. They live in `src/plans.ts`; check that article when it announces
   changes.
 

@@ -1,5 +1,43 @@
 # Changelog
 
+## v0.3.2
+
+- Stop false credit limits on an idle box when neighbour steal rises:
+  - The limit probe runs only while `user.slice`'s own demand (its busy CPU plus its share of the
+    steal, excluding steal on work outside the slice) is at least 0.4 cores on KVM 4 and up, or 0.3
+    cores on KVM 1 and 2. Below that, cutting the slice to 0.2 cores removes too little demand to
+    tell a limit from neighbour noise.
+  - Steal of 60% of demand enters a limit without a probe only when it is also at least a quarter of
+    the plan's limit in cores; otherwise a busy slice is still probed.
+  - When work outside an idle slice sits near the plan's limit (85% of the limit up to +0.1 cores)
+    with at least 15% steal, the governor confirms the cap with its burners before entering so noisy
+    neighbours near the cap do not cause false limits.
+  - After a confirmed credit lift, only evident steal starts a limit for as long as full use takes
+    to spend the 20% bank a lift leaves, measured from the last failed lift test. Unknown and
+    sustained-use lifts set no quiet window. Failed probes and cap checks keep the 10-minute
+    exponential backoff up to an hour.
+  - During a limit, the ceiling tightens only where the slice's current-sample demand exceeds the
+    tighter ceiling.
+- Unstick drift verification during a pending change: while a CUSUM drift change is pending, the
+  extreme-residual test, its recovery and the fit's 6σ filter judge each reading against the band
+  between the reference and the raised fit. Against the raised fit alone, idle readings sitting at
+  the reference scored 6σ below an offset-only raise, marked the readings invalid and stalled
+  verification.
+- Report fixed upstream error codes from the Hostinger broker (`upstream_status` with the HTTP
+  status, including refused redirects, and `upstream_unavailable` for timeouts, connection/TLS
+  errors and truncated or malformed HTTP replies) so the daemon logs the cause without exposing
+  upstream text.
+- Print a clean permission message instead of a Deno stack trace when a non-root user runs
+  `governor calibrate --explain` (or other commands lacking file access), and state in the startup
+  `governor up` line when a reboot restarts the credit estimate at 0%.
+
+Upgrade by running the installer again. Configuration, credit estimates, the legacy margin and the
+learned calibration are kept. To get the broker's new upstream error codes, also update
+`/usr/local/libexec/governor-hostinger.py` separately as described in
+[Hostinger credentials](docs/hostinger-credentials.md). On a box upgraded while a drift change is
+pending, `governor calibrate --explain` may report a checkpoint digest mismatch until the first pass
+writes a new checkpoint.
+
 ## v0.3.1
 
 - Address issue #19: drift detection follows the newest meter fit that qualified, not only the fit

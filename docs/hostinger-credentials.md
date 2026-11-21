@@ -141,11 +141,15 @@ response.
 
 An authorized request may instead receive `{"version":1,"vm_id":1234567,"error":"busy"}` or the
 fixed code `rate_limited`, with exit status zero. Governor reports a temporary refusal with a retry
-instruction. A metrics request may also receive the fixed code `invalid_metrics` when Hostinger
-returned metrics no CPU percentage can be: a unit other than percent, a timestamp that isn't Unix
-seconds, a value that isn't a number from 0 to 100, or a reading stamped more than five minutes
-ahead. Governor then treats the readings as invalid, as it does on its own API path, and alerts once
-with `readings-invalid`. No arbitrary error text is accepted through this channel.
+instruction. A failed upstream call may return
+`{"version":1,"vm_id":1234567,"error":"upstream_status","status":503}` with an integer HTTP status
+from 100 to 599, or `{"version":1,"vm_id":1234567,"error":"upstream_unavailable"}` on a timeout,
+connection, TLS or truncated-response error, so Governor logs the HTTP status or outage without
+exposing upstream response text. A metrics request may also receive the fixed code `invalid_metrics`
+when Hostinger returned metrics no CPU percentage can be: a unit other than percent, a timestamp
+that isn't Unix seconds, a value that isn't a number from 0 to 100, or a reading stamped more than
+five minutes ahead. Governor then treats the readings as invalid, as it does on its own API path,
+and alerts once with `readings-invalid`. No arbitrary error text is accepted through this channel.
 
 Responses are limited to 4 MiB. Governor attempts to stop a command after 25 seconds. A privileged
 broker must also bound its own lifetime because an unprivileged caller may not be able to terminate

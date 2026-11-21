@@ -33,7 +33,7 @@ import { readClock } from "./sample.ts";
 import { execOptions, scopeArgs, waitForAccepting } from "./exec.ts";
 import { BROKER_CAPABILITY, CHECK_WINDOW_MS, cpuReadings, vm } from "./hostinger.ts";
 
-export const VERSION = "0.3.1";
+export const VERSION = "0.3.2";
 const STALE_MS = 5 * 60_000;
 class UnsupportedStateSchema extends Error {
   constructor() {
@@ -223,6 +223,21 @@ try {
 } catch (error) {
   if (error instanceof TickError) {
     console.error(error.message);
+    Deno.exit(1);
+  }
+  // A command run without access to the daemon's private files, such as calibrate --explain by an
+  // ordinary user, says so instead of printing a stack trace. The daemon keeps its trace.
+  if (cmd !== "run" && error instanceof Deno.errors.PermissionDenied) {
+    const canRunAsGovernor = cmd === "calibrate" && args.includes("--explain") ||
+      cmd === "check-hostinger" ||
+      cmd === "validate-config" ||
+      cmd === "fallback" && args[0] === "--print";
+    const hint = error.message.includes("sudo")
+      ? ""
+      : canRunAsGovernor
+      ? "; run it with sudo or as the governor user"
+      : "; run it with sudo";
+    console.error(`governor ${cmd}: ${error.message}${hint}`);
     Deno.exit(1);
   }
   if (!(error instanceof UnsupportedStateSchema)) throw error;

@@ -817,6 +817,114 @@ Deno.test("readings drift detection marks invalid are bridged with the governor'
   assert(estimate(unmarked) < clean - 15000);
 });
 
+// A live KVM 8 box, Nov 2026: an offset-only change raised the fit 0.15 cores. At idle every reading sat at the
+// reference, 6 sigma below the raised fit, so the readings turned invalid and verification stalled.
+const idleBox = (raise: number) => {
+  // The box's 14-day window qualified on its loaded days; this one qualifies on idle pairs alone.
+  const c = calibrationConfig({
+    mode: "apply",
+    fit: { min_pairs: 2, min_days: 1, min_cores: 0.1 },
+  });
+  const h = emptyHistory("test", 1, at);
+  h.slots = Array.from({ length: 30 }, (_, i) => slot(at + i * SLOT_MS, 0.2));
+  const atReference = (fit.a * 0.2 + fit.b) / p.vcpus * 100;
+  h.readings = Array.from({ length: 9 }, (_, i) => ({ at: at + i * 1_800_000, v: atReference }));
+  const s = initialCalibration(c, at);
+  const pending = {
+    at,
+    from: { ...s.applied },
+    gapFrom: s.gap,
+    oldFit: fit,
+    fit: { ...fit, b: fit.b + raise },
+    hold: { ...s.applied },
+    readings: 0,
+    z: 0,
+    verified: false,
+    residual: 0,
+    n: 0,
+  };
+  Object.assign(s, { fit, fitAt: at + DAY, lastPaired: at, pending });
+  return { c, h, s };
+};
+
+Deno.test("idle readings back at the reference stay valid under a raised change and verify it", () => {
+  const { c, h, s } = idleBox(0.2);
+  const next = updateCalibration(p, h, s, c, h.readings.at(-1)!.at + 60_000, 30000);
+  assert(!next.state.invalid);
+  assertEquals(next.changes.map((d) => d.trigger).includes("readings-invalid"), false);
+  // All eight pairs count toward verification, against the old fit they match.
+  assertEquals(next.state.pending?.readings, 8);
+  assertAlmostEquals(next.state.pending!.z, 0, 1e-6);
+});
+
+Deno.test("readings far below the reference are still extreme under a raised change", () => {
+  const { c, h, s } = idleBox(0.2);
+  const low = (fit.a * 0.2 + fit.b - 0.3) / p.vcpus * 100;
+  h.readings = h.readings.map((r, i) => i >= 3 ? { ...r, v: low } : r);
+  const next = updateCalibration(p, h, s, c, h.readings.at(-1)!.at + 60_000, 30000);
+  assert(next.state.invalid);
+  assertEquals(next.changes.map((d) => d.trigger), ["readings-invalid"]);
+});
+
+Deno.test("a box the raised fit left invalid resumes once idle readings at the reference arrive", () => {
+  const { c, h, s } = idleBox(0.2);
+  Object.assign(s, {
+    invalid: true,
+    residualInvalid: true,
+    extreme: 3,
+    apiStaleSince: at,
+    invalidSpans: [{ from: at, to: null, applied: { ...s.applied }, gap: s.gap }],
+  });
+  const next = updateCalibration(p, h, s, c, h.readings.at(-1)!.at + 60_000, 30000);
+  assertEquals(next.state.invalid, false);
+  assertEquals(next.state.apiStaleSince, null);
+  assertEquals(next.state.invalidSpans.every((x) => x.to !== null), true);
+  assert(next.changes.map((d) => d.trigger).includes("readings-resumed"));
+});
+
+Deno.test("the post-change fit keeps readings back at the reference inside the pending band", () => {
+  const c = calibrationConfig({
+    mode: "apply",
+    fit: { min_pairs: 4, min_days: 2, min_cores: 0.1 },
+  });
+  const h = emptyHistory("test", 1, at);
+  // Two UTC days after the change point: 30-minute intervals (3 ten-minute slots each) alternating
+  // between idle pairs back at the reference (> 6 sigma below the raised fit alone) and loaded
+  // pairs at the raised meter.
+  const readings: { at: number; v: number }[] = [];
+  for (let d = 0; d < 2; d++) {
+    const base = at + d * DAY;
+    readings.push({ at: base, v: (fit.a * 0.2 + fit.b) / p.vcpus * 100 });
+    for (let k = 0; k < 6; k++) {
+      const own = k % 2 === 0 ? 0.2 : 4;
+      for (let j = 0; j < 3; j++) h.slots.push(slot(base + (k * 3 + j) * SLOT_MS, own));
+      const host = k % 2 === 0 ? fit.a * own + fit.b : fit.a * own + fit.b + 0.2;
+      readings.push({ at: base + (k + 1) * 1_800_000, v: host / p.vcpus * 100 });
+    }
+  }
+  h.readings = readings;
+  const s = initialCalibration(c, at);
+  const pending = {
+    at,
+    from: { ...s.applied },
+    gapFrom: s.gap,
+    oldFit: fit,
+    fit: { ...fit, b: fit.b + 0.2 },
+    hold: { ...s.applied, add: s.applied.add + 0.2 },
+    readings: 48,
+    z: 2,
+    verified: true,
+    residual: 0,
+    n: 48,
+  };
+  Object.assign(s, { fit, fitAt: at - DAY, lastPaired: readings.at(-1)!.at, pending });
+  const next = updateCalibration(p, h, s, c, readings.at(-1)!.at + 60_000, 30000);
+  // The post-change fit succeeds and includes the idle reference pairs inside the band (all 12
+  // pairs across both days, not just the 6 loaded pairs).
+  assertEquals(next.state.pending, null);
+  assertEquals(next.state.fit!.pairs, 12);
+});
+
 Deno.test("an extreme residual never counts toward drift verification", () => {
   const c = calibrationConfig({ mode: "apply", fit: { min_pairs: 2, min_days: 1 } });
   const h = emptyHistory("test", 1, at);

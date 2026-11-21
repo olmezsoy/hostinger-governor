@@ -1,8 +1,19 @@
 // Run the real CLI with only its Linux kernel/state reads replaced. Child CLI
 // permissions are explicit; unlike `deno eval`, this does not imply full access.
-import { STATE_FILE } from "../../src/governor.ts";
+import { PATHS, REQUESTS, STATE_FILE } from "../../src/governor.ts";
 const mode = Deno.args.shift();
 if (mode === "tick-consumer") Deno.uid = () => 1000;
+if (mode === "unreadable-root") {
+  Deno.uid = () => 0;
+  Deno.writeTextFile = (path) => {
+    if (String(path).startsWith(REQUESTS)) {
+      return Promise.reject(
+        new Deno.errors.PermissionDenied(`Permission denied (os error 13): open '${path}'`),
+      );
+    }
+    return Promise.reject(new Error(`unexpected write: ${path}`));
+  };
+}
 const original = Deno.readTextFile;
 Deno.readTextFile = (...args) => {
   if (mode === "connection" && String(args[0]) === "/proc/stat") {
@@ -10,6 +21,22 @@ Deno.readTextFile = (...args) => {
   }
   if (mode === "unsupported" && String(args[0]) === STATE_FILE) {
     return Promise.resolve('{"schemaVersion":99}');
+  }
+  if (mode === "unreadable" && String(args[0]) === PATHS.config) {
+    return Promise.reject(
+      new Deno.errors.PermissionDenied(`Permission denied (os error 13): readfile '${args[0]}'`),
+    );
+  }
+  if (mode === "unreadable-state") {
+    if (String(args[0]) === PATHS.config) return Promise.resolve("{}");
+    if (String(args[0]) === "/proc/stat") {
+      return Promise.resolve(Array.from({ length: 8 }, (_, i) => `cpu${i} 0 0 0`).join("\n"));
+    }
+    if (String(args[0]) === `${PATHS.lib}/persist.json`) {
+      return Promise.reject(
+        new Deno.errors.PermissionDenied(`Permission denied (os error 13): readfile '${args[0]}'`),
+      );
+    }
   }
   return original(...args);
 };

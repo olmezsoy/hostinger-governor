@@ -1514,12 +1514,20 @@ const residualZ = (pair: Pair, fit: MeterFit) =>
 // Drift detection's reference: the newest fit that qualified, which the tighten-only margin may have
 // discarded (#19).
 const driftReference = (s: CalibrationState): MeterFit | null => s.referenceFit ?? s.fit;
-// The meter a residual at `own` guest cores is judged against: the reference, or a pending change's
-// raised fit where it predicts the higher reading, so a reading the hold already covers never turns
-// invalid.
-const residualMeterAt = (s: CalibrationState, reference: MeterFit, own: number): MeterFit => {
+// A residual's z for the extreme test and the fit's 6-sigma filter. While a change is pending, the
+// meter may be at the reference or at the change's raised fit, so a reading is judged against the
+// band between them: above it, against the higher line; below it, against the lower; inside it, 0.
+// A reading the hold already covers never turns invalid, and neither does one back at the
+// reference: judged against the raised fit alone, idle readings that showed no change at all read
+// as extreme below it and made the readings invalid (a live KVM 8 box, Nov 2026).
+const residualBandZ = (s: CalibrationState, reference: MeterFit, pair: Pair): number => {
   const raised = s.pending?.fit;
-  return raised && predicts(raised, own) > predicts(reference, own) ? raised : reference;
+  if (!raised) return residualZ(pair, reference);
+  const up = predicts(raised, pair.own) > predicts(reference, pair.own);
+  const above = residualZ(pair, up ? raised : reference);
+  if (above > 0) return above;
+  const below = residualZ(pair, up ? reference : raised);
+  return below < 0 ? below : 0;
 };
 
 // One evaluation's inputs and the operations every phase records its decisions with.
@@ -1642,7 +1650,7 @@ function assessReadings(run: Run) {
   if (s.residualInvalid && reference) {
     for (const pair of pairs.filter((r) => r.at > s.lastPaired)) {
       s.lastPaired = pair.at;
-      const z = residualZ(pair, residualMeterAt(s, reference, pair.own));
+      const z = residualBandZ(s, reference, pair);
       if (censored(pair, z)) continue;
       if (Math.abs(z) <= EXTREME_Z) {
         if (!s.cleanReadings) s.cleanFrom = pair.at;
@@ -1717,8 +1725,8 @@ function readingsValidity(
 // Meter fit and drift detection (#13 §3, §8).
 function trackMeter(run: Run, pairs: Pair[], usable: boolean) {
   const { p, c, now, s, change } = run;
-  // Invalid readings, and any residual beyond 6 sigma against drift detection's reference (or a
-  // pending change's raised fit where it reads higher), never fit the meter either: like drift
+  // Invalid readings, and any residual beyond 6 sigma against drift detection's reference (or the
+  // band up to a pending change's raised fit), never fit the meter either: like drift
   // detection, the fit must not let a bad feed tighten the margin. Only a refit or new pairs need
   // them, so most passes never filter. `model` is the reference as this pass found it, before any
   // refit below replaces it.
@@ -1729,7 +1737,7 @@ function trackMeter(run: Run, pairs: Pair[], usable: boolean) {
     if (!out) {
       out = pairs.filter((r) =>
         r.at >= since && !inSpan(s.invalidSpans, r.at) &&
-        (!model || Math.abs(residualZ(r, residualMeterAt(s, model, r.own))) <= EXTREME_Z)
+        (!model || Math.abs(residualBandZ(s, model, r)) <= EXTREME_Z)
       );
       filtered.set(since, out);
     }
@@ -1824,7 +1832,7 @@ function trackMeter(run: Run, pairs: Pair[], usable: boolean) {
     // that went idle still catches a broken feed.
     const reference = driftReference(s);
     if (!reference) continue;
-    const z = residualZ(pair, residualMeterAt(s, reference, pair.own));
+    const z = residualBandZ(s, reference, pair);
     if (censored(pair, z)) continue;
     // An extreme residual is not evidence of drift: neither CUSUM nor a pending verification sees
     // it. Three in a row make the readings invalid, from the first of them.

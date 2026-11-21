@@ -8,6 +8,7 @@ requests. Neither entry point accepts a URL, headers or an arbitrary command.
 
 import datetime
 import fcntl
+import http.client
 import ipaddress
 import json
 import math
@@ -48,7 +49,12 @@ TEMPORARY_ERRORS = ("busy", "rate_limited")
 # Metrics Hostinger returned but no CPU percentage can be: the daemon raises readings-invalid for
 # them, as it does when it reads the API itself, instead of letting the feed merely go stale.
 INVALID_METRICS = "invalid_metrics"
-RESPONSE_ERRORS = TEMPORARY_ERRORS + (INVALID_METRICS,)
+# A failed upstream call, as fixed codes: Hostinger's HTTP status as a bare number, or a timeout or
+# connection error. The daemon logs them; upstream text never leaves the worker.
+UPSTREAM_STATUS = "upstream_status"
+UPSTREAM_UNAVAILABLE = "upstream_unavailable"
+UPSTREAM_ERRORS = (UPSTREAM_STATUS, UPSTREAM_UNAVAILABLE)
+RESPONSE_ERRORS = TEMPORARY_ERRORS + (INVALID_METRICS,) + UPSTREAM_ERRORS
 # Readings may carry Hostinger's clock, a little ahead of this box's, as the daemon allows.
 CLOCK_SKEW_MS = 300_000
 USER_AGENT = "Deno/2.9.7"
@@ -111,9 +117,14 @@ def validate_token(raw):
 
 
 class Refused(Exception):
-    def __init__(self, message, code=None):
+    def __init__(self, message, code=None, status=None):
         super().__init__(message)
         self.code = code
+        self.status = status
+
+
+def http_status(value):
+    return type(value) is int and 100 <= value <= 599
 
 
 def require(condition, message, code=None):
@@ -187,7 +198,12 @@ def configured_vm_id():
 
 class NoRedirect(urllib.request.HTTPRedirectHandler):
     def redirect_request(self, req, fp, code, msg, headers, newurl):
-        raise Refused("Upstream redirect refused.")
+        status = code if http_status(code) else None
+        raise Refused(
+            "Upstream redirect refused.",
+            UPSTREAM_STATUS if status else None,
+            status,
+        )
 
 
 def api_body(token, suffix=""):
@@ -213,9 +229,15 @@ def api_body(token, suffix=""):
             require(len(body) <= MAX_BODY, "Upstream response too large.")
             return decode(body)
     except urllib.error.HTTPError as error:
-        raise Refused("Hostinger returned HTTP " + str(error.code)) from None
-    except (urllib.error.URLError, TimeoutError):
-        raise Refused("Hostinger is unavailable.") from None
+        status = error.code if http_status(error.code) else None
+        raise Refused(
+            "Hostinger returned HTTP " + str(error.code),
+            UPSTREAM_STATUS if status else None,
+            status,
+        ) from None
+    except (urllib.error.URLError, OSError, http.client.HTTPException):
+        # Timeouts, refused/reset connections, TLS failures and truncated HTTP replies.
+        raise Refused("Hostinger is unavailable.", UPSTREAM_UNAVAILABLE) from None
 
 
 def request_suffix(value):
@@ -459,7 +481,11 @@ def main():
                 isinstance(response, dict)
                 and response.get("version") == 1
                 and response.get("vm_id") == value["vm_id"]
-                and ("data" in response or response.get("error") in RESPONSE_ERRORS),
+                and ("data" in response or response.get("error") in RESPONSE_ERRORS)
+                and (
+                    response.get("error") != UPSTREAM_STATUS
+                    or http_status(response.get("status"))
+                ),
                 "Invalid worker response.",
             )
         else:
@@ -468,6 +494,8 @@ def main():
         if error.code not in RESPONSE_ERRORS:
             raise
         response = {"version": 1, "vm_id": value["vm_id"], "error": error.code}
+        if error.code == UPSTREAM_STATUS:
+            response["status"] = error.status
     print(json.dumps(response, allow_nan=False), flush=True)
 
 

@@ -36,6 +36,23 @@ export const TEMPORARY_ERRORS = ["busy", "rate_limited"] as const;
 // The broker's code for metrics no CPU percentage can be, which the daemon treats as invalid
 // readings, as on its own API path.
 export const INVALID_METRICS = "invalid_metrics";
+// The broker's fixed codes for a failed upstream call: Hostinger's HTTP status, a bare number, or a
+// timeout or connection error. Neither carries upstream text.
+export const UPSTREAM_ERRORS = ["upstream_status", "upstream_unavailable"] as const;
+
+export class HostingerUpstreamError extends Error {}
+
+function upstreamError(response: { error?: unknown; status?: unknown }) {
+  if (response.error === "upstream_unavailable") {
+    return new HostingerUpstreamError("Hostinger is unavailable (timeout or connection error)");
+  }
+  const status = response.status;
+  if (
+    response.error === "upstream_status" && typeof status === "number" &&
+    Number.isInteger(status) && status >= 100 && status <= 599
+  ) return new HostingerUpstreamError(`Hostinger returned HTTP ${status}`);
+  return null;
+}
 
 export class HostingerBrokerUnavailable extends Error {
   constructor(readonly code: "busy" | "rate_limited") {
@@ -130,6 +147,11 @@ async function commandRequest(command: string[], request: HostingerRequest): Pro
       response?.version === 1 && response.vm_id === request.vm_id && response.data === undefined &&
       response.error === INVALID_METRICS
     ) throw new InvalidReadingsError("invalid CPU metrics from the broker");
+    const upstream = !expired && status.success && response?.version === 1 &&
+        response.vm_id === request.vm_id && response.data === undefined
+      ? upstreamError(response)
+      : null;
+    if (upstream) throw upstream;
     if (
       expired || !status.success || !response || response.version !== 1 ||
       response.vm_id !== request.vm_id || !response.data || typeof response.data !== "object" ||
@@ -138,9 +160,10 @@ async function commandRequest(command: string[], request: HostingerRequest): Pro
     return response.data;
   } catch (error) {
     stop();
-    if (error instanceof HostingerBrokerUnavailable || error instanceof InvalidReadingsError) {
-      throw error;
-    }
+    if (
+      error instanceof HostingerBrokerUnavailable || error instanceof InvalidReadingsError ||
+      error instanceof HostingerUpstreamError
+    ) throw error;
     throw new Error(
       expired ? "Hostinger request command timed out" : "Hostinger request command failed",
     );
