@@ -242,6 +242,35 @@ class UpstreamTest(unittest.TestCase):
             self.assertEqual((raised.exception.code, raised.exception.status), (code, status))
             self.assertNotIn(TOKEN, str(raised.exception))
 
+    def test_non_json_http_200_maps_to_upstream_unavailable(self):
+        for body in (b"<html>502 Bad Gateway</html>", b"\xff\xfe"):
+            opener = SimpleNamespace(open=Mock(return_value=io.BytesIO(body)))
+            with patch.object(BROKER.urllib.request, "build_opener", return_value=opener):
+                with self.assertRaises(BROKER.Refused) as raised:
+                    BROKER.upstream(TOKEN, vm_request())
+            self.assertEqual(raised.exception.code, BROKER.UPSTREAM_UNAVAILABLE)
+            self.assertNotIn("Bad Gateway", str(raised.exception))
+
+    def test_total_http_deadline_interrupts_slow_trickle_and_restores_alarm(self):
+        import signal
+        import time
+
+        previous = signal.getsignal(signal.SIGALRM)
+
+        def slow_open(_req, timeout=None):
+            time.sleep(0.5)
+            raise AssertionError("deadline did not fire")
+
+        opener = SimpleNamespace(open=slow_open)
+        with patch.object(BROKER, "API_SECONDS", 0.05), patch.object(
+            BROKER.urllib.request, "build_opener", return_value=opener
+        ):
+            with self.assertRaises(BROKER.Refused) as raised:
+                BROKER.upstream(TOKEN, vm_request())
+        self.assertEqual(raised.exception.code, BROKER.UPSTREAM_UNAVAILABLE)
+        self.assertEqual(signal.getsignal(signal.SIGALRM), previous)
+        self.assertEqual(signal.getitimer(signal.ITIMER_REAL), (0.0, 0.0))
+
     def run_main(self, argv, **patches):
         output = io.StringIO()
         with patch.object(BROKER.sys, "argv", argv), patch.object(

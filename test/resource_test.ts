@@ -1,7 +1,7 @@
 import { assert, assertAlmostEquals, assertEquals, assertThrows } from "@std/assert";
 import { Governor } from "../src/governor.ts";
 import { plan } from "../src/plans.ts";
-import { collectReport, parseSadf, type ReportIO } from "../src/report.ts";
+import { collectReport, parseSadf, type ReportIO, sysstatFiles } from "../src/report.ts";
 import {
   buildReport,
   renderReport,
@@ -168,10 +168,15 @@ Deno.test("missing history stays missing, not zero CPU", () => {
   f.resources.memory.history = [];
   f.resources.swap.history = [];
   f.resources.load.history = [];
-  const text = renderReport(f.report());
+  const report = f.report();
+  const text = renderReport(report);
   assert(text.includes("Not available"));
   assert(text.includes("························"));
   assert(text.includes("History is unavailable"));
+  const storage = report.sections.find((s) => s.title === "Memory, load and storage")!;
+  assertEquals(storage.table!.rows[0][2], "Not available");
+  assertEquals(storage.table!.rows[1][2], "Not available");
+  assertEquals(storage.table!.rows[2][2], "Not available");
 });
 
 Deno.test("Hostinger history is diagnostic and the report does not mutate governor state", () => {
@@ -274,4 +279,58 @@ Deno.test("report reserve follows the spending floor while idle recovery retains
       row[0] === "Earliest idle recovery" && row[1] === "~24 min from limit start"
     ),
   );
+});
+
+Deno.test("sysstatFiles resolves saYYYYMMDD before legacy saDD across local days", async () => {
+  const day1 = new Date(2026, 10, 19, 10, 0, 0).getTime();
+  const day2 = new Date(2026, 10, 20, 10, 0, 0).getTime();
+  const day3 = new Date(2026, 10, 21, 10, 0, 0).getTime();
+  const present = new Set([
+    "/var/log/sysstat/sa20261119",
+    "/var/log/sysstat/sa19",
+    "/var/log/sysstat/sa20",
+    "/var/log/sysstat/sa20261121",
+  ]);
+  const files = await sysstatFiles(day1, day3, (path) => Promise.resolve(present.has(path)));
+  assertEquals(files, [
+    "/var/log/sysstat/sa20261119",
+    "/var/log/sysstat/sa20",
+    "/var/log/sysstat/sa20261121",
+  ]);
+  assertEquals(await sysstatFiles(day2, day2, () => Promise.resolve(false)), []);
+});
+
+Deno.test("report surfaces calibration warnings and ceiling failure without cluttering healthy output", () => {
+  const f = fixture();
+  assert(!f.report().sections.some((s) => s.title === "Calibration warnings"));
+  const state = new Governor({
+    hostinger: { vm_id: 1, token_file: "/etc/governor/hostinger-token" },
+    calibration: { mode: "apply" },
+  }, plan(8)).publicState(now);
+  state.accepting = false;
+  state.credits.anchor = {
+    checkedAt: now - 60_000,
+    exact: false,
+    applied: false,
+    difference: null,
+  };
+  Object.assign(state.credits.calibration!, {
+    failing: { since: now - 120_000, behind: 500 },
+    rulesMismatch: true,
+    hold: { since: now - 3_600_000, reason: "invalid" as const },
+    ownHold: { gap: 0.25, settings: { mul: 1.05, add: 0.35, floor: 0.05 } },
+    readingsInvalid: true,
+    invalidReasons: ["residuals" as const],
+    cooldownUntil: now + 3_600_000,
+  });
+  const r = buildReport(state, f.resources, 12, now);
+  const text = renderReport(r);
+  assert(text.includes("New work paused (ceiling not applied)"));
+  assert(text.includes("Calibration warnings"));
+  assert(text.includes("Failing since"));
+  assert(text.includes("Rules mismatch"));
+  assert(text.includes("Invalid (residuals)"));
+  assert(text.includes("Own-count hold"));
+  assert(text.includes("Sustained-use cooldown"));
+  assert(text.includes("Readings are invalid (residuals) and excluded from calibration"));
 });

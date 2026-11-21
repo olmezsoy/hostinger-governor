@@ -206,6 +206,10 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
         )
 
 
+def _alarm_timeout(_signum, _frame):
+    raise TimeoutError("Hostinger request timed out.")
+
+
 def api_body(token, suffix=""):
     opener = urllib.request.build_opener(
         urllib.request.ProxyHandler({}),
@@ -223,6 +227,15 @@ def api_body(token, suffix=""):
             "User-Agent": USER_AGENT,
         },
     )
+    # Enforce a total HTTP deadline inside API_SECONDS (< WORKER_SECONDS), not just a per-socket
+    # read timeout, so a slow trickling response returns upstream_unavailable instead of dying to
+    # systemd's RuntimeMaxSec.
+    previous_handler = signal.getsignal(signal.SIGALRM)
+    remaining_alarm, _ = signal.getitimer(signal.ITIMER_REAL)
+    started = time.monotonic()
+    budget = min(API_SECONDS, remaining_alarm) if remaining_alarm > 0 else API_SECONDS
+    signal.signal(signal.SIGALRM, _alarm_timeout)
+    signal.setitimer(signal.ITIMER_REAL, budget)
     try:
         with opener.open(req, timeout=API_SECONDS) as response:
             body = response.read(MAX_BODY + 1)
@@ -235,9 +248,24 @@ def api_body(token, suffix=""):
             UPSTREAM_STATUS if status else None,
             status,
         ) from None
-    except (urllib.error.URLError, OSError, http.client.HTTPException):
-        # Timeouts, refused/reset connections, TLS failures and truncated HTTP replies.
+    except (
+        urllib.error.URLError,
+        OSError,
+        http.client.HTTPException,
+        json.JSONDecodeError,
+        UnicodeDecodeError,
+    ):
+        # Timeouts, refused/reset connections, TLS failures, truncated or non-JSON HTTP replies.
         raise Refused("Hostinger is unavailable.", UPSTREAM_UNAVAILABLE) from None
+    finally:
+        signal.setitimer(signal.ITIMER_REAL, 0)
+        signal.signal(signal.SIGALRM, previous_handler)
+        if remaining_alarm > 0:
+            left = remaining_alarm - (time.monotonic() - started)
+            if left <= 0:
+                signal.raise_signal(signal.SIGALRM)
+            else:
+                signal.setitimer(signal.ITIMER_REAL, left)
 
 
 def request_suffix(value):

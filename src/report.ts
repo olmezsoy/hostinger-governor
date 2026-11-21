@@ -24,28 +24,63 @@ export function parseSadf(csv: string): Record<string, number>[] {
   return rows;
 }
 
+const pad2 = (n: number) => String(n).padStart(2, "0");
+
+// Resolve sysstat archive files covering [from, to] in local system time, supporting both
+// `saYYYYMMDD` (used when sysstat HISTORY > 28, e.g. Ubuntu 26.04) and legacy `saDD`.
+export async function sysstatFiles(
+  from: number,
+  to: number,
+  exists: (path: string) => Promise<boolean> = async (path) => {
+    try {
+      return (await Deno.stat(path)).isFile;
+    } catch {
+      return false;
+    }
+  },
+  dir = "/var/log/sysstat",
+): Promise<string[]> {
+  const start = new Date(from);
+  start.setHours(0, 0, 0, 0);
+  const end = new Date(to);
+  end.setHours(0, 0, 0, 0);
+  const files: string[] = [];
+  const seen = new Set<string>();
+  for (const d = new Date(start); d.getTime() <= end.getTime(); d.setDate(d.getDate() + 1)) {
+    const yyyy = String(d.getFullYear());
+    const mm = pad2(d.getMonth() + 1);
+    const dd = pad2(d.getDate());
+    const longPath = `${dir}/sa${yyyy}${mm}${dd}`;
+    const shortPath = `${dir}/sa${dd}`;
+    const chosen = await exists(longPath) ? longPath : await exists(shortPath) ? shortPath : null;
+    if (chosen && !seen.has(chosen)) {
+      seen.add(chosen);
+      files.push(chosen);
+    }
+  }
+  return files;
+}
+
 async function sysstat(flag: string, from: number, to: number): Promise<Record<string, number>[]> {
-  const rows: Record<string, number>[] = [];
-  for (let day = from - from % 86_400_000; day <= to; day += 86_400_000) {
+  const byTime = new Map<number, Record<string, number>>();
+  for (const file of await sysstatFiles(from, to)) {
     try {
       const out = await new Deno.Command("sadf", {
-        args: ["-d", `/var/log/sysstat/sa${new Date(day).toISOString().slice(8, 10)}`, "--", flag],
+        args: ["-d", file, "--", flag],
         cwd: "/",
         stderr: "null",
         signal: AbortSignal.timeout(2000),
       }).output();
       if (out.success) {
-        rows.push(
-          ...parseSadf(new TextDecoder().decode(out.stdout)).filter((r) =>
-            r.at >= from && r.at <= to
-          ),
-        );
+        for (const row of parseSadf(new TextDecoder().decode(out.stdout))) {
+          if (row.at >= from && row.at <= to) byTime.set(row.at, row);
+        }
       }
     } catch {
       // Missing or unreadable history stays missing, not zero usage.
     }
   }
-  return rows.sort((a, b) => a.at - b.at);
+  return [...byTime.values()].sort((a, b) => a.at - b.at);
 }
 
 async function meminfo(): Promise<Record<string, number>> {
@@ -136,9 +171,64 @@ export async function collectReport(
   );
 }
 
+function calibrationWarnings(s: PublicState, clock: (ms: number) => string): string[] {
+  const cal = s.credits.calibration;
+  if (!cal) return [];
+  const warnings: string[] = [];
+  if (cal.failing) {
+    warnings.push(`Calibration failing since ${clock(cal.failing.since)}; holding fallback margin`);
+  }
+  if (cal.rulesMismatch) {
+    warnings.push("Rules mismatch latched until calibration reset; holding fallback margin");
+  }
+  if (cal.hold) {
+    warnings.push(
+      `Fallback hold active (${cal.hold.reason} readings since ${clock(cal.hold.since)})`,
+    );
+  }
+  if (cal.ownHold) {
+    warnings.push(
+      `Own-count hold active (${Math.round(cal.ownHold.gap * 1000) / 1000}-core gap)`,
+    );
+  }
+  if (cal.readingsInvalid) {
+    const why = cal.invalidReasons?.length ? ` (${cal.invalidReasons.join(", ")})` : "";
+    warnings.push(`Hostinger readings invalid${why}; excluded from calibration`);
+  } else if (cal.apiStaleSince !== null) {
+    warnings.push(`Hostinger readings stale since ${clock(cal.apiStaleSince)}`);
+  }
+  if (cal.cusum.pending) {
+    const p = cal.cusum.pending;
+    warnings.push(
+      p.verified
+        ? `Drift change verified since ${clock(p.at)}, waiting for refit`
+        : `Drift change pending verification since ${clock(p.at)} (${p.readings} readings)`,
+    );
+  }
+  if (cal.cooldownUntil !== null) {
+    warnings.push(`Sustained-use cooldown until ${clock(cal.cooldownUntil)}`);
+  }
+  return warnings;
+}
+
 export function creditLines(s: PublicState, clock: (ms: number) => string): string[] {
   const c = s.credits;
+  const cal = c.calibration;
   const { surplus, debit } = spending(s);
+  const warnings = calibrationWarnings(s, clock);
+  const historyNote = c.anchor
+    ? `Hostinger history checked ${clock(c.anchor.checkedAt)}, ${
+      cal?.mode === "apply" ? "tighten only" : "diagnostic only"
+    }${
+      cal?.readingsInvalid
+        ? `, readings invalid${
+          cal.invalidReasons?.length ? ` (${cal.invalidReasons.join(", ")})` : ""
+        }`
+        : c.anchor.difference === null
+        ? ""
+        : `, CPU difference ${c.anchor.difference.toFixed(1)} points`
+    }`
+    : "Hostinger history not yet checked";
   return [
     `Estimated CPU credits ${c.percent}% · ${c.balance.toLocaleString("en-US")} of ${
       s.plan.capacity.toLocaleString("en-US")
@@ -157,18 +247,9 @@ export function creditLines(s: PublicState, clock: (ms: number) => string): stri
       : [
         `${c.rate >= 0 ? "Earning" : "Spending"} ${
           Math.abs(c.rate).toFixed(1)
-        } vCPU's worth now (baseline ${s.plan.baseline} of ${s.plan.vcpus}) · ${
-          c.anchor
-            ? `Hostinger history checked ${clock(c.anchor.checkedAt)}, ${
-              c.calibration?.mode === "apply" ? "tighten only" : "diagnostic only"
-            }${
-              c.anchor.difference === null
-                ? ""
-                : `, CPU difference ${c.anchor.difference.toFixed(1)} points`
-            }`
-            : "Hostinger history not yet checked"
-        } · margin ×${c.margin.mul} +${c.margin.add} vCPU`,
+        } vCPU's worth now (baseline ${s.plan.baseline} of ${s.plan.vcpus}) · ${historyNote} · margin ×${c.margin.mul} +${c.margin.add} vCPU`,
       ]),
+    ...warnings.map((w) => `Warning: ${w}.`),
   ];
 }
 

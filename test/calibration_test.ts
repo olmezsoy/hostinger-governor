@@ -13,7 +13,9 @@ import {
   cusumStep,
   diagnoseGap,
   diagnosisEvidence,
+  driftReference,
   effectiveSettings,
+  eligiblePairs,
   emptyCusum,
   fitMeter,
   historyAnchors,
@@ -2447,3 +2449,231 @@ Deno.test("a fit catches a broken feed even when the box has gone too idle to re
 function certifiedAnchorsAndReboots(h: History) {
   return historyAnchors(p, h, 0);
 }
+
+Deno.test("fitMeter models Hostinger's steal term when significant, omits c on calm hosts, and prevents false CUSUM alarms", () => {
+  const rng = seeded(42);
+  const pairs = Array.from({ length: 240 }, (_, i) => {
+    const own = i % 3 === 0 ? 3.2 + rng() * 3.5 : 0.2 + rng() * 2.5;
+    // Varying neighbour steal uncorrelated with own load.
+    const steal = i % 4 === 0 ? 0.08 + rng() * 0.45 : rng() * 0.03;
+    const noise = (rng() - 0.5) * 0.015;
+    return {
+      at: at + i * 1_800_000,
+      own,
+      steal,
+      host: 1.015 * own + 0.02 + 0.5 * steal + noise,
+    };
+  });
+  const fitted = fitMeter(pairs)!;
+  assert(fitted.c !== undefined, JSON.stringify(fitted));
+  assertAlmostEquals(fitted.a, 1.015, 0.01);
+  assertAlmostEquals(fitted.b, 0.02, 0.01);
+  assertAlmostEquals(fitted.c, 0.5, 0.05);
+  // On a calm host without steal, c is omitted.
+  const calm = fitMeter(pairs.map(({ own, at: t }) => ({
+    at: t,
+    own,
+    steal: 0.005,
+    host: 1.015 * own + 0.02 + (rng() - 0.5) * 0.015,
+  })))!;
+  assertEquals(calm.c, undefined);
+  // Neighbour steal bursts do not trip CUSUM under the 2D fit, while they do under a 1D fit.
+  const fit1d = { ...fitted };
+  delete fit1d.c;
+  let c2d = emptyCusum(), c1d = emptyCusum();
+  let alarms2d = 0, alarms1d = 0;
+  for (let i = 0; i < 30; i++) {
+    const burst = {
+      at: at + (300 + i) * 1_800_000,
+      own: 1.0,
+      steal: 0.35,
+      host: 1.015 * 1.0 + 0.02 + 0.5 * 0.35,
+    };
+    c2d = cusumStep(c2d, burst, fitted, CALIBRATION.cusum);
+    c1d = cusumStep(c1d, burst, fit1d, CALIBRATION.cusum);
+    if (c2d.alarm) alarms2d++;
+    if (c1d.alarm) alarms1d++;
+  }
+  assertEquals(alarms2d, 0);
+  assert(alarms1d > 0);
+});
+
+Deno.test("replayOwn and bridgeSpan bill steal only on unlimited non-test slots when fit.c > 0", () => {
+  const anchor = { at, balance: 20_000, exact: true };
+  const sUnlimited = { ...slot(at, 4), steal: 600 }; // 1.0 core steal
+  const sLimited = { ...slot(at + SLOT_MS, 2, FLAGS.limited), steal: 600 };
+  const margin = { mul: 1.05, add: 0.04 };
+  const base = replayOwn(p, [sUnlimited, sLimited], anchor, margin, at + 2 * SLOT_MS).balance;
+  const withSteal = replayOwn(
+    p,
+    [sUnlimited, sLimited],
+    anchor,
+    margin,
+    at + 2 * SLOT_MS,
+    0,
+    false,
+    false,
+    0.5,
+  ).balance;
+  // Only the unlimited slot bills 0.5 * 600 = 300 extra core-seconds.
+  assertAlmostEquals(base - withSteal, 300, 1e-6);
+});
+
+Deno.test("pending drift change verifies and reverts even when the box goes too idle to qualify for refit", () => {
+  const c = calibrationConfig({ mode: "apply" });
+  const h = emptyHistory("test", 1, at);
+  // Idle box (< 3 cores): does not qualify for refit, yet pending change must verify and revert.
+  h.slots = Array.from({ length: 192 }, (_, i) => slot(at + i * SLOT_MS, 0.3));
+  const v = (fit.a * 0.3 + fit.b) / p.vcpus * 100;
+  h.readings = Array.from({ length: 64 }, (_, i) => ({ at: at + i * 1_800_000, v }));
+  const pendingAt = at + 6 * 3_600_000;
+  const s: CalibrationState = {
+    ...initialCalibration(c, at),
+    fit,
+    referenceFit: fit,
+    fitAt: at + 30 * DAY,
+    lastPaired: pendingAt,
+    pending: {
+      at: pendingAt,
+      from: { ...c.start },
+      gapFrom: 0,
+      oldFit: fit,
+      fit: { ...fit, b: fit.b + 0.12 },
+      hold: { mul: 1.05, add: 0.16, floor: 0.05 },
+      readings: 0,
+      z: 0,
+      verified: false,
+      residual: 0,
+      n: 0,
+    },
+  };
+  const r = updateCalibration(p, h, s, c, h.readings.at(-1)!.at + 60_000, 30_000);
+  assertEquals(r.state.pending, null);
+  assert(r.changes.some((d) => d.trigger === "cusum-revert"));
+});
+
+Deno.test("pending drift fit refines downward after REFINE_PAIRS while keeping hold non-decreasing", () => {
+  const c = calibrationConfig({ mode: "apply" });
+  const h = emptyHistory("test", 1, at);
+  h.slots = Array.from({ length: 60 }, (_, i) => slot(at + i * SLOT_MS, 1.0));
+  // Meter actually rose by 0.05 cores, but initial pending.fit overshot by +0.30 cores.
+  const v = (fit.a * 1.0 + fit.b + 0.05) / p.vcpus * 100;
+  h.readings = Array.from({ length: 20 }, (_, i) => ({ at: at + i * 1_800_000, v }));
+  const pendingAt = at + 3 * 3_600_000;
+  const startHold = { mul: 1.05, add: 0.34, floor: 0.05 };
+  const s: CalibrationState = {
+    ...initialCalibration(c, at),
+    fit,
+    referenceFit: fit,
+    fitAt: at + 30 * DAY,
+    lastPaired: pendingAt,
+    pending: {
+      at: pendingAt,
+      from: { ...c.start },
+      gapFrom: 0,
+      oldFit: fit,
+      fit: { ...fit, b: fit.b + 0.30 },
+      hold: startHold,
+      readings: 0,
+      z: 0,
+      verified: false,
+      residual: 0,
+      n: 0,
+    },
+  };
+  const r = updateCalibration(p, h, s, c, h.readings.at(-1)!.at + 60_000, 30_000);
+  assert(r.state.pending !== null);
+  assert(r.state.pending.fit.b < fit.b + 0.15, `${r.state.pending.fit.b}`);
+  assertEquals(r.state.pending.hold, startHold);
+});
+
+Deno.test("post-reboot anchor at the newest settled reading immediately seeds the clamp", () => {
+  const c = calibrationConfig({ mode: "apply" });
+  const h = emptyHistory("test", 1, at);
+  h.slots = Array.from({ length: 20 }, (_, i) => slot(at + i * SLOT_MS, 2));
+  h.slots[10] = { ...h.slots[10], seconds: 200, busy: 400, flags: FLAGS.reboot };
+  h.slots[11] = { ...h.slots[11], seconds: 300, busy: 600 };
+  // Newest settled reading lands right at the first whole post-reboot anchor (no settled reading after it).
+  const anchorAt = at + 11 * SLOT_MS + 60_000 + 1_800_000;
+  h.readings = [
+    { at: anchorAt - 3_600_000, v: 25 },
+    { at: anchorAt - 1_800_000, v: 25 },
+    { at: anchorAt, v: 25 },
+  ];
+  const r = updateCalibration(p, h, initialCalibration(c, at), c, anchorAt + 60_000, 20_000);
+  assertEquals(r.state.replayBase?.at, anchorAt);
+  assert(r.state.estimates.clamp !== null);
+});
+
+Deno.test("driftReference is used by withStart, longIntervalResiduals, and eligiblePairs", () => {
+  const c = calibrationConfig({ mode: "apply", gap_start: 0.02 });
+  const newer = { ...fit, a: 1.07, b: 0.08, aHi: 1.08 };
+  const s: CalibrationState = {
+    ...initialCalibration(c, at),
+    fit,
+    referenceFit: newer,
+    fitSince: at + 3_600_000,
+    invalidSpans: [{ from: at + 7_200_000, to: at + 10_800_000 }],
+  };
+  assertEquals(driftReference(s), newer);
+  // withStart uses referenceFit when present.
+  const raised = withStart(p, c, s);
+  assertEquals(raised.applied, marginFromFit(p, newer, 0.02, c.start, c));
+  // calibrationSummary longIntervals measures against referenceFit.
+  const h = emptyHistory("test", 1, at);
+  h.longPairs = [{
+    at: at + 3_600_000,
+    from: at,
+    host: newer.a * 4 + newer.b + 0.1,
+    own: 4,
+    ownLast: 4,
+  }];
+  const summary = calibrationSummary(c, s, h);
+  assertAlmostEquals(summary.longIntervals!.whole!, 0.1, 1e-9);
+  // eligiblePairs drops pairs before fitSince, inside invalidSpans, and > 6 sigma from referenceFit.
+  const kept = eligiblePairs(
+    [
+      { at: at + 1_800_000, own: 4, host: newer.a * 4 + newer.b }, // before fitSince
+      { at: at + 5_400_000, own: 4, host: newer.a * 4 + newer.b }, // valid
+      { at: at + 9_000_000, own: 4, host: newer.a * 4 + newer.b }, // in invalidSpan
+      { at: at + 12_600_000, own: 4, host: newer.a * 4 + newer.b + 3.0 }, // > 6 sigma
+    ],
+    s,
+    newer,
+  );
+  assertEquals(kept.map((x) => x.at), [at + 5_400_000]);
+});
+
+Deno.test("a lone 30-second neighbour pressing blip does not disqualify recovery lift prediction", () => {
+  const c = calibrationConfig({ mode: "apply" });
+  const h = emptyHistory("test", 1, at);
+  const onset = at + 3_600_000;
+  const lift = onset + 5 * 3_600_000;
+  h.slots = Array.from({ length: 48 }, (_, i) => {
+    const t = at + i * SLOT_MS;
+    const inRecovery = t >= onset && t < lift;
+    // One slot during recovery has a 30s pressing blip (5% of the 600s slot < 10% threshold).
+    if (t === onset + 2 * SLOT_MS) {
+      return { ...slot(t, 1.0, FLAGS.limited | FLAGS.pressing), pressed: 30 };
+    }
+    return slot(t, inRecovery ? 1.0 : 4.0, inRecovery ? FLAGS.limited : 0);
+  });
+  h.readings = Array.from({ length: 16 }, (_, i) => ({
+    at: at + i * 1_800_000,
+    v: (at + i * 1_800_000 >= onset && at + i * 1_800_000 <= lift ? 1.0 : 4.0) / p.vcpus * 100,
+  }));
+  h.limits = [{
+    ...record("apply"),
+    onset,
+    entry: onset + 60_000,
+    lift,
+    class: "credit",
+    confirmed: true,
+    firstTest: "limited",
+  }];
+  const s = { ...initialCalibration(c, at), fit, pendingLimits: [onset] };
+  const r = updateCalibration(p, h, s, c, lift + 3_600_000, 20_000);
+  // Recovery check ran and recorded a ratio (not skipped as pressedDuringRecovery).
+  const updated = r.limits.find((l) => l.onset === onset);
+  assert(updated?.liftCheck?.predicted !== null && updated?.liftCheck?.predicted !== undefined);
+});

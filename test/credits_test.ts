@@ -1,11 +1,14 @@
 import { assertAlmostEquals, assertEquals } from "@std/assert";
 import {
   allowedCores,
+  canProbeSlice,
   charged,
   creditStep,
   evidentSteal,
   LAW,
   limitConfirmed,
+  limitOnsetSample,
+  limitPressing,
   MARGIN,
   pinnedAtCap,
   PROBE_MIN_DEMAND,
@@ -219,4 +222,31 @@ Deno.test("no credit limit can follow a lift sooner than its bank takes to spend
     6912 / (1.05 * 8 + 0.0567 - 4.8),
     1e-6,
   );
+});
+
+Deno.test("canProbeSlice and pinnedAtCap handle low sliceBusy and outside-pinned caps", () => {
+  const p = plan(8);
+  // 2.2 cores outside pins the 2.4-core cap even while sliceDemand is 0.45: defer to pinnedAtCap.
+  assertEquals(pinnedAtCap(p, 2.38 / 8, 1.0 / 8, 2.2), true);
+  assertEquals(canProbeSlice(p, 2.38 / 8, 1.0 / 8, 2.2), false);
+  // Slice busy at or below the 0.20-core probe floor cannot be meaningfully cut on KVM 8.
+  assertEquals(canProbeSlice(p, 0.20 / 8, 0.30 / 8, 0), false);
+  assertEquals(canProbeSlice(p, 0.25 / 8, 0.30 / 8, 0), true);
+  // KVM 1 and 2 allow probing a 0.35-core slice under a 50% cap (0.175 busy cores).
+  assertEquals(canProbeSlice(plan(1), 0.40, 0.40, 0.225), true);
+  assertEquals(canProbeSlice(plan(2), 0.30, 0.30, 0.425), true);
+});
+
+Deno.test("limitPressing and limitOnsetSample reject idle neighbour steal while keeping per-vCPU caps", () => {
+  const p = plan(8);
+  // Idle box with 0.15 busy + 0.005 steal (3.2% of demand): neither pressing nor limit onset.
+  assertEquals(limitPressing(p, 0.15 / 8, 0.005 / 8), false);
+  assertEquals(limitOnsetSample(p, 0.15 / 8, 0.03 / 8), false);
+  // Single thread under KVM 8 per-vCPU 0.30-core cap at 28% ceiling (0.28 demand, 0.012 steal).
+  assertEquals(limitPressing(p, 0.268 / 8, 0.012 / 8), true);
+  // Single thread clearly hitting KVM 8 per-vCPU cap (0.30 busy, 0.20 steal).
+  assertEquals(limitOnsetSample(p, 0.30 / 8, 0.20 / 8), true);
+  // Smaller plan (KVM 1, limit 0.4): proportional thresholds still fire.
+  assertEquals(limitPressing(plan(1), 0.35, 0.02), true);
+  assertEquals(limitOnsetSample(plan(1), 0.35, 0.15), true);
 });

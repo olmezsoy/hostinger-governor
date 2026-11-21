@@ -1,4 +1,4 @@
-import { assert, assertEquals, assertRejects, assertThrows } from "@std/assert";
+import { assert, assertAlmostEquals, assertEquals, assertRejects, assertThrows } from "@std/assert";
 import {
   compareReadings,
   detectPlan,
@@ -1274,4 +1274,173 @@ Deno.test("the start line says a reboot restarts the bank at 0", () => {
   );
   // A first start has no saved boot and nothing to restart.
   assertEquals(startLine(kvm8, 0, undefined, "boot-b").endsWith(", 0% credits"), true);
+});
+
+Deno.test("pinned-at-cap confirmation preserves confirmation metadata and post-burner timestamps", async () => {
+  const f = fixture({
+    hostinger: { vm_id: 1, token_file: "/etc/governor/hostinger-token" },
+    calibration: { mode: "apply" },
+  });
+  await f.g.tick();
+  f.g.s.balance = p.capacity;
+  // Burners see the real 2.4-core host cap (52% demand steal) and consume 30s of wall + uptime.
+  f.g.io.demand = () => {
+    f.elapse(30, 2.4 / 8, 2.6 / 8, 0.04);
+    return Promise.resolve({ busy: 2.4 / 8, steal: 0.52, seconds: 25 });
+  };
+  // Outside load (2.34 cores; slice = 0.04 cores) pins the cap while slice is idle.
+  for (let i = 0; i < 4 && !f.g.s.limit; i++) {
+    await f.advance(30, 2.38 / 8, 0.80 / 8, 0.04);
+  }
+  const lim = f.g.s.limit!;
+  assert(lim);
+  assertEquals(lim.entry, undefined);
+  assertEquals(lim.record?.confirmed, true);
+  assertEquals(lim.record?.firstTest, "limited");
+  assertEquals(lim.record?.testDelivery, { busy: 2.4, demand: 2.4 / (1 - 0.52) });
+  assert(lim.record?.limitedAt !== undefined);
+  // First lift test passes -> still classifies as "credit" because entry burners already confirmed it.
+  f.g.io.demand = () => Promise.resolve({ busy: 5 / 8, steal: 0, seconds: 25 });
+  for (let i = 0; i < 60 && f.g.s.limit; i++) await f.advance(30, 0.2 / 8, 0, 0.1);
+  assertEquals(f.g.s.limit, undefined);
+  assertEquals(f.g.history.limits.at(-1)?.class, "credit");
+  // Confirmed credit lift restores s.balance to at least p.recovered.
+  assert(f.g.s.balance >= p.recovered, `${f.g.s.balance}`);
+});
+
+Deno.test("recovery ceiling relaxes after a transient outside spike while keeping tightened caps", async () => {
+  const f = fixture();
+  await f.g.tick();
+  f.g.enterLimit(start, false);
+  // Transient 2.1-core outside burst (slice = 0) drops recovery ceiling to 20% without pressing.
+  await f.advance(30, 2.1 / 8, 0, 0);
+  assertEquals(f.g.s.limit!.ceiling, 20);
+  // Once outside drops back to 0.2 cores and clears the 5-minute window, ceiling relaxes to 190%.
+  for (let i = 0; i < 11; i++) await f.advance(30, 0.2 / 8, 0, 0);
+  assertEquals(f.g.s.limit!.ceiling, 190);
+  // Pressing on the limit (slice = 1.8 cores, outside = 0.2) tightens ceiling, which stays capped.
+  await f.advance(30, 2.0 / 8, 0.4 / 8, 1.8);
+  await f.advance(30, 2.0 / 8, 0.4 / 8, 1.8);
+  const tightened = f.g.s.limit!.ceiling;
+  assert(tightened < 190, `${tightened}`);
+  for (let i = 0; i < 11; i++) await f.advance(30, 0.2 / 8, 0, 0);
+  assertEquals(f.g.s.limit!.ceiling, tightened);
+});
+
+Deno.test("unlimited noisy idle slots do not set FLAGS.pressing and onset walkback stops at idle steal", async () => {
+  const f = fixture({
+    hostinger: { vm_id: 1, token_file: "/etc/governor/hostinger-token" },
+    calibration: { mode: "apply" },
+  });
+  await f.g.tick();
+  f.g.s.balance = p.capacity;
+  // 25 minutes of idle host with 0.01 cores neighbour steal (> 5% of demand, far below any cap).
+  for (let i = 0; i < 50; i++) await f.advance(30, 0.15 / 8, 0.01 / 8, 0.05);
+  // None of the closed unlimited slots should have FLAGS.pressing set.
+  assert(f.g.history.slots.length >= 2);
+  for (const sl of f.g.history.slots) {
+    assertEquals(sl.flags & 4, 0, `unexpected FLAGS.pressing on unlimited slot: ${sl.flags}`);
+  }
+  // Then a real limit begins on a busy sample; onset walkback stops at the start of that 30s
+  // busy sample instead of walking back through the 25 minutes of idle neighbour steal.
+  await f.advance(30, 2.4 / 8, 1.0 / 8, 2.3);
+  const busyAt = f.g.s.at;
+  f.g.enterLimit(busyAt, true, "evident");
+  assertEquals(f.g.s.limit!.record!.onset, busyAt - 30_000);
+});
+
+Deno.test("outside a limit on KVM 8, 10% ceiling jitter is skipped by the deadband while full ceiling and 20% floor apply immediately", async () => {
+  const f = fixture();
+  let calls = 0;
+  const origSet = f.g.io.cap;
+  f.g.io.cap = async (percent, slice, periodMs) => {
+    calls++;
+    return await origSet(percent, slice, periodMs);
+  };
+  await f.g.tick();
+  f.g.s.balance = p.capacity;
+  // Outside 0.15 (busy 0.20, slice 0.05) -> ceiling 780%.
+  await f.advance(30, 0.20 / 8, 0, 0.05);
+  assertEquals(f.cap, 780);
+  const afterInitial = calls;
+  // Outside 0.22 (busy 0.25, slice 0.03) -> target 770% (delta 10% < 20% deadband): skipped.
+  await f.advance(30, 0.25 / 8, 0, 0.03);
+  assertEquals(f.cap, 780);
+  assertEquals(calls, afterInitial);
+  // Outside 0.05 (busy 0.10, slice 0.05) -> target 790% (delta 10% < 20% deadband): skipped.
+  await f.advance(30, 0.10 / 8, 0, 0.05);
+  assertEquals(f.cap, 780);
+  assertEquals(calls, afterInitial);
+  // Outside 0.40 (busy 0.45, slice 0.05) -> target 760% (delta 20%): applied immediately.
+  await f.advance(30, 0.45 / 8, 0, 0.05);
+  assertEquals(f.cap, 760);
+  assertEquals(calls, afterInitial + 1);
+  // As outside decays from 0.40 back toward 0.05, ceiling steps from 760% to 780% (delta 20%) and
+  // holds 780% rather than flapping to 790%; once outside hits 0.00, full 800% applies immediately.
+  for (let i = 0; i < 11; i++) await f.advance(30, 0.10 / 8, 0, 0.05);
+  assertEquals(f.cap, 780);
+  for (let i = 0; i < 11; i++) await f.advance(30, 0.0 / 8, 0, 0.0);
+  assertEquals(f.cap, 800);
+  // While actively throttling below full box capacity (allowed < vcpus), a 10% tightening applies
+  // immediately (never biasing credit spend upward), while a 10% upward nudge is skipped.
+  f.g.s.balance = 5_000;
+  await f.advance(30, 0.0 / 8, 0, 0.0);
+  const throttled = f.cap;
+  assert(throttled < 800 && throttled > 100, `${throttled}`);
+  // Raise outside by 0.12 cores -> target drops by 10%: applied immediately.
+  await f.advance(30, 0.12 / 8, 0, 0.0);
+  assertEquals(f.cap, throttled - 10);
+});
+
+Deno.test("failed probe cooldown starts after probe completes and decays back to 10m after 24h calm", async () => {
+  const f = fixture();
+  await f.g.tick();
+  f.g.s.balance = p.capacity;
+  f.g.probe = () => {
+    f.elapse(45, 2.4 / 8, 0.8 / 8, 2.4);
+    return Promise.resolve(false);
+  };
+  let beforeProbe = 0;
+  for (let i = 0; i < 4 && f.g.s.probe.backoffMs === 10 * 60_000; i++) {
+    beforeProbe = f.g.s.uptime! + 30_000;
+    await f.advance(30, 2.4 / 8, 0.8 / 8, 2.4);
+  }
+  // Probe added 45s of uptime, so cooldownUntil is measured from post-probe uptime.
+  assertEquals(f.g.s.probe.backoffMs, 20 * 60_000);
+  assertEquals(f.g.s.probe.cooldownUntil, beforeProbe + 45_000 + 10 * 60_000);
+  // 24 hours past cooldown with calm steal resets backoffMs to 10m.
+  f.elapse(24 * 3600 + 700, 0.2 / 8, 0, 0.1);
+  await f.g.tick();
+  assertEquals(f.g.s.probe.backoffMs, 10 * 60_000);
+  assertEquals(f.g.s.probe.failedSf, undefined);
+});
+
+Deno.test("real-time steal coefficient bills neighbour steal while unlimited and pauses during limits", async () => {
+  const f = fixture({
+    hostinger: { vm_id: 1, token_file: "/etc/governor/hostinger-token" },
+    calibration: { mode: "apply" },
+  });
+  await f.g.tick();
+  f.g.calibration.referenceFit = {
+    a: 1.01,
+    b: 0.02,
+    c: 0.5,
+    aHi: 1.02,
+    sigma: [0.01, 0.01],
+    pairs: 100,
+    days: 5,
+  };
+  f.g.s.balance = 20_000;
+  // Unlimited tick with 4.0 busy cores and 1.0 steal core: bills margin + 0.5 * 1.0 = +0.5 cores.
+  await f.advance(30, 4.0 / 8, 1.0 / 8, 0.2);
+  const expectedUnlimited = 20_000 +
+    (p.baseline - (f.g.settings.mul * 4.0 + f.g.settings.add + 0.5 * 1.0)) * 30;
+  assertAlmostEquals(f.g.s.balance, expectedUnlimited, 1e-6);
+  // Under a host limit, steal is throttle steal, so c * steal is not billed.
+  f.g.enterLimit(f.g.s.at, false);
+  f.g.s.balance = 1_000;
+  await f.advance(30, 1.0 / 8, 0.01 / 8, 0.2);
+  const expectedLimited = 1_000 +
+    (p.baseline - (f.g.settings.mul * 1.0 + f.g.settings.add)) * 30;
+  assertAlmostEquals(f.g.s.balance, expectedLimited, 1e-6);
 });

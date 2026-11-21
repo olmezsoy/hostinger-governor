@@ -37,9 +37,19 @@ const explained = (overrides: Partial<Explained>): Explained =>
 Deno.test("explain text shows the fit's noise and its floor", () => {
   const text = explainText(explained({ fit }));
   assertStringIncludes(text, "sigma 0.0214 + 0.0119 per own core, at least 0.012, 222 pairs");
+  assert(!text.includes(", c="));
+  const withSteal = explainText(explained({ fit: { ...fit, c: 0.5151 } }));
+  assertStringIncludes(withSteal, "a=1.0463, b=0.0193, c=0.5151, aHi=1.051");
   const { sigmaFloor: _, ...line } = fit;
   const without = explainText(explained({ fit: line }));
   assertStringIncludes(without, "sigma 0.0214 + 0.0119 per own core, 222 pairs");
+});
+
+Deno.test("explain text lists invalidReasons when readings are invalid", () => {
+  const text = explainText(
+    explained({ readingsInvalid: true, invalidReasons: ["spacing", "residuals"] }),
+  );
+  assertStringIncludes(text, "Readings invalid (spacing, residuals)");
 });
 
 Deno.test("explain text shows a recovered drift reference without a margin fit", () => {

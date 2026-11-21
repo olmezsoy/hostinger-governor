@@ -142,7 +142,14 @@ export function buildReport(
     const filled = Math.max(0, Math.min(20, Math.round(percent / 5)));
     const rows = [
       ["Balance", `${number(c.balance, 0)} / ${number(p.capacity, 0)} core-seconds`],
-      ["Work admission", state.accepting ? "🟢 Accepting work" : "🔴 New work paused"],
+      [
+        "Work admission",
+        state.accepting
+          ? "🟢 Accepting work"
+          : state.limit
+          ? "🔴 New work paused"
+          : "🔴 New work paused (ceiling not applied)",
+      ],
       ["Host CPU limit", state.limit ? "🔴 Detected" : "Not detected"],
       [
         rate === null ? "Bank trend" : rate >= 0 ? "Earning" : "Spending",
@@ -193,6 +200,65 @@ export function buildReport(
       chart: `${"█".repeat(filled)}${"░".repeat(20 - filled)}  ${percent.toFixed(1)}%`,
       table: { headers: ["Credit metric", "Current estimate"], rows },
     });
+    const cal = c.calibration;
+    if (cal) {
+      const warnRows: string[][] = [];
+      const iso = (ms: number) => new Date(ms).toISOString();
+      if (cal.failing) {
+        warnRows.push([
+          "Calibration evaluation",
+          `🔴 Failing since ${iso(cal.failing.since)}; holding fallback margin`,
+        ]);
+      }
+      if (cal.rulesMismatch) {
+        warnRows.push([
+          "Rules mismatch",
+          "🔴 Latched until calibration reset; holding fallback margin",
+        ]);
+      }
+      if (cal.hold) {
+        warnRows.push([
+          "Fallback hold",
+          `🟡 Active (${cal.hold.reason} readings since ${iso(cal.hold.since)})`,
+        ]);
+      }
+      if (cal.ownHold) {
+        warnRows.push([
+          "Own-count hold",
+          `🟡 Active (${number(cal.ownHold.gap, 3)}-core gap)`,
+        ]);
+      }
+      if (cal.readingsInvalid) {
+        const why = cal.invalidReasons?.length ? ` (${cal.invalidReasons.join(", ")})` : "";
+        warnRows.push([
+          "Hostinger readings",
+          `🔴 Invalid${why}; excluded from calibration and clamping`,
+        ]);
+      } else if (cal.apiStaleSince !== null) {
+        warnRows.push(["Hostinger readings", `🟡 Stale since ${iso(cal.apiStaleSince)}`]);
+      }
+      if (cal.cusum.pending) {
+        const pend = cal.cusum.pending;
+        warnRows.push([
+          "Drift change",
+          pend.verified
+            ? `🟡 Verified since ${iso(pend.at)}, waiting for refit`
+            : `🟡 Pending verification since ${iso(pend.at)} (${pend.readings} readings)`,
+        ]);
+      }
+      if (cal.cooldownUntil !== null) {
+        warnRows.push([
+          "Sustained-use cooldown",
+          `🟡 Active until ${iso(cal.cooldownUntil)}`,
+        ]);
+      }
+      if (warnRows.length) {
+        sections.push({
+          title: "Calibration warnings",
+          table: { headers: ["Condition", "State"], rows: warnRows },
+        });
+      }
+    }
     if (c.rebuilding) {
       const reasons = {
         "first-start": "first startup",
@@ -311,17 +377,27 @@ export function buildReport(
   }
   if (state?.credits.anchor) {
     const a = state.credits.anchor;
+    const cal = state.credits.calibration;
+    const detail = cal?.readingsInvalid
+      ? `Readings are invalid${
+        cal.invalidReasons?.length ? ` (${cal.invalidReasons.join(", ")})` : ""
+      } and excluded from calibration`
+      : cal?.apiStaleSince !== null && cal?.apiStaleSince !== undefined
+      ? `Readings are stale since ${new Date(cal.apiStaleSince).toISOString()}`
+      : a.difference === null
+      ? "Guest/API samples are not comparable"
+      : `Guest/API difference ${number(a.difference)} percentage points`;
     sections.push({
       title: "API comparison",
-      note: `Last checked ${new Date(a.checkedAt).toISOString()}. ${
-        a.difference === null
-          ? "Guest/API samples are not comparable"
-          : `Guest/API difference ${number(a.difference)} percentage points`
-      }. API history never resets the bank.`,
+      note: `Last checked ${
+        new Date(a.checkedAt).toISOString()
+      }. ${detail}. API history never resets the bank.`,
     });
   }
   const { memory, swap, load, disk } = resources;
-  const lowest = Math.min(memory.free, ...memory.history.map((p) => p.v));
+  const lowest = memory.history.length
+    ? Math.min(memory.free, ...memory.history.map((p) => p.v))
+    : memory.free;
   const diskUsed = disk.total ? 100 * (1 - disk.free / disk.total) : 0;
   sections.push({
     title: "Memory, load and storage",
@@ -331,17 +407,21 @@ export function buildReport(
         [
           `${badge(memory.total ? 100 * (1 - lowest / memory.total) : 0, 80, 90)} Memory`,
           `${number(memory.free)} / ${number(memory.total)} GiB free`,
-          `Lowest free ${number(lowest)} GiB`,
+          memory.history.length ? `Lowest free ${number(lowest)} GiB` : "Not available",
         ],
         [
           `${badge(swap.used, 50, 90)} Swap`,
           `${number(swap.used)}% used / ${number(swap.total)} GiB`,
-          `Peak ${number(peak(swap.history, swap.used))}% used`,
+          swap.history.length
+            ? `Peak ${number(peak(swap.history, swap.used))}% used`
+            : "Not available",
         ],
         [
           `${badge(load.current[0], resources.vcpus, resources.vcpus * 2)} Load`,
           load.current.map((v) => number(v, 2)).join(" / "),
-          `Peak ${number(peak(load.history, load.current[0]), 2)} · ${resources.vcpus} vCPUs`,
+          load.history.length
+            ? `Peak ${number(peak(load.history, load.current[0]), 2)} · ${resources.vcpus} vCPUs`
+            : "Not available",
         ],
         [
           `${badge(diskUsed, 70, 85)} Disk /`,

@@ -55,6 +55,7 @@ export function widen(m: Margin, err: number, used: number): Margin {
 // Steal as a share of demand (busy + steal). A limit refuses most of what is asked; neighbours take a
 // share of whatever runs. Cutting demand under the limit makes a limit's steal vanish and neighbours'
 // stay; restoring it brings a limit's steal back.
+export const LIMIT_STEAL = 0.1;
 export const LIMIT_EVIDENT = 0.6;
 export const limitConfirmed = (sf0: number, sfCut: number, sfRestore: number) =>
   sfCut <= 0.75 * sf0 && sfRestore >= Math.max(0.6 * sf0, 1.5 * sfCut);
@@ -82,14 +83,33 @@ export const probeMinDemand = (p: Plan) =>
 export const EVIDENT_LIMIT_SHARE = 0.25;
 export const evidentSteal = (p: Plan, steal: number) =>
   steal * p.vcpus >= EVIDENT_LIMIT_SHARE * p.limit;
-// Under a credit limit the whole VM delivers the cap, whatever work presses on it. A slice too idle
-// to probe can still look like a limit when work outside it is what presses: busy near the cap
-// (allowing up to 15% neighbour steal below it) with steal at LIFT_STEAL or more. The governor
-// confirms with burners before entering so noisy neighbours near the cap never trigger a false one.
-export const pinnedAtCap = (p: Plan, busy: number, steal: number, outside: number) =>
-  sliceDemand(p, busy, steal, outside) < probeMinDemand(p) &&
-  busy * p.vcpus >= 0.85 * p.limit && busy * p.vcpus <= p.limit + 0.1 &&
-  demandSteal(busy, steal) >= LIFT_STEAL;
+// Under a credit limit the whole VM delivers the cap, whatever work presses on it. A slice that a
+// 20% probe cannot meaningfully cut — because its own demand or busy CPU is already at or below
+// the probe floor, or because demand outside the slice alone exceeds the host cap — cannot be
+// probed; when busy sits near the cap with steal at LIFT_STEAL or more, the governor confirms with
+// burners before entering so noisy neighbours near the cap never trigger a false one.
+export const pinnedAtCap = (p: Plan, busy: number, steal: number, outside: number) => {
+  const busyCores = busy * p.vcpus;
+  const sliceBusy = Math.max(0, busyCores - outside);
+  const minSliceBusy = p.vcpus >= 4 ? PROBE_CEILING / 100 : 0.5 * probeMinDemand(p);
+  const unprobable = sliceDemand(p, busy, steal, outside) < probeMinDemand(p) ||
+    sliceBusy <= minSliceBusy ||
+    outside >= 0.85 * p.limit;
+  return unprobable &&
+    busyCores >= 0.85 * p.limit && busyCores <= p.limit + 0.1 &&
+    demandSteal(busy, steal) >= LIFT_STEAL;
+};
+// Probing cuts cgroup CPUQuota to PROBE_CEILING (20% of one core), which only meters consumed CPU
+// (`sliceBusy`), not steal. On KVM 4+ requiring `sliceBusy > PROBE_CEILING / 100` ensures the cut
+// actually reduces workload demand (on KVM 1-2, a 0.35-core slice under a 50% cap runs at 0.175
+// busy cores). Deferring to `pinnedAtCap` prevents futile probes when outside load alone pins the
+// VM cap.
+export const canProbeSlice = (p: Plan, busy: number, steal: number, outside: number) => {
+  const minSliceBusy = p.vcpus >= 4 ? PROBE_CEILING / 100 : 0.5 * probeMinDemand(p);
+  return !pinnedAtCap(p, busy, steal, outside) &&
+    sliceDemand(p, busy, steal, outside) >= probeMinDemand(p) &&
+    Math.max(0, busy * p.vcpus - outside) > minSliceBusy;
+};
 // Hostinger lifts a limit at 20% of capacity, and capacity is three hours of the vCPUs above the
 // baseline, so even the most the margin can charge takes this long to spend it: no credit limit can
 // come sooner after a lift, on any plan (2,160 seconds at cost; less with the margin).
@@ -98,6 +118,19 @@ export const quietAfterLiftSeconds = (p: Plan, m: Margin) =>
 // Heuristics for demand, not the host's unobservable count of throttled scheduling periods.
 export const LIMIT_PRESSING = 0.02;
 export const LIFT_STEAL = 0.15;
+// Pressing on a limit needs both steal as a share of demand and total demand / stolen cores that a
+// VM-wide or per-vCPU cap could actually cause: on an idle noisy host, 0.005 cores of neighbour
+// steal on 0.15 cores busy is over 2% of demand without coming near any cap.
+export const limitPressing = (p: Plan, busy: number, steal: number) =>
+  demandSteal(busy, steal) >= LIMIT_PRESSING &&
+  (busy + steal) * p.vcpus >= 0.8 * (p.limit / p.vcpus) &&
+  steal * p.vcpus >= Math.min(0.01, LIMIT_PRESSING * p.limit);
+// Walking back to a limit's onset stops once demand or steal drops below what a real cap can
+// produce, so continuous idle neighbour steal never pulls onset hours before the real limit began.
+export const limitOnsetSample = (p: Plan, busy: number, steal: number) =>
+  demandSteal(busy, steal) >= LIMIT_STEAL &&
+  (busy + steal) * p.vcpus >= p.limit / p.vcpus &&
+  steal * p.vcpus >= Math.min(0.1, 0.25 * p.limit);
 export const recoveryCeiling = (p: Plan, outside: number) =>
   Math.max(20, Math.floor((p.limit - outside - 0.2) * 10) * 10);
 export const tightenCeiling = (ceiling: number, managedDemand: number) =>

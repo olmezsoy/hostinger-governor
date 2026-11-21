@@ -1,5 +1,71 @@
 # Changelog
 
+## v0.3.3
+
+- Model Hostinger's hypervisor-steal billing term in meter calibration and live billing:
+  - `fitMeter()` fits `host = a * own + b + c * steal` when at least 10 pairs in the window carry
+    0.05 or more cores of steal with sufficient independent variance, keeping `c` (clamped to
+    `[0, 1]`) when it exceeds 0.05 with `t >= 2.5`. Calm hosts omit `c`. Day-block bootstrap for
+    `aHi` resamples the 2D relation so neighbour bursts do not tilt `a` or inflate residual noise.
+  - In `apply`, while unlimited and `c > 0`, the daemon bills `c * steal` in real time across
+    `creditStep`, slot charges, `targetCeiling` and public state rates, and skips `c * steal` during
+    host limits so throttle steal is never double-counted. On a live KVM 8 trace (`c ~ 0.52`), this
+    cuts false CUSUM alarms from 5 to 0 and keeps the calm-hour margin tight.
+- Unstick calibration and propagate `referenceFit` everywhere:
+  - Verify and revert pending CUSUM drift changes even when a box goes too idle to qualify for a
+    daily refit. Allow `pending.fit.b` to refine downward as well as upward after `REFINE_PAIRS`
+    while keeping `pending.hold` non-decreasing until verification ends.
+  - Use `driftReference(s)` across `withStart`, `newRun.tighten`, `checkLifts`, `learnGaps`,
+    `learn`, `settledBase`, `calculateEstimates`, `calibrationSummary` long-interval residuals,
+    `explainCalibration` `candidateFit` (sharing `eligiblePairs()` with `trackMeter`), and long
+    reading interval logs.
+  - Accept post-reboot anchors at `a.at <= newest` in `settledBase()` to halve the post-reboot clamp
+    blind window.
+  - Stop setting `FLAGS.pressing` on unlimited slots (which blocked `certifiedAnchors` on noisy idle
+    hosts), and require `pressingShare(s) >= 0.1` in `pressedDuringRecovery()` so a single 30-second
+    neighbour blip does not disqualify recovery lift checks.
+- Harden limit detection, recovery and control stability:
+  - Preserve confirmation metadata (`confirmed: true`, `firstTest: "limited"`, `testDelivery`,
+    `limitedAt`), clear `entry`, and anchor `startedAt`/`heldFrom`/`limitedUptime` at post-burner
+    completion when `confirmPinnedLimit()` enters a limit, so pinned limits classify as `credit` on
+    their first lift.
+  - Route high outside demand (`outside >= 0.85 * p.limit`) and low slice busy CPU
+    (`<= PROBE_CEILING / 100` on KVM 4+, `<= 0.5 * probeMinDemand` on KVM 1 and 2) to
+    `pinnedAtCap()` instead of futile slice probes, and check `pinned` before `canProbeSlice`.
+  - Gate `limitPressing()` and `limitOnsetSample()` on real cap-scale demand and steal so idle
+    neighbour steal neither marks recovery slots as pressing nor drags limit onset hours backward.
+  - Track `tightenedCeiling` separately from transient `outside` spikes so recovery ceilings relax
+    back up once an outside burst ends while keeping press-tightened caps.
+  - Restore `s.balance` to at least `p.recovered` (20%) on confirmed `credit` lifts (never on
+    unconfirmed `unknown` lifts) so neighbour-paused local earning does not needlessly throttle a
+    box after a verified credit lift.
+  - Measure post-probe cooldown from post-probe completion uptime and decay `backoffMs` back to 10
+    minutes after 24 hours of calm past cooldown.
+  - Skip 10% ceiling jitter on 4+ vCPU plans outside limits away from the 20% floor and full-plan
+    ceiling; while actively throttling below full box capacity (`allowed < vcpus`), never delay
+    tightening so the deadband cannot bias credit spend upward.
+- Improve reporting, observability and broker timeouts:
+  - Resolve `saYYYYMMDD` (Ubuntu 26.04 / sysstat `HISTORY > 28`) before legacy `saDD` in local
+    system time and deduplicate `sadf` rows by timestamp; keep 72 hours of settled readings in
+    public state so `governor report 72` has full API history.
+  - Show `Not available` instead of synthetic zero-history peaks when memory, swap or load history
+    is empty.
+  - Surface abnormal calibration states (`failing`, `rulesMismatch`, `hold`, `ownHold`,
+    `readingsInvalid` with `invalidReasons`, `apiStaleSince`, `cusum.pending`, `cooldownUntil`) and
+    unapplied ceilings (`accepting: false` without a limit) in `governor status`, `governor report`
+    and `governor calibrate --explain`.
+  - Enforce a total HTTP deadline inside `API_SECONDS` (15 s) in `tools/hostinger-broker.py` via
+    `ITIMER_REAL` and map non-JSON HTTP 200 replies to `upstream_unavailable`; retry transient
+    broker `busy` responses up to 3 times in `governor check-hostinger`.
+
+Upgrade by running the installer again and updating `/usr/local/libexec/governor-hostinger.py` as
+described in [Hostinger credentials](docs/hostinger-credentials.md). Configuration, credit
+estimates, legacy margins and learned calibration carry over. On a box that previously accumulated a
+stuck drift hold or distorted 1D fit under neighbour steal, run
+`sudo governor calibrate --reset &&
+sudo governor tick` after upgrading to start fitting cleanly
+with the steal term.
+
 ## v0.3.2
 
 - Stop false credit limits on an idle box when neighbour steal rises:

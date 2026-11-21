@@ -31,9 +31,15 @@ import { reportOptions } from "./resource.ts";
 import { configureDocker, enrollService } from "./workloads.ts";
 import { readClock } from "./sample.ts";
 import { execOptions, scopeArgs, waitForAccepting } from "./exec.ts";
-import { BROKER_CAPABILITY, CHECK_WINDOW_MS, cpuReadings, vm } from "./hostinger.ts";
+import {
+  BROKER_CAPABILITY,
+  CHECK_WINDOW_MS,
+  cpuReadings,
+  HostingerBrokerUnavailable,
+  vm,
+} from "./hostinger.ts";
 
-export const VERSION = "0.3.2";
+export const VERSION = "0.3.3";
 const STALE_MS = 5 * 60_000;
 class UnsupportedStateSchema extends Error {
   constructor() {
@@ -113,14 +119,33 @@ try {
       if (args.length) usage();
       const h = (await loadConfig()).hostinger;
       if (!h?.vm_id) throw new Error("hostinger.vm_id is not configured");
-      const details = await vm(h, h.vm_id);
+      // A live daemon poll holds the broker lock for a few seconds; retry briefly on `busy` so a
+      // verification check lands on the warm cache instead of failing transiently.
+      const retryBusy = async <T>(call: () => Promise<T>): Promise<T> => {
+        for (let attempt = 0;; attempt++) {
+          try {
+            return await call();
+          } catch (error) {
+            if (
+              attempt < 3 && error instanceof HostingerBrokerUnavailable && error.code === "busy"
+            ) {
+              await new Promise((resolve) => setTimeout(resolve, 2000));
+              continue;
+            }
+            throw error;
+          }
+        }
+      };
+      const details = await retryBusy(() => vm(h, h.vm_id!));
       if (h.request_command && details.ipv4 === undefined) {
         console.error(
           "Hostinger broker omitted IPv4 addresses; upgrade the installed broker before using this check to verify the host's identity",
         );
       }
-      const now = Date.now();
-      const readings = await cpuReadings(h, h.vm_id, now - CHECK_WINDOW_MS, now);
+      const readings = await retryBusy(() => {
+        const now = Date.now();
+        return cpuReadings(h, h.vm_id!, now - CHECK_WINDOW_MS, now);
+      });
       console.log(
         JSON.stringify({
           vm_id: h.vm_id,
@@ -151,7 +176,11 @@ try {
         console.log(
           [
             `${s.plan.name} · ceiling ${s.ceiling}% · ${
-              s.limit ? "LIMITED by Hostinger" : "not limited"
+              s.limit
+                ? "LIMITED by Hostinger"
+                : s.accepting
+                ? "not limited"
+                : "not limited (new work paused: ceiling not applied)"
             }`,
             ...creditLines(s, clock),
           ].join("\n"),

@@ -3,7 +3,9 @@ import {
   calculateEstimates,
   calibrationSummary,
   diagnoseGap,
+  driftReference,
   effectiveSettings,
+  eligiblePairs,
   fallbackMargin,
   FIT_SEED,
   fitMeter,
@@ -144,12 +146,16 @@ export async function explainCalibration(
       fit: calibration.fit,
       referenceFit: calibration.referenceFit ?? null,
       candidateFit: fitMeter(
-        pairReadings(
-          p,
-          checkpoint.history.readings,
-          checkpoint.history.slots,
-          checkpoint.history.meterPairs,
-        ).filter((r) => r.at >= checkpoint.at - c.fit.days * DAY),
+        eligiblePairs(
+          pairReadings(
+            p,
+            checkpoint.history.readings,
+            checkpoint.history.slots,
+            checkpoint.history.meterPairs,
+          ).filter((r) => r.at >= checkpoint.at - c.fit.days * DAY),
+          calibration,
+          driftReference(calibration),
+        ),
         c.fit,
         FIT_SEED,
         checkpoint.at,
@@ -191,9 +197,9 @@ export async function explainCalibration(
 
 const cores = (n: number) => String(Math.round(n * 10_000) / 10_000);
 const fitText = (f: MeterFit) =>
-  `a=${cores(f.a)}, b=${cores(f.b)}, aHi=${f.aHi}, sigma ${cores(f.sigma[0])} + ${
-    cores(f.sigma[1])
-  } per own core${
+  `a=${cores(f.a)}, b=${cores(f.b)}${
+    f.c !== undefined && f.c > 0 ? `, c=${cores(f.c)}` : ""
+  }, aHi=${f.aHi}, sigma ${cores(f.sigma[0])} + ${cores(f.sigma[1])} per own core${
     f.sigmaFloor !== undefined ? `, at least ${cores(f.sigmaFloor)}` : ""
   }, ${f.pairs} pairs on ${f.days} days`;
 const percent = (n: number) => `${Math.round(n * 1000) / 10}%`;
@@ -294,9 +300,15 @@ export function explainText(r: Explained) {
     }; run residual ${cores(cusum.residual)} cores over ${cores(cusum.own)} own cores${
       cusum.alarm ? "; alarm" : ""
     }`,
-    `Readings ${r.readingsInvalid ? "invalid" : r.apiStaleSince !== null ? "stale" : "usable"}${
-      r.apiStaleSince !== null ? ` since ${time(r.apiStaleSince)}` : ""
-    }; newest reading ${r.newestFinal ? "final" : "may still change"}`,
+    `Readings ${
+      r.readingsInvalid
+        ? `invalid${r.invalidReasons?.length ? ` (${r.invalidReasons.join(", ")})` : ""}`
+        : r.apiStaleSince !== null
+        ? "stale"
+        : "usable"
+    }${r.apiStaleSince !== null ? ` since ${time(r.apiStaleSince)}` : ""}; newest reading ${
+      r.newestFinal ? "final" : "may still change"
+    }`,
     ...(r.invalidSpans.length
       ? [
         `Readings invalid and bridged: ${

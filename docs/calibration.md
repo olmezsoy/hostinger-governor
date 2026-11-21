@@ -212,22 +212,30 @@ usual noise, widening the valid range is a change the data backs.
 ## Meter fit and margin
 
 A fit needs 48 pairs at three or more guest cores across at least three UTC days, so idle boxes
-never qualify. It is ordinary least squares of reading cores on guest cores over 14 days. The
-multiplier `aHi` is the 97.5th percentile over 1,000 fixed-seed resamples of UTC days, or the fitted
-slope when that is higher. A day is resampled once it holds 16 qualifying pairs, a third of the 48,
-or once it is whole and holds at least one; a fit needs two such days, because resampling one day
-shows no day-to-day spread and the bound would equal the slope itself. A day without a qualifying
-pair carries no slope, though its pairs still count in the fit. Resampling idle weekend days drew
-sets of mostly idle days: an `apply` start on a Thursday, without the 14 days of `shadow`, set the
-multiplier to 1.086 to 1.233 against a slope near 1.04, and the multiplier only tightens. Residual
-noise gives σ(u). Once ten pairs under three cores exist, σ(u) is never below what they show, √(π/2)
-times their mean absolute residual, so a line through the residuals that reaches zero at idle can't
-make every idle reading extreme. Under load the line rises past that floor, so the premium is
-unchanged. Refits run at most daily. Readings marked invalid, and any residual beyond 6 σ against
-drift detection's reference, never enter a refit: like drift detection, the fit must not let a bad
-feed tighten the margin. A real jump in the meter is then left to limits until readings are valid
-again (see Drift detection). After a drift change, refits never reach back past its change point, so
-no window mixes the meter from before a change with the meter after it.
+never qualify. It starts with ordinary least squares of reading cores on guest cores over 14 days.
+When at least 10 pairs in the window carry 0.05 or more cores of neighbour steal with enough
+independent variance, `fitMeter` fits `host = a * own + b + c * steal` as well and keeps `c`
+(clamped to `[0, 1]`) when it exceeds 0.05 with `t >= 2.5`. On hosts where Hostinger's meter bills
+part of hypervisor steal (measured near `0.5 * steal` on a live KVM 8 box), separating `c * steal`
+keeps neighbour steal bursts from tilting the slope `a`, inflating noise or tripping false CUSUM
+alarms. In `apply`, when `c > 0` and the VM is not limited, the governor adds `c * steal` to the
+live margin on each pass so noisy-neighbour bursts trim headroom in real time without imposing a
+permanent penalty during calm hours. The multiplier `aHi` is the 97.5th percentile over 1,000
+fixed-seed resamples of UTC days (accounting for `c` when present), or the fitted slope when that is
+higher. A day is resampled once it holds 16 qualifying pairs, a third of the 48, or once it is whole
+and holds at least one; a fit needs two such days, because resampling one day shows no day-to-day
+spread and the bound would equal the slope itself. A day without a qualifying pair carries no slope,
+though its pairs still count in the fit. Resampling idle weekend days drew sets of mostly idle days:
+an `apply` start on a Thursday, without the 14 days of `shadow`, set the multiplier to 1.086 to
+1.233 against a slope near 1.04, and the multiplier only tightens. Residual noise gives σ(u). Once
+ten pairs under three cores exist, σ(u) is never below what they show, √(π/2) times their mean
+absolute residual, so a line through the residuals that reaches zero at idle can't make every idle
+reading extreme. Under load the line rises past that floor, so the premium is unchanged. Refits run
+at most daily. Readings marked invalid, and any residual beyond 6 σ against drift detection's
+reference, never enter a refit: like drift detection, the fit must not let a bad feed tighten the
+margin. A real jump in the meter is then left to limits until readings are valid again (see Drift
+detection). After a drift change, refits never reach back past its change point, so no window mixes
+the meter from before a change with the meter after it.
 
 A reading at the 100% cap only bounds the meter from below. It never counts as a normal residual and
 never reaches drift detection, so a jump clipped at the cap cannot pass for valid readings; one
@@ -425,10 +433,13 @@ slope from the residuals since the CUSUM last left zero and as an offset from th
 pairs among them, and the hold covers both at every load. Only pairs at three or more guest cores,
 where a fit qualifies, read the slope: near idle, a small offset divided by a tiny load read as a
 multiplier of 2 to 3.3 on the simulated meter's own day-to-day wobble. Capped readings take part in
-neither. From three pairs on, the hold rises to their mean residual when that is more
-(`drift-hold`). After 48 pairs the change is verified (`cusum-keep`) if their mean residual is at
-least 0.5 σ against the old fit; otherwise it is withdrawn (`cusum-revert`) and, having changed
-nothing learned, leaves nothing behind.
+neither. From three pairs on, `pending.fit.b` tracks the running mean residual (so an initial
+overshoot refines downward as normal readings arrive), while the temporary `pending.hold` rises
+whenever that mean residual exceeds it (`drift-hold`) and never loosens until verification ends.
+Pending verification runs on every valid pair even if the box has gone too idle to qualify for a
+refit. After 48 pairs the change is verified (`cusum-keep`) if their mean residual is at least 0.5 σ
+against the old fit; otherwise it is withdrawn (`cusum-revert`) and, having changed nothing learned,
+leaves nothing behind.
 
 A verified change holds until a fit on the readings after its change point alone qualifies. That fit
 sets the learned margin, tightening only against the margin learned before the change. Limits during
@@ -601,11 +612,12 @@ settings, and mode.
 
 `state.json` adds `credits.law.floor` and `credits.calibration`: mode, start, the settings in force
 (`applied`: in `off` and `shadow`, the legacy margin and 20% floor) and the learned ones
-(`learned`), any stale or invalid `hold`, the gap and its upper bound, the fit and the newer
-`referenceFit` drift detection follows, the CUSUM state, `apiStaleSince`, `readingsInvalid`,
-`newestFinal`, `longIntervals`, the estimates, `rulesMismatch`, `mismatches`, `invalidSpans`,
-`ownHold`, any sustained-use cooldown, the last limit's class and diagnosis, and `failing`, the time
-a failing evaluation began and the margin below the open estimate it holds, or null. In `apply`,
+(`learned`), any stale or invalid `hold`, the gap and its upper bound, the fit (including optional
+steal coefficient `c`) and the newer `referenceFit` drift detection and operational replays follow,
+the CUSUM state, `apiStaleSince`, `readingsInvalid`, `invalidReasons` (when invalid), `newestFinal`,
+`longIntervals`, the estimates, `rulesMismatch`, `mismatches`, `invalidSpans`, `ownHold`, any
+sustained-use cooldown, the last limit's class and diagnosis, and `failing`, the time a failing
+evaluation began and the margin below the open estimate it holds, or null. In `apply`,
 `credits.balance`, `percent` and `minutesAtFull` report the acted estimate; the open estimate is in
 `credits.calibration.estimates.open`.
 

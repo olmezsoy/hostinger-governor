@@ -61,7 +61,8 @@ export const validSettings = (s: Settings) =>
 export const validFit = (f: MeterFit) =>
   !!f && finite(f.a, f.b, f.aHi, f.pairs, f.days) && Array.isArray(f.sigma) &&
   f.sigma.length === 2 && finite(...f.sigma) &&
-  (f.sigmaFloor === undefined || finite(f.sigmaFloor) && f.sigmaFloor >= 0);
+  (f.sigmaFloor === undefined || finite(f.sigmaFloor) && f.sigmaFloor >= 0) &&
+  (f.c === undefined || finite(f.c) && f.c >= 0 && f.c <= 1);
 // A drift change as persist.json and decisions record it (#13 §8).
 export const validPending = (v: NonNullable<CalibrationState["pending"]>) =>
   !!v && finite(v.at, v.readings, v.z, v.gapFrom, v.residual, v.n) && validSettings(v.from) &&
@@ -159,7 +160,7 @@ export type History = {
   // The newest reading of the last fetch, and when one was first seen again in a later fetch.
   unsettled?: Reading;
   newestSince?: number;
-  meterPairs?: { at: number; from: number; own: number; seconds: number }[];
+  meterPairs?: { at: number; from: number; own: number; steal?: number; seconds: number }[];
   // Readings after long intervals, paired but kept out of replays (calibration.ts).
   longPairs?: LongPair[];
   revisions: { at: number; old: number; new: number; seenAt: number }[];
@@ -499,7 +500,13 @@ function encodeCheckpoint(h: History) {
       slots: referenceRows(h.slots, evidence.slots, SLOT_KEYS),
       readings: referenceRows(h.readings, evidence.readings, ["at", "v"]),
       meterPairs: evidence.meterPairs
-        ? referenceRows(h.meterPairs ?? [], evidence.meterPairs, ["at", "from", "own", "seconds"])
+        ? referenceRows(h.meterPairs ?? [], evidence.meterPairs, [
+          "at",
+          "from",
+          "own",
+          "steal",
+          "seconds",
+        ])
         : undefined,
     },
   };
@@ -597,9 +604,12 @@ function decodeCheckpoint(h: History, encoded: unknown): History["checkpoint"] {
 // Each record on its own, so a reader can drop a bad one and keep the rest.
 const validMeterPair = (r: MeterPair) =>
   !!r && finite(r.at, r.from, r.own, r.seconds) && r.from < r.at && r.own >= 0 && r.own <= 128 &&
+  (r.steal === undefined || finite(r.steal) && r.steal >= 0 && r.steal <= 128) &&
   covered(r.seconds, (r.at - r.from) / 1000);
 const validLongPair = (r: LongPair) =>
-  !!r && finite(r.at, r.from, r.host, r.own, r.ownLast) && r.from < r.at;
+  !!r && finite(r.at, r.from, r.host, r.own, r.ownLast) && r.from < r.at &&
+  (r.steal === undefined || finite(r.steal) && r.steal >= 0) &&
+  (r.stealLast === undefined || finite(r.stealLast) && r.stealLast >= 0);
 const validSpan = (x: InvalidSpan) =>
   !!x && finite(x.from) && (x.to === null || finite(x.to) && x.to >= x.from) &&
   (x.applied === undefined || validSettings(x.applied)) && (x.gap === undefined || finite(x.gap));
@@ -988,7 +998,10 @@ class Persisted {
     if (readings.length) line.readings = readings.map(readingTuple);
     const pairs = seen.meterPairs.rows.filter((r) => {
       const known = this.meterPairs.get(r.at);
-      if (known && known.from === r.from && known.own === r.own && known.seconds === r.seconds) {
+      if (
+        known && known.from === r.from && known.own === r.own && known.steal === r.steal &&
+        known.seconds === r.seconds
+      ) {
         return false;
       }
       this.meterPairs.set(r.at, { ...r });
