@@ -625,26 +625,112 @@ Deno.test("steal on work outside the slice doesn't make the slice worth probing"
   assertEquals(probes, 1);
 });
 
-Deno.test("work outside an idle slice pinned at the cap enters a limit when the bank may be empty", async () => {
-  for (const full of [false, true]) {
+Deno.test("work outside an idle slice pinned at the cap confirms with burners and rejects noisy hosts", async () => {
+  for (
+    const [limited, busy, steal, burnBusy, burnSteal] of [
+      // Real 2.4-core cap with 3 cores outside, at a full estimate (wrong estimate).
+      [true, 2.38 / 8, 0.62 / 8, 2.4 / 8, 0.7],
+      // Real 2.4-core cap with 10% neighbour steal (2.16 cores delivered).
+      [true, 2.16 / 8, 1.34 / 8, 2.16 / 8, 0.73],
+      // No limit, 2.9 cores outside + 20% neighbour steal, at a low estimate (10%): burners break through.
+      [false, 2.32 / 8, 0.58 / 8, 5.8 / 8, 0.2],
+    ] as const
+  ) {
     const f = fixture();
-    await f.g.tick();
-    f.g.s.balance = full ? p.capacity : 0.1 * p.capacity;
+    let burns = 0;
+    const g = new Governor({}, p, undefined, {
+      ...f.io,
+      demand: () => {
+        burns++;
+        return Promise.resolve({ busy: burnBusy, steal: burnSteal, seconds: 25 });
+      },
+    });
+    const tickWith = async (b: number, st: number, managed: number) => {
+      f.elapse(30, b, st, managed);
+      await g.tick();
+    };
+    await g.tick();
+    g.s.balance = limited ? p.capacity : 0.1 * p.capacity;
     let probes = 0;
-    f.g.probe = () => {
+    g.probe = () => {
       probes++;
       return Promise.resolve(true);
     };
-    // 3 cores outside under the 2.4-core cap: busy at the cap, the rest stolen.
-    for (let i = 0; i < 6 && !f.g.s.limit; i++) await f.advance(30, 2.38 / 8, 0.62 / 8, 0.04);
+    for (let i = 0; i < 6 && !g.s.limit; i++) await tickWith(busy, steal, 0.04);
     assertEquals(probes, 0);
-    // Work near the cap on a noisy host looks the same; a full estimate rules out a credit limit.
-    assertEquals(!!f.g.s.limit, !full, `full ${full}`);
-    if (!full) assertEquals(f.g.s.limit?.record?.path, "evident");
+    assertEquals(burns, 1);
+    assertEquals(!!g.s.limit, limited);
+    if (limited) assertEquals(g.s.limit?.record?.path, "probe");
   }
 });
 
-Deno.test("no probe follows a lift until its bank could be spent, but evident steal still enters", async () => {
+Deno.test("no probe or pinned check follows a credit lift until its bank could be spent, shortened by lift lag", async () => {
+  const f = fixture();
+  let testBusy = 2.4 / 8, testSteal = 0.7;
+  const g = new Governor({}, p, undefined, {
+    ...f.io,
+    demand: () => Promise.resolve({ busy: testBusy, steal: testSteal, seconds: 25 }),
+  });
+  await g.tick();
+  g.s.used = 200_000;
+  g.enterLimit(start, false);
+  g.s.balance = p.recovered;
+  // First lift test fails with limited evidence, confirming a credit limit and recording limitedUptime.
+  f.elapse(30);
+  await g.tick();
+  assert(g.s.limit);
+  assertEquals(g.s.limit.record?.confirmed, true);
+  // Two minutes later (matching the 2-minute lift-test backoff), the limit lifts.
+  testBusy = 4.7 / 8;
+  testSteal = 0.06;
+  for (let i = 0; i < 6 && g.s.limit; i++) {
+    f.elapse(30);
+    await g.tick();
+  }
+  assertEquals(g.s.limit, undefined);
+  let probes = 0;
+  g.probe = () => {
+    probes++;
+    return Promise.resolve(false);
+  };
+  // After widening, the quiet window from limitedUptime leaves ~28 minutes after detection: 24 min
+  // stays quiet, then a probe fires once the window passes.
+  for (let i = 0; i < 48; i++) {
+    f.elapse(30, 2.5 / 8, 0.4 / 8, 2.4);
+    await g.tick();
+  }
+  assertEquals(probes, 0);
+  for (let i = 0; i < 16 && probes === 0; i++) {
+    f.elapse(30, 2.5 / 8, 0.4 / 8, 2.4);
+    await g.tick();
+  }
+  assertEquals(probes, 1);
+
+  // During a quiet window, evident steal still enters immediately.
+  g.s.used = 200_000;
+  g.enterLimit(g.s.at, false);
+  g.s.balance = p.recovered;
+  testBusy = 2.4 / 8;
+  testSteal = 0.7;
+  f.elapse(30);
+  await g.tick();
+  assertEquals(g.s.limit?.record?.confirmed, true);
+  testBusy = 4.7 / 8;
+  testSteal = 0.06;
+  for (let i = 0; i < 6 && g.s.limit; i++) {
+    f.elapse(30);
+    await g.tick();
+  }
+  assertEquals(g.s.limit, undefined);
+  for (let i = 0; i < 12 && !g.s.limit; i++) {
+    f.elapse(30, 2.4 / 8, 5.6 / 8, 2.4);
+    await g.tick();
+  }
+  assert(g.s.limit);
+  assertEquals(probes, 1);
+});
+
+Deno.test("unknown and sustained-use lifts do not suppress probes afterward", async () => {
   const f = fixture();
   await f.g.tick();
   f.g.enterLimit(start, false);
@@ -652,28 +738,16 @@ Deno.test("no probe follows a lift until its bank could be spent, but evident st
   f.g.s.balance = p.recovered;
   for (let i = 0; i < 4 && f.g.s.limit; i++) await f.advance(30);
   assertEquals(f.g.s.limit, undefined);
-  const quiet = f.g.s.probe.quietUntil! - f.g.s.uptime!;
-  // 6,912 core-seconds at 1.05 x 8 + 0.08 - 4.8 cores: about 31 minutes.
-  assert(quiet > 30 * 60_000 && quiet <= 32 * 60_000, `${quiet / 60_000} min`);
   let probes = 0;
   f.g.probe = () => {
     probes++;
     return Promise.resolve(false);
   };
-  for (let i = 0; i < 60 && f.g.s.uptime! < f.g.s.probe.quietUntil!; i++) {
-    await f.advance(30, 2.5 / 8, 0.4 / 8, 2.4);
-  }
-  assertEquals(probes, 0);
   for (let i = 0; i < 4; i++) await f.advance(30, 2.5 / 8, 0.4 / 8, 2.4);
-  assertEquals(probes, 1);
-  // Inside a new quiet window, evident steal is still a limit.
-  f.g.s.probe.quietUntil = f.g.s.uptime! + 3_600_000;
-  for (let i = 0; i < 12 && !f.g.s.limit; i++) await f.advance(30, 2.4 / 8, 5.6 / 8, 2.4);
-  assert(f.g.s.limit);
   assertEquals(probes, 1);
 });
 
-Deno.test("a limit tightens the ceiling only where the slice's demand would feel it", async () => {
+Deno.test("a limit tightens the ceiling only where the slice's demand would feel it, using the current sample's outside load", async () => {
   const f = fixture();
   await f.g.tick();
   f.g.enterLimit(start, false);
@@ -682,26 +756,91 @@ Deno.test("a limit tightens the ceiling only where the slice's demand would feel
   // Noise presses on an idle slice: tightening it gives nothing back.
   for (let i = 0; i < 10; i++) await f.advance(30, 0.17 / 8, 0.01 / 8, 0.04);
   assertEquals(f.g.s.limit!.ceiling, held);
-  // A slice working above the tighter ceiling is tightened.
-  for (let i = 0; i < 4; i++) await f.advance(30, 2.3 / 8, 0.4 / 8, 2.2);
-  assert(f.g.s.limit!.ceiling < held, `${f.g.s.limit!.ceiling} of ${held}`);
+  // After an outside burst ends, tightening still cuts a busy slice without waiting for the 5-minute window to decay.
+  for (let i = 0; i < 6; i++) await f.advance(30, 1.4 / 8, 0, 0.1);
+  const before = f.g.s.limit!.ceiling;
+  await f.advance(30, 0.9 / 8, 0.18 / 8, 0.9);
+  await f.advance(30, 0.9 / 8, 0.18 / 8, 0.9);
+  assert(f.g.s.limit!.ceiling < before, `${f.g.s.limit!.ceiling} of ${before}`);
 });
 
-Deno.test("a failed probe on a full estimate waits hours, on an empty one ten minutes", async () => {
-  for (const full of [true, false]) {
-    const f = fixture();
-    await f.g.tick();
-    f.g.s.balance = full ? p.capacity : 0;
+Deno.test("failed probes back off from 10 minutes to 1 hour regardless of estimate, and keep backoffMs for downgrade safety", async () => {
+  const f = fixture();
+  await f.g.tick();
+  f.g.s.balance = p.capacity;
+  let probes = 0;
+  f.g.probe = () => {
+    probes++;
+    return Promise.resolve(false);
+  };
+  // First failed probe at 25% steal on a full estimate sets a 10-minute cooldown, not hours.
+  for (let i = 0; i < 4 && probes === 0; i++) await f.advance(30, 2.4 / 8, 0.8 / 8, 2.4);
+  assertEquals(probes, 1);
+  assertEquals(f.g.s.probe.backoffMs, 20 * 60_000);
+  // A real limit at 45.5% steal (below 60% evident and 2x jump) is probed after 10 minutes.
+  for (let i = 0; i < 19; i++) await f.advance(30, 2.4 / 8, 2.0 / 8, 2.4);
+  assertEquals(probes, 1);
+  await f.advance(30, 2.4 / 8, 2.0 / 8, 2.4);
+  assertEquals(probes, 2);
+  assertEquals(f.g.s.probe.backoffMs, 40 * 60_000);
+  // State loaded without backoffMs still recovers a valid finite backoff.
+  const withoutBackoff = JSON.parse(JSON.stringify(f.g.s));
+  delete withoutBackoff.probe.backoffMs;
+  const restored = new Governor({}, p, withoutBackoff, f.io);
+  assertEquals(restored.s.probe.backoffMs, 10 * 60_000);
+});
+
+Deno.test("steal at or above 60% below the evident steal floor still probes when the slice has demand", async () => {
+  const f = fixture();
+  await f.g.tick();
+  f.g.s.balance = p.capacity;
+  let probes = 0;
+  f.g.probe = () => {
+    probes++;
+    return Promise.resolve(true);
+  };
+  // One thread under a KVM 8 per-vCPU cap: 0.30 busy, 0.55 steal (64.7% >= 60%, 0.55 < 0.60 evident floor).
+  for (let i = 0; i < 4 && !f.g.s.limit; i++) await f.advance(30, 0.30 / 8, 0.55 / 8, 0.30);
+  assertEquals(probes, 1);
+  assert(f.g.s.limit);
+});
+
+Deno.test("KVM 1 and KVM 2 still probe a slice wanting 0.35 cores under a limit", async () => {
+  for (const vcpus of [1, 2]) {
+    const small = plan(vcpus);
+    const f = fixture({ vcpus });
+    const g = new Governor({ vcpus }, small, undefined, f.io);
+    await g.tick();
+    g.s.balance = small.capacity;
     let probes = 0;
-    f.g.probe = () => {
+    g.probe = () => {
       probes++;
-      return Promise.resolve(false);
+      return Promise.resolve(true);
     };
-    for (let i = 0; i < 4; i++) await f.advance(30, 2.5 / 8, 0.4 / 8, 2.4);
-    assertEquals(probes, 1);
-    const wait = (f.g.s.probe.cooldownUntil - f.g.s.uptime!) / 60_000;
-    assert(full ? wait > 120 && wait <= 180 : wait <= 10, `full ${full}: ${wait} min`);
+    for (let i = 0; i < 4 && !g.s.limit; i++) {
+      // VM at limit with 50% steal; slice uses 0.175 busy cores (0.35 demand), rest outside.
+      f.elapse(30, small.limit / vcpus, small.limit / vcpus, 0.175);
+      await g.tick();
+    }
+    assertEquals(probes, 1, `KVM ${vcpus}`);
+    assert(g.s.limit, `KVM ${vcpus}`);
   }
+});
+
+Deno.test("a single-tick outside spike does not zero out steady slice demand for probing", async () => {
+  const f = fixture();
+  await f.g.tick();
+  f.g.s.balance = p.capacity;
+  let probes = 0;
+  f.g.probe = () => {
+    probes++;
+    return Promise.resolve(true);
+  };
+  await f.advance(30, 1.0 / 8, 0.35 / 8, 1.0);
+  await f.advance(30, 1.0 / 8, 0.35 / 8, 1.0);
+  // One tick with a 1.5-core outside spike: 3-tick avg outside is 0.5, not 1.5, so sliceDemand stays >= 0.4.
+  await f.advance(30, 2.5 / 8, 0.85 / 8, 1.0);
+  assertEquals(probes, 1);
 });
 
 Deno.test("normal neighbour steal passes the lift test; a real limit or failed burners does not", () => {

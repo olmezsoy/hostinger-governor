@@ -388,14 +388,31 @@ Deno.test("calibrate --explain takes --json before or after it, and nothing else
 });
 
 Deno.test("calibrate --explain without access to the private files says so, without a trace", async () => {
-  const out = await new Deno.Command(Deno.execPath(), {
-    args: cliArguments("unreadable", ["calibrate", "--explain"]),
+  for (
+    const [mode, expected] of [
+      ["unreadable", "governor calibrate: Permission denied (os error 13)"],
+      ["unreadable-state", "governor calibrate: cannot read /var/lib/governor/persist.json"],
+    ] as const
+  ) {
+    const out = await new Deno.Command(Deno.execPath(), {
+      args: cliArguments(mode, ["calibrate", "--explain"]),
+      stdout: "piped",
+      stderr: "piped",
+    }).output();
+    const stderr = new TextDecoder().decode(out.stderr);
+    assertEquals(out.code, 1, mode);
+    assertStringIncludes(stderr, expected, mode);
+    assertStringIncludes(stderr, "sudo", mode);
+    assertEquals(stderr.includes("Uncaught"), false, stderr);
+  }
+  // Root-only commands do not tell the operator to run as the governor user.
+  const rootOnly = await new Deno.Command(Deno.execPath(), {
+    args: cliArguments("unreadable-root", ["limit", "on"]),
     stdout: "piped",
     stderr: "piped",
   }).output();
-  const stderr = new TextDecoder().decode(out.stderr);
-  assertEquals(out.code, 1);
-  assertStringIncludes(stderr, "governor calibrate: Permission denied (os error 13)");
-  assertStringIncludes(stderr, "run it with sudo or as the governor user");
-  assertEquals(stderr.includes("Uncaught"), false, stderr);
+  const rootErr = new TextDecoder().decode(rootOnly.stderr);
+  assertEquals(rootOnly.code, 1);
+  assertStringIncludes(rootErr, "run it with sudo");
+  assertEquals(rootErr.includes("governor user"), false, rootErr);
 });

@@ -228,7 +228,16 @@ try {
   // A command run without access to the daemon's private files, such as calibrate --explain by an
   // ordinary user, says so instead of printing a stack trace. The daemon keeps its trace.
   if (cmd !== "run" && error instanceof Deno.errors.PermissionDenied) {
-    console.error(`governor ${cmd}: ${error.message}; run it with sudo or as the governor user`);
+    const canRunAsGovernor = cmd === "calibrate" && args.includes("--explain") ||
+      cmd === "check-hostinger" ||
+      cmd === "validate-config" ||
+      cmd === "fallback" && args[0] === "--print";
+    const hint = error.message.includes("sudo")
+      ? ""
+      : canRunAsGovernor
+      ? "; run it with sudo or as the governor user"
+      : "; run it with sudo";
+    console.error(`governor ${cmd}: ${error.message}${hint}`);
     Deno.exit(1);
   }
   if (!(error instanceof UnsupportedStateSchema)) throw error;

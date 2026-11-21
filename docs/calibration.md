@@ -413,22 +413,22 @@ change is pending, so the reference that raised an alarm stays its old fit, and 
 the pairs after the change against it. Issue #19 also offered judging against whichever of the two
 fits predicts the higher reading at each load; on a box whose start is tighter than its meter, the
 margin's fit reads higher at three guest cores and up, where a fit qualifies, so that would have
-left the reference frozen there as before. While a change is pending, the extreme-residual test and
-the fit's 6σ filter judge a reading against the band between the reference and the raised fit: above
-it against the higher of the two, below it against the lower, and not at all inside it. A reading
-the hold already covers never turns invalid, and neither does one back at the reference. Judged
-against the raised fit alone, idle readings that showed no change read 6σ below it and made the
-readings invalid, which also kept the change from being verified or withdrawn. An alarm opens a
-drift change: a temporary hold, never learned state, since an additive jump read as a steeper slope
-would otherwise stay a higher multiplier. The alarm reads the change both ways, as a slope from the
-residuals since the CUSUM last left zero and as an offset from the clearly shifted pairs among them,
-and the hold covers both at every load. Only pairs at three or more guest cores, where a fit
-qualifies, read the slope: near idle, a small offset divided by a tiny load read as a multiplier of
-2 to 3.3 on the simulated meter's own day-to-day wobble. Capped readings take part in neither. From
-three pairs on, the hold rises to their mean residual when that is more (`drift-hold`). After 48
-pairs the change is verified (`cusum-keep`) if their mean residual is at least 0.5 σ against the old
-fit; otherwise it is withdrawn (`cusum-revert`) and, having changed nothing learned, leaves nothing
-behind.
+left the reference frozen there as before. While a change is pending, the extreme-residual test, its
+recovery and the fit's 6σ filter judge a reading against the band between the reference and the
+raised fit: above it against the higher of the two, below it against the lower, and not at all
+inside it. A reading the hold already covers never turns invalid, and neither does one back at the
+reference. Judged against the raised fit alone, idle readings that showed no change read 6σ below it
+and made the readings invalid, which also kept the change from being verified or withdrawn. An alarm
+opens a drift change: a temporary hold, never learned state, since an additive jump read as a
+steeper slope would otherwise stay a higher multiplier. The alarm reads the change both ways, as a
+slope from the residuals since the CUSUM last left zero and as an offset from the clearly shifted
+pairs among them, and the hold covers both at every load. Only pairs at three or more guest cores,
+where a fit qualifies, read the slope: near idle, a small offset divided by a tiny load read as a
+multiplier of 2 to 3.3 on the simulated meter's own day-to-day wobble. Capped readings take part in
+neither. From three pairs on, the hold rises to their mean residual when that is more
+(`drift-hold`). After 48 pairs the change is verified (`cusum-keep`) if their mean residual is at
+least 0.5 σ against the old fit; otherwise it is withdrawn (`cusum-revert`) and, having changed
+nothing learned, leaves nothing behind.
 
 A verified change holds until a fit on the readings after its change point alone qualifies. That fit
 sets the learned margin, tightening only against the margin learned before the change. Limits during

@@ -18,8 +18,7 @@ import {
   type Margin,
   pinnedAtCap,
   PROBE_CEILING,
-  PROBE_MIN_DEMAND,
-  probeCooldownSeconds,
+  probeMinDemand,
   quietAfterLiftSeconds,
   type Reading,
   recoveryCeiling,
@@ -168,6 +167,7 @@ export type Limit = {
   // not distinguish a false alarm from a genuine limit that has already recovered.
   entry?: { balance: number; used: number; learn: boolean };
   recovery?: { seconds: number; earningSeconds: number; charged: number };
+  limitedUptime?: number;
   record?: LimitRecord;
 };
 
@@ -188,8 +188,8 @@ export type Private = {
   used: number;
   anchor?: Anchor & { checkedAt: number };
   limit?: Limit;
-  // quietUntil: uptime until which no credit limit can follow the last lift (quietAfterLiftSeconds).
-  probe: { cooldownUntil: number; failedSf?: number; quietUntil?: number };
+  // quietUntil: uptime until which no credit limit can follow the last credit lift.
+  probe: { cooldownUntil: number; backoffMs: number; failedSf?: number; quietUntil?: number };
   samples: Sample[];
   tested?: boolean;
   readings: Reading[];
@@ -219,8 +219,8 @@ export type Private = {
   // every pass in between hold the same fallback.
   evaluationFailed?: { since: number; logged: number; behind: number };
 };
-// The limit as consumers see it; the growing evidence record stays private.
-export type PublicLimit = Omit<Limit, "record">;
+// The limit as consumers see it; private evidence and internal timing stay private.
+export type PublicLimit = Omit<Limit, "record" | "limitedUptime">;
 
 // What every consumer reads.
 export type PublicState = {
@@ -269,9 +269,8 @@ const LIMIT_STEAL = 0.1;
 const TEST_EVERY_MS = 2 * 60_000;
 const TEST_MAX_MS = 15 * 60_000;
 const TIGHTEN_AFTER_MS = 60_000;
-// The pinned-at-the-cap entry needs the governor's own estimate to allow an empty bank: work near the
-// cap on a noisy host looks the same, and a credit limit needs the bank spent.
-const PINNED_BALANCE_SHARE = 0.25;
+const BACKOFF_MS = 10 * 60_000;
+const BACKOFF_MAX_MS = 3_600_000;
 const HOT_BUSY = 0.6;
 const HOT_STEAL = 0.05;
 const TOP_EVERY_MS = 5 * 60_000;
@@ -285,7 +284,13 @@ const PERIOD_RETRY_MS = 15 * 60_000;
 // Calibration decisions that alert. Credit limits alert only through learning (`calibration`).
 const ALERTS = new Set(["readings-invalid", "rules-mismatch"]);
 
-type ControlMeasurements = { count: number; busy: number; steal: number; outside: number };
+type ControlMeasurements = {
+  count: number;
+  busy: number;
+  steal: number;
+  outside: number;
+  avgOutside: number;
+};
 
 const log = (...parts: unknown[]) => console.log(parts.map(String).join(" "));
 const avg = (xs: number[]) => xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : 0;
@@ -324,6 +329,7 @@ export function recordedEvidence(h: History): Omit<History, "checkpoint"> {
 const publicLimit = (limit: Limit): PublicLimit => {
   const copy: Limit = { ...limit };
   delete copy.record;
+  delete copy.limitedUptime;
   return copy;
 };
 async function list(dir: string): Promise<Deno.DirEntry[]> {
@@ -565,7 +571,7 @@ export class Governor {
       at: Date.now(),
       margin: { ...MARGIN },
       used: 0,
-      probe: { cooldownUntil: 0 },
+      probe: { cooldownUntil: 0, backoffMs: BACKOFF_MS },
       samples: [],
       readings: [],
       capFailed: true,
@@ -574,6 +580,15 @@ export class Governor {
         since: Date.now(),
       },
     };
+    if (!(Number.isFinite(this.s.probe?.backoffMs) && this.s.probe.backoffMs > 0)) {
+      this.s.probe = {
+        ...this.s.probe,
+        cooldownUntil: Number.isFinite(this.s.probe?.cooldownUntil)
+          ? this.s.probe.cooldownUntil
+          : 0,
+        backoffMs: BACKOFF_MS,
+      };
+    }
     if (saved && !restoring) {
       if (
         saved.margin && Number.isFinite(saved.margin.mul) && saved.margin.mul >= MARGIN.mul &&
@@ -698,6 +713,11 @@ export class Governor {
   private controlMeasurements(): ControlMeasurements {
     const recent = this.controlSamples(STEAL_WINDOW_MS);
     const latest = this.s.samples.at(-1);
+    const avgOutside = recent.length
+      ? avg(recent.map((x) => x.outside ?? 0))
+      : latest
+      ? 0
+      : DEFAULT_OUTSIDE_CORES;
     return {
       count: recent.length,
       busy: avg(recent.map((x) => x.busy)),
@@ -705,8 +725,9 @@ export class Governor {
       // Assume the startup default only before anything is measured. A window holding only test
       // samples has no outside estimate; a default here would tighten recovery ceilings.
       outside: latest
-        ? Math.max(latest.test ? 0 : latest.outside ?? 0, avg(recent.map((x) => x.outside ?? 0)))
+        ? Math.max(latest.test ? 0 : latest.outside ?? 0, avgOutside)
         : DEFAULT_OUTSIDE_CORES,
+      avgOutside,
     };
   }
 
@@ -1648,6 +1669,19 @@ export class Governor {
     }
   }
 
+  // Work outside an idle slice sits near the host limit with steal: ask the host with burners
+  // before entering so noisy neighbours near the cap never trigger a false limit.
+  private async confirmPinnedLimit(): Promise<boolean> {
+    try {
+      const gone = await this.limitGone();
+      return !gone && this.liftEvidence === "limited";
+    } catch (e) {
+      this.liftEvidence = "unknown";
+      log("cap test inconclusive:", e);
+      return false;
+    }
+  }
+
   async tick(clock?: Clock) {
     this.unwritten = true;
     const read = clock ?? await this.io.clock();
@@ -1706,13 +1740,14 @@ export class Governor {
         // clamp still finds its empty-bank anchor. A first start has nothing to mark.
         s.rebootPending = true;
       }
-      s.probe = { cooldownUntil: 0 };
+      s.probe = { cooldownUntil: 0, backoffMs: BACKOFF_MS };
       s.topAt = undefined;
       if (s.limit) {
         s.limit.heldFrom = uptime;
         s.limit.startedAt = uptime;
         s.limit.testAt = 0;
         s.limit.testEvery = undefined;
+        s.limit.limitedUptime = undefined;
         s.limit.entry = undefined;
         // The entry estimate is gone, but a confirmation already gathered stays valid.
         if (s.limit.record && !s.limit.record.confirmed) s.limit.record.learn = false;
@@ -1815,7 +1850,7 @@ export class Governor {
       recovery.charged += charged(busyCores, this.settings) * seconds;
     }
     const control = this.controlMeasurements();
-    const { count, busy, steal, outside } = control;
+    const { count, busy, steal, outside, avgOutside } = control;
     const current = await this.io.ceiling(this.slice);
 
     const sfNow = demandSteal(busy, steal);
@@ -1823,41 +1858,46 @@ export class Governor {
     // saw: neighbours that failed a probe should not hide a limit that starts behind them.
     const failed = uptime < s.probe.cooldownUntil ? s.probe.failedSf : undefined;
     const jumped = failed !== undefined && sfNow >= Math.max(2 * failed, failed + 0.15);
-    // Right after a lift no credit limit can come yet: only evident steal is taken as one.
+    // Right after a credit lift no credit limit can come yet: only evident steal is taken as one.
     const quiet = uptime < (s.probe.quietUntil ?? 0);
     const evident = sfNow >= LIMIT_EVIDENT && evidentSteal(p, steal);
+    const canProbe = !quiet && sliceDemand(p, busy, steal, avgOutside) >= probeMinDemand(p);
+    const pinned = !quiet && pinnedAtCap(p, busy, steal, avgOutside);
     if (
-      !s.limit && !quiet && count >= 3 && pinnedAtCap(p, busy, steal, outside) &&
-      this.actedBalance <= PINNED_BALANCE_SHARE * p.capacity
-    ) {
-      // Work outside an idle slice presses on the cap: no probe can cut it, but the VM sits at the cap.
-      this.enterLimit(now, true, "evident");
-      s.probe.failedSf = undefined;
-      log(
-        `limit: start, the VM pinned at the cap with the slice idle (margin x${this.settings.mul} +${this.settings.add})`,
-      );
-      this.notify("limit-start");
-    } else if (
       !s.limit && count >= 3 && sfNow >= LIMIT_STEAL &&
       steal * p.vcpus >= 0.02 &&
-      (evident || !quiet && sfNow < LIMIT_EVIDENT &&
-          sliceDemand(p, busy, steal, outside) >= PROBE_MIN_DEMAND) &&
+      (evident || canProbe || pinned) &&
       (uptime >= s.probe.cooldownUntil || evident || jumped)
     ) {
       const sf0 = sfNow;
-      if (evident || await this.probe(sf0, current ?? 100 * p.vcpus)) {
-        this.enterLimit(now, true, evident ? "evident" : "probe");
+      const confirmed = evident
+        ? "evident"
+        : canProbe
+        ? (await this.probe(sf0, current ?? 100 * p.vcpus) ? "probe" : null)
+        : (await this.confirmPinnedLimit() ? "pinned" : null);
+      if (confirmed) {
+        this.enterLimit(now, true, confirmed === "evident" ? "evident" : "probe");
+        s.probe.backoffMs = BACKOFF_MS;
         s.probe.failedSf = undefined;
-        log(`limit: start (margin x${this.settings.mul} +${this.settings.add})`);
+        log(
+          confirmed === "pinned"
+            ? `limit: start, the VM pinned at the cap with the slice idle (margin x${this.settings.mul} +${this.settings.add})`
+            : `limit: start (margin x${this.settings.mul} +${this.settings.add})`,
+        );
         this.notify("limit-start");
       } else {
-        s.probe.cooldownUntil = uptime +
-          probeCooldownSeconds(p, this.actedBalance, this.settings) * 1000;
+        const backoff = Number.isFinite(s.probe.backoffMs) && s.probe.backoffMs > 0
+          ? s.probe.backoffMs
+          : BACKOFF_MS;
+        s.probe.cooldownUntil = uptime + backoff;
+        s.probe.backoffMs = Math.min(backoff * 2, BACKOFF_MAX_MS);
         s.probe.failedSf = sf0;
       }
     }
 
     const limit = s.limit;
+    let liftedRecord: LimitRecord | undefined;
+    let earliestLift = uptime;
     if (limit) {
       const record = limit.record;
       if (record && now - (record.caps.at(-1)?.at ?? 0) >= 1_800_000) {
@@ -1876,7 +1916,7 @@ export class Governor {
       ) {
         // Tighten only where it bites: a slice already under the tighter ceiling gives nothing back,
         // and the steal pressing then is neighbours' or work outside it.
-        const managedDemand = sliceDemand(p, sample.busy, sample.steal, outside);
+        const managedDemand = sliceDemand(p, sample.busy, sample.steal, sample.outside ?? 0);
         const tightened = tightenCeiling(limit.ceiling, managedDemand);
         if (managedDemand > tightened / 100) {
           if (tightened !== limit.ceiling) {
@@ -1941,16 +1981,18 @@ export class Governor {
             };
             // Classify in this pass, before the ceiling can rise after a sustained-use limit.
             this.recalibrateDue = true;
+            liftedRecord = record;
           }
+          earliestLift = limit.limitedUptime ?? Math.max(uptime, finished.uptime);
           s.limit = undefined;
-          s.probe.quietUntil = Math.max(uptime, finished.uptime) +
-            quietAfterLiftSeconds(p, this.settings) * 1000;
           log("limit: lifted");
           this.notify("limit-end");
         } else {
           if (this.liftEvidence === "limited") {
-            // The bank is still below Hostinger's lift point: an upper-bound anchor for learning.
+            // The bank is still below Hostinger's lift point: an upper-bound anchor for learning
+            // and the earliest uptime at which Hostinger can lift the credit limit.
             if (limit.record) limit.record.limitedAt = Math.max(now, finished.at);
+            limit.limitedUptime = Math.max(uptime, finished.uptime);
             limit.entry = undefined;
           }
           limit.testEvery = Math.min(2 * (limit.testEvery ?? TEST_EVERY_MS / 2), TEST_MAX_MS);
@@ -1982,6 +2024,9 @@ export class Governor {
         now,
         false,
       );
+    }
+    if (liftedRecord?.class === "credit") {
+      s.probe.quietUntil = earliestLift + quietAfterLiftSeconds(p, this.settings) * 1000;
     }
     if (
       fetched && this.calibrationCfg.mode !== "off"

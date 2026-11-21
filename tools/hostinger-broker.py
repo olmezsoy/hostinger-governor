@@ -8,6 +8,7 @@ requests. Neither entry point accepts a URL, headers or an arbitrary command.
 
 import datetime
 import fcntl
+import http.client
 import ipaddress
 import json
 import math
@@ -197,7 +198,12 @@ def configured_vm_id():
 
 class NoRedirect(urllib.request.HTTPRedirectHandler):
     def redirect_request(self, req, fp, code, msg, headers, newurl):
-        raise Refused("Upstream redirect refused.")
+        status = code if http_status(code) else None
+        raise Refused(
+            "Upstream redirect refused.",
+            UPSTREAM_STATUS if status else None,
+            status,
+        )
 
 
 def api_body(token, suffix=""):
@@ -229,8 +235,8 @@ def api_body(token, suffix=""):
             UPSTREAM_STATUS if status else None,
             status,
         ) from None
-    except (urllib.error.URLError, OSError):
-        # Timeouts, refused or reset connections and TLS failures are all OSErrors.
+    except (urllib.error.URLError, OSError, http.client.HTTPException):
+        # Timeouts, refused/reset connections, TLS failures and truncated HTTP replies.
         raise Refused("Hostinger is unavailable.", UPSTREAM_UNAVAILABLE) from None
 
 

@@ -55,16 +55,17 @@ The governor measures the whole machine and caps workloads placed under `user.sl
 - **Tells a limit from noisy neighbours.** Steal can come from either. When steal appears, the
   governor compares steal with demand, cuts the quota for 20 seconds, then restores it. A limit's
   steal should follow demand. The probe runs only while the slice's own demand, its busy CPU and its
-  share of the steal, is at least 0.4 cores, twice the 0.2-core cut: below that the cut removes
-  nothing, and on an idle box neighbour noise alone used to confirm false limits. Steal of 60% of
+  share of the steal, is at least 0.4 cores (0.3 cores on KVM 1 and 2): below that the cut removes
+  too little, and on an idle box neighbour noise alone used to confirm false limits. Steal of 60% of
   demand counts as a limit without a probe only when it is also a quarter of the host limit in
-  cores. Work outside an idle slice can still press on a limit: the governor takes the whole VM
-  delivering the host limit, within -0.15 and +0.1 cores, with 15% steal or more, as one, when its
-  own estimate allows an empty bank (25% or less). After a lift, for as long as full use takes to
-  spend the 20% a lift leaves (36 minutes at cost on every plan, about 31 with the margin on KVM 8),
-  only evident steal starts a limit. After a probe finds no limit, the next waits as long as full
-  use would take to spend the balance the governor estimates, from 10 minutes to three hours. This
-  is a heuristic; the guest cannot read the host's count of throttled scheduling periods.
+  cores; otherwise a busy slice is still probed. Work outside an idle slice can still press on a
+  limit: when the whole VM sits near the host limit (85% of it up to +0.1 cores) with 15% steal or
+  more, the governor confirms the cap with its burners before entering so noisy neighbours near the
+  cap cannot cause false limits. After a confirmed credit lift, for as long as full use takes to
+  spend the 20% a lift leaves (36 minutes at cost on every plan, about 31 with the margin on KVM 8,
+  measured from the last failed lift test), only evident steal starts a limit. Failed probes and cap
+  checks back off from 10 minutes, doubling to an hour. This is a heuristic; the guest cannot read
+  the host's count of throttled scheduling periods.
 - **Helps the VPS recover.** Under a limit it reduces login and enrolled-workload demand so earning
   can resume. It accounts for services outside the slice and tightens every minute while demand
   still presses on the limit, down to a 20% quota of one core, where the slice's own demand would

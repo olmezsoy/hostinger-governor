@@ -48,12 +48,31 @@ Deno.test("work outside an idle slice pressing on the cap is detected", async ()
 });
 
 Deno.test("steady work near the cap on a noisy host is not a limit", async () => {
+  for (let seed = 1; seed <= 5; seed++) {
+    const result = await run({
+      ...detection("2.9 cores outside steady, 15-25% steal episodes, no limit"),
+      seed,
+    });
+    assertEquals(result.throttles, 0, `seed ${seed}`);
+    assertEquals(result.false_limits, 0, `seed ${seed}`);
+  }
+});
+
+Deno.test("a single thread under a per-vCPU cap is still detected when steal exceeds 60% below the evident floor", async () => {
+  const base = detection("limit on at start, per-vCPU, one busy thread");
   const result = await run({
-    ...detection("2.9 cores outside steady, 15-25% steal episodes, no limit"),
+    ...base,
     seed: 1,
+    idle: { ...base.idle!, gov: 0.001, outsideBase: 0.001, level: 0 },
+    svcBurst: [0, 6, 0.8],
   });
-  assertEquals(result.throttles, 0);
   assertEquals(result.false_limits, 0);
+  assertEquals(result.episodes.length, 1);
+  assert(
+    result.episodes[0].lag_s >= 0 && result.episodes[0].lag_s <= 300,
+    `lag ${result.episodes[0].lag_s}`,
+  );
+  assert(result.paused_h < 0.5, `paused ${result.paused_h} h`);
 });
 
 Deno.test("back-to-back limits from outside load are each detected, with no false one between", async () => {

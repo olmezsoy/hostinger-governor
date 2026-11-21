@@ -882,6 +882,49 @@ Deno.test("a box the raised fit left invalid resumes once idle readings at the r
   assert(next.changes.map((d) => d.trigger).includes("readings-resumed"));
 });
 
+Deno.test("the post-change fit keeps readings back at the reference inside the pending band", () => {
+  const c = calibrationConfig({
+    mode: "apply",
+    fit: { min_pairs: 4, min_days: 2, min_cores: 0.1 },
+  });
+  const h = emptyHistory("test", 1, at);
+  // Two UTC days after the change point: 30-minute intervals (3 ten-minute slots each) alternating
+  // between idle pairs back at the reference (> 6 sigma below the raised fit alone) and loaded
+  // pairs at the raised meter.
+  const readings: { at: number; v: number }[] = [];
+  for (let d = 0; d < 2; d++) {
+    const base = at + d * DAY;
+    readings.push({ at: base, v: (fit.a * 0.2 + fit.b) / p.vcpus * 100 });
+    for (let k = 0; k < 6; k++) {
+      const own = k % 2 === 0 ? 0.2 : 4;
+      for (let j = 0; j < 3; j++) h.slots.push(slot(base + (k * 3 + j) * SLOT_MS, own));
+      const host = k % 2 === 0 ? fit.a * own + fit.b : fit.a * own + fit.b + 0.2;
+      readings.push({ at: base + (k + 1) * 1_800_000, v: host / p.vcpus * 100 });
+    }
+  }
+  h.readings = readings;
+  const s = initialCalibration(c, at);
+  const pending = {
+    at,
+    from: { ...s.applied },
+    gapFrom: s.gap,
+    oldFit: fit,
+    fit: { ...fit, b: fit.b + 0.2 },
+    hold: { ...s.applied, add: s.applied.add + 0.2 },
+    readings: 48,
+    z: 2,
+    verified: true,
+    residual: 0,
+    n: 48,
+  };
+  Object.assign(s, { fit, fitAt: at - DAY, lastPaired: readings.at(-1)!.at, pending });
+  const next = updateCalibration(p, h, s, c, readings.at(-1)!.at + 60_000, 30000);
+  // The post-change fit succeeds and includes the idle reference pairs inside the band (all 12
+  // pairs across both days, not just the 6 loaded pairs).
+  assertEquals(next.state.pending, null);
+  assertEquals(next.state.fit!.pairs, 12);
+});
+
 Deno.test("an extreme residual never counts toward drift verification", () => {
   const c = calibrationConfig({ mode: "apply", fit: { min_pairs: 2, min_days: 1 } });
   const h = emptyHistory("test", 1, at);

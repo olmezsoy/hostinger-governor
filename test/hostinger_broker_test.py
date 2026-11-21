@@ -232,6 +232,8 @@ class UpstreamTest(unittest.TestCase):
             (urllib.error.URLError(TOKEN), BROKER.UPSTREAM_UNAVAILABLE, None),
             (TimeoutError(TOKEN), BROKER.UPSTREAM_UNAVAILABLE, None),
             (ConnectionResetError(TOKEN), BROKER.UPSTREAM_UNAVAILABLE, None),
+            (BROKER.http.client.IncompleteRead(b""), BROKER.UPSTREAM_UNAVAILABLE, None),
+            (BROKER.http.client.BadStatusLine(TOKEN), BROKER.UPSTREAM_UNAVAILABLE, None),
         ):
             opener = SimpleNamespace(open=Mock(side_effect=error))
             with patch.object(BROKER.urllib.request, "build_opener", return_value=opener):
@@ -283,10 +285,14 @@ class UpstreamTest(unittest.TestCase):
                 self.run_main(["broker"], launch={"return_value": bad})
 
     def test_redirect_never_forwards_authorization(self):
-        with self.assertRaisesRegex(BROKER.Refused, "redirect refused"):
+        with self.assertRaisesRegex(BROKER.Refused, "redirect refused") as raised:
             BROKER.NoRedirect().redirect_request(
                 None, None, 302, "", {}, "https://evil.invalid"
             )
+        self.assertEqual(
+            (raised.exception.code, raised.exception.status),
+            (BROKER.UPSTREAM_STATUS, 302),
+        )
 
     def test_requests_are_fixed_get_endpoints_with_no_environment_proxy(self):
         response = Mock()
