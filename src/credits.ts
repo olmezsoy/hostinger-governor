@@ -61,6 +61,47 @@ export const limitConfirmed = (sf0: number, sfCut: number, sfRestore: number) =>
 
 export const demandSteal = (busy: number, steal: number) =>
   busy + steal > 0 ? steal / (busy + steal) : 0;
+
+// The slice's own demand in cores: its busy CPU plus its share of the steal, in proportion to what it
+// runs. Steal on work outside the slice is not the slice's demand, and no cut of the slice removes it.
+// `busy` and `steal` are shares of the whole VM; `outside` is busy cores outside the slice.
+export function sliceDemand(p: Plan, busy: number, steal: number, outside: number) {
+  const sliceBusy = Math.max(0, busy * p.vcpus - outside);
+  return busy > 0 ? sliceBusy * (busy + steal) / busy : 0;
+}
+// A probe cuts the slice to 20% of one core. Below twice that, the cut removes too little of the
+// slice's demand to tell a limit's steal from neighbours': the test would score noise.
+export const PROBE_CEILING = 20;
+export const PROBE_MIN_DEMAND = 2 * PROBE_CEILING / 100;
+// Steal as a share of demand says nothing on its own when demand is tiny. Evident steal must also be
+// steal a limit could cause: a real cap reaches a 60% share only with demand of 2.5 times the cap,
+// and a per-vCPU cap on one busy thread steals most of a core.
+export const EVIDENT_LIMIT_SHARE = 0.25;
+export const evidentSteal = (p: Plan, steal: number) =>
+  steal * p.vcpus >= EVIDENT_LIMIT_SHARE * p.limit;
+// Under a credit limit the whole VM delivers the cap, whatever work presses on it. A slice too idle
+// to probe can still show the limit this way, when work outside it is what presses: the lift test's
+// own evidence of a limit, busy at the cap with steal at LIFT_STEAL or more.
+export const pinnedAtCap = (p: Plan, busy: number, steal: number, outside: number) =>
+  sliceDemand(p, busy, steal, outside) < PROBE_MIN_DEMAND &&
+  busy * p.vcpus >= p.limit - 0.15 && busy * p.vcpus <= p.limit + 0.1 &&
+  demandSteal(busy, steal) >= LIFT_STEAL;
+// Hostinger lifts a limit at 20% of capacity, and capacity is three hours of the vCPUs above the
+// baseline, so even the most the margin can charge takes this long to spend it: no credit limit can
+// come sooner after a lift, on any plan (2,160 seconds at cost; less with the margin).
+export const quietAfterLiftSeconds = (p: Plan, m: Margin) =>
+  p.recovered / Math.max(0.1, charged(p.vcpus, m) - p.baseline);
+// After a probe finds no limit, the next waits until full use could have spent the balance the
+// governor estimates, as no credit limit can come sooner, but at least 10 minutes and at most three
+// hours: the estimate itself may be wrong. Steal that jumps or turns evident is tested at once.
+export const PROBE_COOLDOWN_MIN_S = 600;
+export const PROBE_COOLDOWN_MAX_S = 10_800;
+export const probeCooldownSeconds = (p: Plan, balance: number, m: Margin) =>
+  clamp(
+    Math.max(0, balance) / Math.max(0.1, charged(p.vcpus, m) - p.baseline),
+    PROBE_COOLDOWN_MIN_S,
+    PROBE_COOLDOWN_MAX_S,
+  );
 // Heuristics for demand, not the host's unobservable count of throttled scheduling periods.
 export const LIMIT_PRESSING = 0.02;
 export const LIFT_STEAL = 0.15;

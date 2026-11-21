@@ -16,6 +16,7 @@ import {
   REQUEST_TIMEOUT_MS,
   TEMPORARY_ERRORS,
   token,
+  UPSTREAM_ERRORS,
   validateSource,
   vm,
 } from "../src/hostinger.ts";
@@ -156,6 +157,7 @@ Deno.test("TypeScript broker protocol bounds match the shared contract fixture",
   assertEquals(BROKER_CAPABILITY, contract.capability);
   assertEquals<readonly string[]>(TEMPORARY_ERRORS, contract.temporary_errors);
   assertEquals(INVALID_METRICS, contract.invalid_metrics_error);
+  assertEquals<readonly string[]>(UPSTREAM_ERRORS, contract.upstream_errors);
   assertEquals(CLOCK_SKEW_MS, contract.clock_skew_ms);
 });
 
@@ -292,6 +294,57 @@ Deno.test("only fixed busy and cooldown codes may explain a broker refusal", asy
     `IFS= read -r request; printf '%s' '{"version":1,"vm_id":123,"error":"secret-token"}'`,
   );
   const error = await assertRejects(() => vm(src, 123), Error);
+  assertEquals(error.message, "Hostinger request command failed");
+});
+
+Deno.test("a broker's upstream codes name the HTTP status or the outage, and nothing else", async () => {
+  const reply = (body: string) => broker(`IFS= read -r request; printf '%s' '${body}'`);
+  for (
+    const [body, message] of [
+      [
+        '{"version":1,"vm_id":123,"error":"upstream_status","status":503}',
+        "Hostinger returned HTTP 503",
+      ],
+      [
+        '{"version":1,"vm_id":123,"error":"upstream_status","status":429}',
+        "Hostinger returned HTTP 429",
+      ],
+      [
+        '{"version":1,"vm_id":123,"error":"upstream_unavailable"}',
+        "Hostinger is unavailable (timeout or connection error)",
+      ],
+      // A status that is no HTTP status, or text in its place, is a plain failure.
+      [
+        '{"version":1,"vm_id":123,"error":"upstream_status","status":99}',
+        "Hostinger request command failed",
+      ],
+      [
+        '{"version":1,"vm_id":123,"error":"upstream_status","status":503.5}',
+        "Hostinger request command failed",
+      ],
+      [
+        '{"version":1,"vm_id":123,"error":"upstream_status","status":"secret-token"}',
+        "Hostinger request command failed",
+      ],
+      ['{"version":1,"vm_id":123,"error":"upstream_status"}', "Hostinger request command failed"],
+      [
+        '{"version":1,"vm_id":124,"error":"upstream_unavailable"}',
+        "Hostinger request command failed",
+      ],
+    ] as const
+  ) {
+    for (
+      const call of [() => vm(reply(body), 123), () => cpuReadings(reply(body), 123, 0, 5_000_000)]
+    ) {
+      const error = await assertRejects(call, Error);
+      assertEquals(error.message, message, body);
+    }
+  }
+  // A worker that exits nonzero after printing a code is still a plain failure.
+  const failed = broker(
+    `IFS= read -r request; printf '%s' '{"version":1,"vm_id":123,"error":"upstream_unavailable"}'; exit 1`,
+  );
+  const error = await assertRejects(() => vm(failed, 123), Error);
   assertEquals(error.message, "Hostinger request command failed");
 });
 

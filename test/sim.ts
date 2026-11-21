@@ -5,6 +5,7 @@
 //   deno task sim                        every scenario, seed 1
 //   deno task sim "hidden overhead" 5    scenarios whose name starts with that, seeds 1-5
 //   deno task sim "baseline 30%" 3 --episodes
+//   deno task sim --detection [name]     limit detection on an idle box (DETECTION_SCENARIOS)
 //   deno task sim --calibration [S3]     the eight-week calibration studies (test/calibration-sim.ts)
 //   deno task sim:check | sim:record     rerun them against, or rewrite, docs/calibration-results.json
 //   deno task sim:legacy | sim:legacy-record
@@ -30,8 +31,9 @@
 //
 // Output per run: throttles (host-side limit events), throttled_h (hours limited), paused_h (hours
 // limited AND pressing, so earning nothing: the real loss), used_pct (credits spent / earned),
-// services_unmet_pct, slice_at_20pct_min, probes, false_limits (limits the governor entered that
-// the host never imposed), burn_tests, margin (the legacy off-mode margin), applied and gap (the
+// services_unmet_pct, slice_at_20pct_min, delivered_core_h (CPU the slice ran), probes,
+// false_limits (limits the governor entered that the host never imposed), followon_false (false
+// limits within two hours of the one before), burn_tests, margin (the legacy off-mode margin), applied and gap (the
 // calibration's settings and learned gap), clamp_ticks (passes with a readings clamp),
 // rules_mismatches, classifications (one per limit record), and with --episodes one line per host
 // limit:
@@ -61,11 +63,27 @@ type Sc = {
   billAdd?: number;
   nnPerDay?: number;
   nnMax?: number;
+  nnMin?: number;
   overload?: [number, number, number]; // outside user.slice: start hour, hours, extra cores
   stop?: [number, number]; // VM stopped at hour h for d hours
   bankStart?: number; // real bank at start, share of real capacity
   servicesOutside?: boolean; // services left in system.slice instead of enrolled
   batchIdle?: boolean; // batch work in the slice at idle CPU weight
+  // An idle box, as a live KVM 8 box was in Nov 2026, with no batch work: gov, the slice's cores at rest;
+  // outsideBase and outsideBursts (per day), load outside the slice; govBursts (per day), real work in
+  // the slice; level, neighbour steal in cores at idle, lognormal with spread sigma per 10 s block
+  // and hourSigma from hour to hour.
+  idle?: {
+    gov: number;
+    outsideBase: number;
+    outsideBursts: number;
+    govBursts: number;
+    level: number;
+    sigma: number;
+    hourSigma: number;
+  };
+  pulse?: [number, number, number]; // outside the slice: minutes on, minutes off, cores; repeating
+  svcBurst?: [number, number, number]; // inside the slice: start hour, hours, cores
 };
 
 const VCPUS = 8;
@@ -93,6 +111,7 @@ function workload(sc: Sc, n: number) {
   const services = new Float64Array(n); // web/containers inside user.slice
   const outside = new Float64Array(n); // system services left outside user.slice
   const nn = new Float64Array(n); // neighbour steal share
+  const stealAbs = new Float64Array(n); // idle boxes: neighbour steal in cores
   for (let i = 0; i < n; i++) {
     services[i] = 0.25 + 0.12 * Math.sin(2 * Math.PI * (i / DAY - 0.3)) +
       Math.exp(-2.6 + 0.6 * r.normal());
@@ -113,19 +132,49 @@ function workload(sc: Sc, n: number) {
       f(Math.floor(t), Math.min(n, Math.floor(t + d)));
     }
   };
-  episodes(3, 600, 120, 3600, (s, e) => { // traffic spikes on the services
-    const h = r.uniform(2, 6);
-    for (let i = s; i < e; i++) services[i] += h;
-  });
+  if (sc.idle) {
+    const I = sc.idle;
+    for (let i = 0; i < n; i++) {
+      services[i] = I.gov * Math.exp(0.3 * r.normal());
+      outside[i] = I.outsideBase * Math.exp(0.2 * r.normal());
+    }
+    episodes(I.outsideBursts, 300, 60, 1200, (s, e) => {
+      const h = r.uniform(0.5, 1.6);
+      for (let i = s; i < e; i++) outside[i] += h;
+    });
+    episodes(I.govBursts, 300, 60, 1200, (s, e) => {
+      const h = r.uniform(0.8, 2.2);
+      for (let i = s; i < e; i++) services[i] += h;
+    });
+    let hourLevel = 1, z = 0;
+    for (let i = 0; i < n; i++) {
+      if (i % 3600 === 0) hourLevel = Math.exp(I.hourSigma * r.normal());
+      if (i % 10 === 0) z = r.normal();
+      stealAbs[i] = I.level * hourLevel * Math.exp(I.sigma * z - I.sigma * I.sigma / 2);
+    }
+  } else {
+    episodes(3, 600, 120, 3600, (s, e) => { // traffic spikes on the services
+      const h = r.uniform(2, 6);
+      for (let i = s; i < e; i++) services[i] += h;
+    });
+  }
+  if (sc.pulse) {
+    const [on, off, c] = sc.pulse;
+    for (let i = 0; i < n; i++) if ((i / 60) % (on + off) < on) outside[i] += c;
+  }
+  if (sc.svcBurst) {
+    const [h, d, c] = sc.svcBurst;
+    for (let i = h * 3600; i < Math.min(n, (h + d) * 3600); i++) services[i] += c;
+  }
   episodes(sc.nnPerDay ?? 4, 900, 300, 1800, (s, e) => {
-    const f = r.uniform(0.05, sc.nnMax ?? 0.25);
+    const f = r.uniform(sc.nnMin ?? 0.05, sc.nnMax ?? 0.25);
     for (let i = s; i < e; i++) nn[i] = Math.max(nn[i], Math.min(f * r.uniform(0.6, 1.4), 0.6));
   });
   if (sc.overload) {
     const [h, d, c] = sc.overload;
     for (let i = h * 3600; i < Math.min(n, (h + d) * 3600); i++) outside[i] += c;
   }
-  return { services, outside, nn };
+  return { services, outside, nn, stealAbs };
 }
 
 export function run(sc: Sc) {
@@ -165,6 +214,7 @@ export function run(sc: Sc) {
       svcWant: 0,
       svcGot: 0,
       batch: 0,
+      deliv: 0,
       lowCeilS: 0,
       minBank: Infinity,
       bankStart: 0,
@@ -180,7 +230,7 @@ export function run(sc: Sc) {
     const i = Math.min(h.i, n - 1);
     h.burners = h.burners.filter((e) => e > h.t);
     const C = h.ceiling === null ? VCPUS : h.ceiling / 100;
-    const S = sc.servicesOutside ? 0 : w.services[i], B = VCPUS; // batch work never runs out
+    const S = sc.servicesOutside ? 0 : w.services[i], B = sc.idle ? 0 : VCPUS; // batch work never runs out
     let sv = S, bv = B;
     if (S + B > C) {
       if (sc.batchIdle) [sv, bv] = [Math.min(S, C), C - Math.min(S, C)]; // batch at idle weight
@@ -226,6 +276,7 @@ export function run(sc: Sc) {
       busy = b * threads;
     }
     busy *= 1 - w.nn[i];
+    if (sc.idle) busy = Math.max(busy * 0.5, busy - w.stealAbs[i]);
     const steal = Math.max(0, want - busy);
     const bill = busy * mul + add;
     meterSeconds++;
@@ -296,6 +347,7 @@ export function run(sc: Sc) {
     h.m.svcWant += w.services[i];
     h.m.svcGot += (sc.servicesOutside ? w.services[i] : sv) * ratio;
     h.m.batch += bv * ratio;
+    h.m.deliv += slice * ratio;
     if (h.ceiling !== null && h.ceiling <= 20) h.m.lowCeilS++;
     h.i++;
     h.t += 1000;
@@ -315,6 +367,7 @@ export function run(sc: Sc) {
     };
   };
   const counts = { probes: 0, entries: 0, falseEntries: 0, burnTests: 0 };
+  const falseAt: number[] = [];
   const io: GovernorIO = {
     clock: () => Promise.resolve({ at: h.t, uptime: h.uptime, bootId: h.bootId }),
     counters: () => Promise.resolve({ busy: h.busyT, steal: h.stealT, total: h.totalT }),
@@ -379,7 +432,10 @@ export function run(sc: Sc) {
     const enter = gov.enterLimit.bind(gov);
     gov.enterLimit = (...args) => {
       counts.entries++;
-      if (!h.limited) counts.falseEntries++;
+      if (!h.limited) {
+        counts.falseEntries++;
+        falseAt.push(h.i);
+      }
       if (h.ep && h.ep.detectLag < 0) h.ep.detectLag = h.i - h.ep.start;
       return enter(...args);
     };
@@ -440,6 +496,8 @@ export function run(sc: Sc) {
       batch_core_h: +(m.batch / 3600).toFixed(1),
       services_unmet_pct: +(100 * (1 - m.svcGot / m.svcWant)).toFixed(2),
       slice_at_20pct_min: Math.round(m.lowCeilS / 60),
+      delivered_core_h: +(m.deliv / 3600).toFixed(1),
+      followon_false: falseAt.filter((t, k) => k > 0 && t - falseAt[k - 1] <= 7200).length,
       probes: counts.probes,
       limit_entries: counts.entries,
       false_limits: counts.falseEntries,
@@ -468,6 +526,77 @@ export function run(sc: Sc) {
 }
 
 const HIDDEN = { billMul: 1.12, billAdd: 0.15 };
+const IDLE = {
+  gov: 0.04,
+  outsideBase: 0.1,
+  outsideBursts: 8,
+  govBursts: 8,
+  level: 0.02,
+  sigma: 1.0,
+  hourSigma: 0.5,
+};
+const QUIET = { ...IDLE, govBursts: 0, outsideBursts: 0, level: 0.015 };
+// Limit detection on an idle box (a live KVM 8 box, Nov 2026): false limits from neighbour steal at several
+// levels, and real limits the slice can't show: one already on at start, outside load pressing on
+// the cap, back-to-back limits, and steady work near the cap on a noisy host with no limit at all.
+// `deno task sim --detection`.
+export const DETECTION_SCENARIOS: Sc[] = [
+  ...[0.005, 0.015, 0.025, 0.04, 0.06, 0.08].map((level) => ({
+    name: `idle box, steal ${level} cores`,
+    days: 14,
+    idle: { ...IDLE, level },
+  })),
+  ...[1.1, 1.2].map((billMul) => ({
+    name: `back-to-back limits, billed ${billMul}x`,
+    days: 3,
+    bankStart: 0.05,
+    billMul,
+    billAdd: 0.15,
+  })),
+  ...[[5, 0.015], [3, 0.015], [5, 0.04], [3, 0.04]].map(([cores, level]) => ({
+    name: `limit on at start, ${cores}-core burst, steal ${level}`,
+    days: 1,
+    bankStart: -0.001,
+    idle: { ...QUIET, level },
+    svcBurst: [0.1, 3, cores] as [number, number, number],
+  })),
+  ...[7, 6, 5, 3].map((cores) => ({
+    name: `limit on at start, ${cores} cores outside an idle slice`,
+    days: 1,
+    bankStart: -0.001,
+    idle: QUIET,
+    overload: [0.1, 6, cores] as [number, number, number],
+  })),
+  ...[7, 6, 5].map((cores) => ({
+    name: `${cores} cores outside an idle slice spend a 5% bank`,
+    days: 1,
+    bankStart: 0.05,
+    idle: QUIET,
+    overload: [0.1, 6, cores] as [number, number, number],
+  })),
+  ...[8, 5].map((cores) => ({
+    name: `${cores} cores outside an idle slice, 60 min on, 30 off`,
+    days: 2,
+    bankStart: 0.2,
+    idle: QUIET,
+    pulse: [60, 30, cores] as [number, number, number],
+  })),
+  ...[2.4, 2.9].map((cores) => ({
+    name: `${cores} cores outside steady, 15-25% steal episodes, no limit`,
+    days: 14,
+    nnPerDay: 12,
+    nnMin: 0.15,
+    nnMax: 0.25,
+    idle: { ...IDLE, outsideBase: cores, govBursts: 0, outsideBursts: 0, level: 0.005 },
+  })),
+  ...([true, "spread"] as const).map((perVcpu) => ({
+    name: `limit on at start, per-vCPU${perVcpu === "spread" ? " spread" : ""}, one busy thread`,
+    days: 1,
+    bankStart: -0.001,
+    perVcpu,
+    idle: { ...QUIET, gov: 1.0, outsideBase: 0.001 },
+  })),
+];
 export const SCENARIOS: Sc[] = [
   { name: "normal" },
   { name: "noisy neighbours", nnPerDay: 10, nnMax: 0.4 },
@@ -575,7 +704,8 @@ if (import.meta.main) {
   const [only, seedArg] = Deno.args.filter((a) => !a.startsWith("--"));
   const seeds = Number(seedArg ?? 1);
   const log = console.log;
-  for (const sc of SCENARIOS.filter((s) => !only || s.name.startsWith(only))) {
+  const scenarios = Deno.args.includes("--detection") ? DETECTION_SCENARIOS : SCENARIOS;
+  for (const sc of scenarios.filter((s) => !only || s.name.startsWith(only))) {
     for (let seed = 1; seed <= seeds; seed++) {
       console.log = () => {}; // the governor's own log lines
       const r = await run({ ...sc, seed });

@@ -1,6 +1,6 @@
 // Run the real CLI with only its Linux kernel/state reads replaced. Child CLI
 // permissions are explicit; unlike `deno eval`, this does not imply full access.
-import { STATE_FILE } from "../../src/governor.ts";
+import { PATHS, STATE_FILE } from "../../src/governor.ts";
 const mode = Deno.args.shift();
 if (mode === "tick-consumer") Deno.uid = () => 1000;
 const original = Deno.readTextFile;
@@ -10,6 +10,11 @@ Deno.readTextFile = (...args) => {
   }
   if (mode === "unsupported" && String(args[0]) === STATE_FILE) {
     return Promise.resolve('{"schemaVersion":99}');
+  }
+  if (mode === "unreadable" && String(args[0]) === PATHS.config) {
+    return Promise.reject(
+      new Deno.errors.PermissionDenied(`Permission denied (os error 13): readfile '${args[0]}'`),
+    );
   }
   return original(...args);
 };

@@ -1,5 +1,5 @@
 export const cliArguments = (
-  mode: "connection" | "unsupported" | "tick-consumer",
+  mode: "connection" | "unsupported" | "tick-consumer" | "unreadable",
   args: string[],
 ) => [
   "run",

@@ -222,6 +222,66 @@ class UpstreamTest(unittest.TestCase):
             {"version": 1, "vm_id": 123, "error": BROKER.INVALID_METRICS},
         )
 
+    def test_upstream_failures_are_fixed_codes_without_upstream_text(self):
+        for error, code, status in (
+            (urllib.error.HTTPError(BROKER.API, 503, TOKEN, {}, io.BytesIO(TOKEN.encode())),
+             BROKER.UPSTREAM_STATUS, 503),
+            (urllib.error.HTTPError(BROKER.API, 429, TOKEN, {}, None), BROKER.UPSTREAM_STATUS, 429),
+            # A code outside HTTP's range is reported without one, as a plain failure.
+            (urllib.error.HTTPError(BROKER.API, 999, TOKEN, {}, None), None, None),
+            (urllib.error.URLError(TOKEN), BROKER.UPSTREAM_UNAVAILABLE, None),
+            (TimeoutError(TOKEN), BROKER.UPSTREAM_UNAVAILABLE, None),
+            (ConnectionResetError(TOKEN), BROKER.UPSTREAM_UNAVAILABLE, None),
+        ):
+            opener = SimpleNamespace(open=Mock(side_effect=error))
+            with patch.object(BROKER.urllib.request, "build_opener", return_value=opener):
+                with self.assertRaises(BROKER.Refused) as raised:
+                    BROKER.upstream(TOKEN, vm_request())
+            self.assertEqual((raised.exception.code, raised.exception.status), (code, status))
+            self.assertNotIn(TOKEN, str(raised.exception))
+
+    def run_main(self, argv, **patches):
+        output = io.StringIO()
+        with patch.object(BROKER.sys, "argv", argv), patch.object(
+            BROKER.resource, "setrlimit"
+        ), patch.object(BROKER.signal, "signal"), patch.object(
+            BROKER.signal, "alarm"
+        ), patch.object(
+            BROKER.sys,
+            "stdin",
+            SimpleNamespace(buffer=io.BytesIO(json.dumps(vm_request()).encode())),
+        ), patch.object(BROKER, "configured_vm_id", return_value=123), patch.object(
+            BROKER, "authorize_request", return_value=vm_request()
+        ), contextlib.ExitStack() as stack, contextlib.redirect_stdout(output):
+            for name, value in patches.items():
+                stack.enter_context(patch.object(BROKER, name, **value))
+            BROKER.main()
+        return json.loads(output.getvalue())
+
+    def test_worker_reports_upstream_failures_with_only_the_status(self):
+        self.assertEqual(
+            self.run_main(["broker", "--worker"], worker={
+                "side_effect": BROKER.Refused("x", BROKER.UPSTREAM_STATUS, 503)
+            }),
+            {"version": 1, "vm_id": 123, "error": BROKER.UPSTREAM_STATUS, "status": 503},
+        )
+        self.assertEqual(
+            self.run_main(["broker", "--worker"], worker={
+                "side_effect": BROKER.Refused("x", BROKER.UPSTREAM_UNAVAILABLE)
+            }),
+            {"version": 1, "vm_id": 123, "error": BROKER.UPSTREAM_UNAVAILABLE},
+        )
+
+    def test_launcher_passes_upstream_codes_only_with_an_http_status(self):
+        good = {"version": 1, "vm_id": 123, "error": BROKER.UPSTREAM_STATUS, "status": 503}
+        self.assertEqual(self.run_main(["broker"], launch={"return_value": good}), good)
+        for status in (None, 99, 600, 503.0, True, "503"):
+            bad = {"version": 1, "vm_id": 123, "error": BROKER.UPSTREAM_STATUS}
+            if status is not None:
+                bad["status"] = status
+            with self.assertRaisesRegex(BROKER.Refused, "Invalid worker response"):
+                self.run_main(["broker"], launch={"return_value": bad})
+
     def test_redirect_never_forwards_authorization(self):
         with self.assertRaisesRegex(BROKER.Refused, "redirect refused"):
             BROKER.NoRedirect().redirect_request(
@@ -258,6 +318,8 @@ class UpstreamTest(unittest.TestCase):
             with self.assertRaises(BROKER.Refused) as raised:
                 BROKER.upstream(TOKEN, vm_request())
         self.assertEqual(str(raised.exception), "Hostinger returned HTTP 401")
+        self.assertEqual(raised.exception.code, BROKER.UPSTREAM_STATUS)
+        self.assertEqual(raised.exception.status, 401)
         response = Mock()
         response.__enter__ = Mock(return_value=response)
         response.__exit__ = Mock(return_value=False)
@@ -442,6 +504,7 @@ class LauncherTest(unittest.TestCase):
             self.assertEqual(getattr(BROKER, constant), CONTRACT[key])
         self.assertEqual(list(BROKER.TEMPORARY_ERRORS), CONTRACT["temporary_errors"])
         self.assertEqual(BROKER.INVALID_METRICS, CONTRACT["invalid_metrics_error"])
+        self.assertEqual(list(BROKER.UPSTREAM_ERRORS), CONTRACT["upstream_errors"])
         self.assertEqual(BROKER.CLOCK_SKEW_MS, CONTRACT["clock_skew_ms"])
         self.assertEqual(BROKER.REQUEST_SECONDS * 1000, CONTRACT["request_timeout_ms"])
         self.assertLess(

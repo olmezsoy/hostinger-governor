@@ -7,6 +7,7 @@ import {
   charged,
   creditStep,
   demandSteal,
+  evidentSteal,
   LAW,
   LIFT_STEAL,
   liftConfirmed,
@@ -15,10 +16,16 @@ import {
   limitConfirmed,
   MARGIN,
   type Margin,
+  pinnedAtCap,
+  PROBE_CEILING,
+  PROBE_MIN_DEMAND,
+  probeCooldownSeconds,
+  quietAfterLiftSeconds,
   type Reading,
   recoveryCeiling,
   replay,
   sliceCeiling,
+  sliceDemand,
   tightenCeiling,
   validSpacing,
   widen,
@@ -181,7 +188,8 @@ export type Private = {
   used: number;
   anchor?: Anchor & { checkedAt: number };
   limit?: Limit;
-  probe: { cooldownUntil: number; backoffMs: number; failedSf?: number };
+  // quietUntil: uptime until which no credit limit can follow the last lift (quietAfterLiftSeconds).
+  probe: { cooldownUntil: number; failedSf?: number; quietUntil?: number };
   samples: Sample[];
   tested?: boolean;
   readings: Reading[];
@@ -261,8 +269,9 @@ const LIMIT_STEAL = 0.1;
 const TEST_EVERY_MS = 2 * 60_000;
 const TEST_MAX_MS = 15 * 60_000;
 const TIGHTEN_AFTER_MS = 60_000;
-const BACKOFF_MS = 10 * 60_000;
-const BACKOFF_MAX_MS = 3_600_000;
+// The pinned-at-the-cap entry needs the governor's own estimate to allow an empty bank: work near the
+// cap on a noisy host looks the same, and a credit limit needs the bank spent.
+const PINNED_BALANCE_SHARE = 0.25;
 const HOT_BUSY = 0.6;
 const HOT_STEAL = 0.05;
 const TOP_EVERY_MS = 5 * 60_000;
@@ -556,7 +565,7 @@ export class Governor {
       at: Date.now(),
       margin: { ...MARGIN },
       used: 0,
-      probe: { cooldownUntil: 0, backoffMs: BACKOFF_MS },
+      probe: { cooldownUntil: 0 },
       samples: [],
       readings: [],
       capFailed: true,
@@ -1573,7 +1582,7 @@ export class Governor {
   async probe(sf0: number, ceiling: number): Promise<boolean> {
     this.s.noEarn = true;
     this.s.tested = true;
-    if (!await this.io.cap(this.slice, 20)) return false;
+    if (!await this.io.cap(this.slice, PROBE_CEILING)) return false;
     let sfCut: number;
     let restored = false;
     try {
@@ -1697,7 +1706,7 @@ export class Governor {
         // clamp still finds its empty-bank anchor. A first start has nothing to mark.
         s.rebootPending = true;
       }
-      s.probe = { cooldownUntil: 0, backoffMs: BACKOFF_MS };
+      s.probe = { cooldownUntil: 0 };
       s.topAt = undefined;
       if (s.limit) {
         s.limit.heldFrom = uptime;
@@ -1814,21 +1823,36 @@ export class Governor {
     // saw: neighbours that failed a probe should not hide a limit that starts behind them.
     const failed = uptime < s.probe.cooldownUntil ? s.probe.failedSf : undefined;
     const jumped = failed !== undefined && sfNow >= Math.max(2 * failed, failed + 0.15);
+    // Right after a lift no credit limit can come yet: only evident steal is taken as one.
+    const quiet = uptime < (s.probe.quietUntil ?? 0);
+    const evident = sfNow >= LIMIT_EVIDENT && evidentSteal(p, steal);
     if (
+      !s.limit && !quiet && count >= 3 && pinnedAtCap(p, busy, steal, outside) &&
+      this.actedBalance <= PINNED_BALANCE_SHARE * p.capacity
+    ) {
+      // Work outside an idle slice presses on the cap: no probe can cut it, but the VM sits at the cap.
+      this.enterLimit(now, true, "evident");
+      s.probe.failedSf = undefined;
+      log(
+        `limit: start, the VM pinned at the cap with the slice idle (margin x${this.settings.mul} +${this.settings.add})`,
+      );
+      this.notify("limit-start");
+    } else if (
       !s.limit && count >= 3 && sfNow >= LIMIT_STEAL &&
       steal * p.vcpus >= 0.02 &&
-      (uptime >= s.probe.cooldownUntil || sfNow >= LIMIT_EVIDENT || jumped)
+      (evident || !quiet && sfNow < LIMIT_EVIDENT &&
+          sliceDemand(p, busy, steal, outside) >= PROBE_MIN_DEMAND) &&
+      (uptime >= s.probe.cooldownUntil || evident || jumped)
     ) {
       const sf0 = sfNow;
-      if (sf0 >= LIMIT_EVIDENT || await this.probe(sf0, current ?? 100 * p.vcpus)) {
-        this.enterLimit(now, true, sf0 >= LIMIT_EVIDENT ? "evident" : "probe");
-        s.probe.backoffMs = BACKOFF_MS;
+      if (evident || await this.probe(sf0, current ?? 100 * p.vcpus)) {
+        this.enterLimit(now, true, evident ? "evident" : "probe");
         s.probe.failedSf = undefined;
         log(`limit: start (margin x${this.settings.mul} +${this.settings.add})`);
         this.notify("limit-start");
       } else {
-        s.probe.cooldownUntil = uptime + s.probe.backoffMs;
-        s.probe.backoffMs = Math.min(s.probe.backoffMs * 2, BACKOFF_MAX_MS);
+        s.probe.cooldownUntil = uptime +
+          probeCooldownSeconds(p, this.actedBalance, this.settings) * 1000;
         s.probe.failedSf = sf0;
       }
     }
@@ -1850,14 +1874,23 @@ export class Governor {
         !sample.test && demandSteal(sample.busy, sample.steal) >= LIMIT_PRESSING &&
         uptime - limit.heldFrom >= TIGHTEN_AFTER_MS
       ) {
-        const managedDemand = Math.max(0, (sample.busy + sample.steal) * p.vcpus - outside);
+        // Tighten only where it bites: a slice already under the tighter ceiling gives nothing back,
+        // and the steal pressing then is neighbours' or work outside it.
+        const managedDemand = sliceDemand(p, sample.busy, sample.steal, outside);
         const tightened = tightenCeiling(limit.ceiling, managedDemand);
-        if (tightened !== limit.ceiling) log(`limit: still pressing on it; ceiling ${tightened}%`);
-        limit.ceiling = tightened;
+        if (managedDemand > tightened / 100) {
+          if (tightened !== limit.ceiling) {
+            log(`limit: still pressing on it; ceiling ${tightened}%`);
+          }
+          limit.ceiling = tightened;
+        }
         limit.heldFrom = uptime;
       }
       // Neighbour steal can keep the conservative mirror flat even while the host earns. Once an
-      // idle recovery could have completed, test the host independently of the estimate.
+      // idle recovery could have completed, test the host independently of the estimate. This early
+      // test usually fails while a real limit holds, and that failure is the evidence that confirms
+      // it, so calibration learns from it: testing at the projected lift instead would pass first
+      // and leave real limits unconfirmed.
       const recoveryElapsed =
         uptime - (limit.startedAt ?? limit.heldFrom) >= p.recovered / p.baseline * 1000;
       if ((s.balance >= p.recovered || recoveryElapsed) && uptime >= (limit.testAt ?? 0)) {
@@ -1910,6 +1943,8 @@ export class Governor {
             this.recalibrateDue = true;
           }
           s.limit = undefined;
+          s.probe.quietUntil = Math.max(uptime, finished.uptime) +
+            quietAfterLiftSeconds(p, this.settings) * 1000;
           log("limit: lifted");
           this.notify("limit-end");
         } else {
@@ -2132,6 +2167,16 @@ export async function readPersisted(
   }
 }
 
+// The first pass after a reboot restarts the bank at 0, so the line says so rather than showing the
+// balance the last run saved.
+export function startLine(p: Plan, balance: number, savedBoot: string | undefined, bootId: string) {
+  const percent = Math.round((100 * balance) / p.capacity);
+  const credits = savedBoot !== undefined && savedBoot !== bootId
+    ? `0% credits after a reboot (${percent}% before it)`
+    : `${percent}% credits`;
+  return `governor up: ${p.name}, baseline ${p.baseline} vCPU, capacity ${p.capacity} core-seconds, ${credits}`;
+}
+
 export async function runDaemon() {
   // Files root created would be root's, mode 0600, and the service could no longer read them.
   if (Deno.uid() === 0) throw new Error("governor run must run as the governor user");
@@ -2148,11 +2193,7 @@ export async function runDaemon() {
     throw new Error("another governor run is active");
   }
   const g = await openGovernor(cfg, p, Date.now());
-  log(
-    `governor up: ${p.name}, baseline ${p.baseline} vCPU, capacity ${p.capacity} core-seconds, ${
-      Math.round((100 * g.s.balance) / p.capacity)
-    }% credits`,
-  );
+  log(startLine(p, g.s.balance, g.s.bootId, (await readClock()).bootId));
   const controller = new AbortController();
   let ranPass = false;
   const stop = () => {

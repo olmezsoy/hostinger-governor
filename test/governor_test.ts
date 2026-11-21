@@ -1,5 +1,11 @@
 import { assert, assertEquals, assertRejects, assertThrows } from "@std/assert";
-import { compareReadings, detectPlan, Governor, validateConfig } from "../src/governor.ts";
+import {
+  compareReadings,
+  detectPlan,
+  Governor,
+  startLine,
+  validateConfig,
+} from "../src/governor.ts";
 import { plan } from "../src/plans.ts";
 import { creditStep, liftConfirmed, type Reading } from "../src/credits.ts";
 import { fixture, p, start } from "./governor-fixture.ts";
@@ -584,6 +590,120 @@ Deno.test("neighbour steal backs probes off without marking a limit", async () =
   assertEquals(f.g.s.limit, undefined);
 });
 
+Deno.test("an idle slice is never probed, however its steal compares with its demand", async () => {
+  // A live KVM 8 box, Nov 2026: 0.17 cores busy, 0.13 of them outside the slice, 10-25% steal. The probe's cut
+  // to 0.2 cores cut nothing, and noise confirmed 12 false limits.
+  const f = fixture();
+  await f.g.tick();
+  f.g.s.balance = p.capacity;
+  let probes = 0;
+  f.g.probe = () => {
+    probes++;
+    return Promise.resolve(true);
+  };
+  for (let i = 0; i < 20; i++) await f.advance(30, 0.17 / 8, 0.03 / 8, 0.04);
+  // A 60% share of almost nothing isn't evident either.
+  for (let i = 0; i < 20; i++) await f.advance(30, 0.02 / 8, 0.04 / 8, 0.01);
+  assertEquals(probes, 0);
+  assertEquals(f.g.s.limit, undefined);
+});
+
+Deno.test("steal on work outside the slice doesn't make the slice worth probing", async () => {
+  const f = fixture();
+  await f.g.tick();
+  f.g.s.balance = p.capacity;
+  let probes = 0;
+  f.g.probe = () => {
+    probes++;
+    return Promise.resolve(true);
+  };
+  // 3 cores outside with 20% steal: their steal once read as 0.6 cores of slice demand.
+  for (let i = 0; i < 20; i++) await f.advance(30, 3.2 / 8, 0.8 / 8, 0.05);
+  assertEquals(probes, 0);
+  // The slice's own work is probed as before.
+  for (let i = 0; i < 4; i++) await f.advance(30, 2.5 / 8, 0.4 / 8, 2.4);
+  assertEquals(probes, 1);
+});
+
+Deno.test("work outside an idle slice pinned at the cap enters a limit when the bank may be empty", async () => {
+  for (const full of [false, true]) {
+    const f = fixture();
+    await f.g.tick();
+    f.g.s.balance = full ? p.capacity : 0.1 * p.capacity;
+    let probes = 0;
+    f.g.probe = () => {
+      probes++;
+      return Promise.resolve(true);
+    };
+    // 3 cores outside under the 2.4-core cap: busy at the cap, the rest stolen.
+    for (let i = 0; i < 6 && !f.g.s.limit; i++) await f.advance(30, 2.38 / 8, 0.62 / 8, 0.04);
+    assertEquals(probes, 0);
+    // Work near the cap on a noisy host looks the same; a full estimate rules out a credit limit.
+    assertEquals(!!f.g.s.limit, !full, `full ${full}`);
+    if (!full) assertEquals(f.g.s.limit?.record?.path, "evident");
+  }
+});
+
+Deno.test("no probe follows a lift until its bank could be spent, but evident steal still enters", async () => {
+  const f = fixture();
+  await f.g.tick();
+  f.g.enterLimit(start, false);
+  f.g.limitGone = () => Promise.resolve(true);
+  f.g.s.balance = p.recovered;
+  for (let i = 0; i < 4 && f.g.s.limit; i++) await f.advance(30);
+  assertEquals(f.g.s.limit, undefined);
+  const quiet = f.g.s.probe.quietUntil! - f.g.s.uptime!;
+  // 6,912 core-seconds at 1.05 x 8 + 0.08 - 4.8 cores: about 31 minutes.
+  assert(quiet > 30 * 60_000 && quiet <= 32 * 60_000, `${quiet / 60_000} min`);
+  let probes = 0;
+  f.g.probe = () => {
+    probes++;
+    return Promise.resolve(false);
+  };
+  for (let i = 0; i < 60 && f.g.s.uptime! < f.g.s.probe.quietUntil!; i++) {
+    await f.advance(30, 2.5 / 8, 0.4 / 8, 2.4);
+  }
+  assertEquals(probes, 0);
+  for (let i = 0; i < 4; i++) await f.advance(30, 2.5 / 8, 0.4 / 8, 2.4);
+  assertEquals(probes, 1);
+  // Inside a new quiet window, evident steal is still a limit.
+  f.g.s.probe.quietUntil = f.g.s.uptime! + 3_600_000;
+  for (let i = 0; i < 12 && !f.g.s.limit; i++) await f.advance(30, 2.4 / 8, 5.6 / 8, 2.4);
+  assert(f.g.s.limit);
+  assertEquals(probes, 1);
+});
+
+Deno.test("a limit tightens the ceiling only where the slice's demand would feel it", async () => {
+  const f = fixture();
+  await f.g.tick();
+  f.g.enterLimit(start, false);
+  await f.advance(30, 0.17 / 8, 0.01 / 8, 0.04);
+  const held = f.g.s.limit!.ceiling;
+  // Noise presses on an idle slice: tightening it gives nothing back.
+  for (let i = 0; i < 10; i++) await f.advance(30, 0.17 / 8, 0.01 / 8, 0.04);
+  assertEquals(f.g.s.limit!.ceiling, held);
+  // A slice working above the tighter ceiling is tightened.
+  for (let i = 0; i < 4; i++) await f.advance(30, 2.3 / 8, 0.4 / 8, 2.2);
+  assert(f.g.s.limit!.ceiling < held, `${f.g.s.limit!.ceiling} of ${held}`);
+});
+
+Deno.test("a failed probe on a full estimate waits hours, on an empty one ten minutes", async () => {
+  for (const full of [true, false]) {
+    const f = fixture();
+    await f.g.tick();
+    f.g.s.balance = full ? p.capacity : 0;
+    let probes = 0;
+    f.g.probe = () => {
+      probes++;
+      return Promise.resolve(false);
+    };
+    for (let i = 0; i < 4; i++) await f.advance(30, 2.5 / 8, 0.4 / 8, 2.4);
+    assertEquals(probes, 1);
+    const wait = (f.g.s.probe.cooldownUntil - f.g.s.uptime!) / 60_000;
+    assert(full ? wait > 120 && wait <= 180 : wait <= 10, `full ${full}: ${wait} min`);
+  }
+});
+
 Deno.test("normal neighbour steal passes the lift test; a real limit or failed burners does not", () => {
   assertEquals(liftConfirmed(p, 5, 4.7, 0.06), true);
   assertEquals(liftConfirmed(p, 5, 2.4, 0.52), false);
@@ -1000,4 +1120,19 @@ Deno.test("a throwing lift test backs off without learning or failing the tick",
   assertEquals(f.g.s.margin, margin);
   await f.advance(30);
   assertEquals(attempts, 2);
+});
+
+Deno.test("the start line says a reboot restarts the bank at 0", () => {
+  const kvm8 = plan(8);
+  const half = kvm8.capacity / 2;
+  assertEquals(
+    startLine(kvm8, half, "boot-a", "boot-a"),
+    "governor up: KVM 8, baseline 4.8 vCPU, capacity 34560 core-seconds, 50% credits",
+  );
+  assertEquals(
+    startLine(kvm8, half, "boot-a", "boot-b"),
+    "governor up: KVM 8, baseline 4.8 vCPU, capacity 34560 core-seconds, 0% credits after a reboot (50% before it)",
+  );
+  // A first start has no saved boot and nothing to restart.
+  assertEquals(startLine(kvm8, 0, undefined, "boot-b").endsWith(", 0% credits"), true);
 });

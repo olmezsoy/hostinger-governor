@@ -3,11 +3,17 @@ import {
   allowedCores,
   charged,
   creditStep,
+  evidentSteal,
   LAW,
   limitConfirmed,
   MARGIN,
+  pinnedAtCap,
+  PROBE_MIN_DEMAND,
+  probeCooldownSeconds,
+  quietAfterLiftSeconds,
   replay,
   sliceCeiling,
+  sliceDemand,
   widen,
 } from "../src/credits.ts";
 import { plan, RULES_SINCE } from "../src/plans.ts";
@@ -159,4 +165,62 @@ Deno.test("machine readings parse", () => {
   );
   assertEquals(rows, [{ at: Date.parse("2026-10-09T10:00:00Z"), CPU: -1, "%idle": 40 }]);
   assertEquals(sparkline([{ at: 0, v: 100 }, { at: 23, v: 0 }], 0, 24, 100, 1).length, 24);
+});
+
+Deno.test("the slice's demand excludes steal on work outside it", () => {
+  const p = plan(8);
+  // A live KVM 8 box at a false limit: 0.17 cores busy, 0.13 of them outside the slice.
+  assertAlmostEquals(sliceDemand(p, 0.17 / 8, 0.02 / 8, 0.13), 0.04 * 0.19 / 0.17, 1e-9);
+  // Three cores outside under the 2.4-core cap: their 0.6 cores of steal are not the slice's.
+  assertAlmostEquals(sliceDemand(p, 2.4 / 8, 0.6 / 8, 2.36), 0.05, 1e-9);
+  // A busy slice keeps its share of the steal.
+  assertAlmostEquals(sliceDemand(p, 2.4 / 8, 0.6 / 8, 0.4), 2.5, 1e-9);
+  assertEquals(sliceDemand(p, 0, 0.01, 0), 0);
+  assertEquals(PROBE_MIN_DEMAND, 0.4);
+});
+
+Deno.test("evident steal needs steal a limit could cause, not only a high share", () => {
+  const p = plan(8);
+  // 60% of 0.05 cores is noise; 60% of 8 cores against a 2.4-core cap is not.
+  assertEquals(evidentSteal(p, 0.03 / 8), false);
+  assertEquals(evidentSteal(p, 0.6 / 8), true);
+  assertEquals(evidentSteal(p, 5.6 / 8), true);
+});
+
+Deno.test("the VM pinned at the cap with the slice idle reads as a limit; neighbour steal does not", () => {
+  const p = plan(8);
+  assertEquals(pinnedAtCap(p, 2.38 / 8, 0.62 / 8, 2.34), true);
+  // The slice is busy: a probe can tell, so this entry stays out of it.
+  assertEquals(pinnedAtCap(p, 2.38 / 8, 0.62 / 8, 0.5), false);
+  // Busy well under or over the cap, or too little steal.
+  assertEquals(pinnedAtCap(p, 1.5 / 8, 0.5 / 8, 1.46), false);
+  assertEquals(pinnedAtCap(p, 3.2 / 8, 0.8 / 8, 3.16), false);
+  assertEquals(pinnedAtCap(p, 2.4 / 8, 0.1 / 8, 2.36), false);
+});
+
+Deno.test("no credit limit can follow a lift sooner than its bank takes to spend, on any plan", () => {
+  for (const vcpus of [1, 2, 4, 8]) {
+    // At cost, 20% of three hours of the vCPUs above the baseline takes 36 minutes at full use.
+    assertAlmostEquals(quietAfterLiftSeconds(plan(vcpus), { mul: 1, add: 0 }), 2160, 1e-6);
+  }
+  // The margin charges more, so the window is shorter.
+  assertAlmostEquals(
+    quietAfterLiftSeconds(plan(8), { mul: 1.05, add: 0.0567 }),
+    6912 / (1.05 * 8 + 0.0567 - 4.8),
+    1e-6,
+  );
+});
+
+Deno.test("a failed probe waits as long as full use would take to spend the estimated balance", () => {
+  const p = plan(8), m = { mul: 1.05, add: 0.08 };
+  // A full bank: 34,560 core-seconds at 3.68 cores over the baseline, about 2.6 hours.
+  assertAlmostEquals(
+    probeCooldownSeconds(p, p.capacity, m),
+    p.capacity / (1.05 * 8 + 0.08 - 4.8),
+    1e-6,
+  );
+  // An empty or near-empty estimate probes again after 10 minutes; nothing waits past three hours.
+  assertEquals(probeCooldownSeconds(p, 0, m), 600);
+  assertEquals(probeCooldownSeconds(p, 1000, m), 600);
+  assertEquals(probeCooldownSeconds(p, 100 * p.capacity, m), 10_800);
 });

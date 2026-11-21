@@ -386,3 +386,16 @@ Deno.test("calibrate --explain takes --json before or after it, and nothing else
     assertEquals(out.code, usage ? 2 : 1, args.join(" "));
   }
 });
+
+Deno.test("calibrate --explain without access to the private files says so, without a trace", async () => {
+  const out = await new Deno.Command(Deno.execPath(), {
+    args: cliArguments("unreadable", ["calibrate", "--explain"]),
+    stdout: "piped",
+    stderr: "piped",
+  }).output();
+  const stderr = new TextDecoder().decode(out.stderr);
+  assertEquals(out.code, 1);
+  assertStringIncludes(stderr, "governor calibrate: Permission denied (os error 13)");
+  assertStringIncludes(stderr, "run it with sudo or as the governor user");
+  assertEquals(stderr.includes("Uncaught"), false, stderr);
+});
