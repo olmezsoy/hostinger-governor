@@ -658,7 +658,10 @@ export const sigmaAt = (fit: MeterFit, u: number) =>
 // model's upper bound, or a contention window's, and a whole core until one has spoken.
 export const stealBound = (fit: MeterFit | null): number =>
   !fit ? 1 : fit.stealFit ? fit.stealFit.hi ?? 1 : fit.stealHi ?? 1;
-// The steal the fit's own pairs showed at this load, in cores: what its line already carries.
+// The steal the fit's own pairs showed at this load, in cores: what its line already carries. The
+// line through that steal can run below zero at loads it kept away from. No steal is the least
+// there is, so it counts as none there: nothing is charged without steal, and drift detection
+// stays as sharp as it was.
 export const expectedSteal = (fit: MeterFit | null, own: number): number =>
   fit?.stealAt ? Math.max(0, fit.stealAt[0] + fit.stealAt[1] * own) : 0;
 // What neighbours' steal adds to the charge as it happens, in cores (#13 §4 charges the guest's own
@@ -667,7 +670,7 @@ export const expectedSteal = (fit: MeterFit | null, own: number): number =>
 // bank at its floor ended in a limit. Only steal beyond what the fit expects at this load is
 // charged, each core of it at the bound above: the margin covers the fit's line, which carries
 // the expected steal at whatever the sensitivity is, so the two together cover the reading for
-// any sensitivity up to the bound. Charged whole, the steady steal of a contended host cost 1.2%
+// any sensitivity up to the bound. Charged whole, the steady steal of a contended host cost 1.1%
 // of CPU for good, on top of a margin that already paid for it. Without a fit nothing is known
 // to be carried, and every stolen core is charged.
 export function stealCharge(fit: MeterFit | null, own: number, steal: number): number {
