@@ -223,21 +223,44 @@ multiplier to 1.086 to 1.233 against a slope near 1.04, and the multiplier only 
 noise gives σ(u). Once ten pairs under three cores exist, σ(u) is never below what they show, √(π/2)
 times their mean absolute residual, so a line through the residuals that reaches zero at idle can't
 make every idle reading extreme. Under load the line rises past that floor, so the premium is
-unchanged. When at least 10 pairs across at least two UTC days carry 0.05 or more cores of neighbour
-steal with enough within-day variance, `fitMeter` also fits a detection-only 2D steal model
-(`stealFit: host = a * own + b + c * steal`) via within-day fixed effects and keeps `c` (clamped to
-`[0, 1]`) when it exceeds 0.05 with `t >= 3.0` and a day-block bootstrap 2.5th percentile above
-`0.05`. Within-day demeaning cancels day-level meter offsets so a single coincident shift day cannot
-invent a false `c`. Calm windows without enough steal variation keep an established `c`, while a
-contention window that refutes it drops `stealFit`. CUSUM, extreme-residual filtering and
-long-interval residuals use `stealFit` when present; live billing and the 1D margin fit stay
-unchanged so calm-hour and burst CPU budgets are not double-charged. Refits run at most daily.
-Readings marked invalid, and any residual beyond 6 σ against drift detection's reference (or the
-physical `[0, 1] * steal` range before `stealFit` is fitted), never enter a refit: like drift
-detection, the fit must not let a bad feed tighten the margin. A real jump in the meter is then left
-to limits until readings are valid again (see Drift detection). After a drift change, refits never
-reach back past its change point, so no window mixes the meter from before a change with the meter
-after it.
+unchanged. Refits run at most daily. Readings marked invalid, and any residual beyond 6 σ against
+drift detection's reference, never enter a refit: like drift detection, the fit must not let a bad
+feed tighten the margin. A real jump in the meter is then left to limits until readings are valid
+again (see Drift detection). After a drift change, refits never reach back past its change point, so
+no window mixes the meter from before a change with the meter after it.
+
+Hostinger's reading also rises with hypervisor steal: by about half a core per stolen core on the
+audited KVM 8, at the same guest load. The margin's fit stays one-dimensional, and steal is not
+charged as it happens, so calm-hour and burst CPU budgets are never double-charged; what steal adds
+on average is in the fit's slope and offset like any other load-dependent cost. Drift detection has
+to tell a contention burst from a change in the meter, and does it in two steps:
+
+- Whatever is known about the sensitivity, the meter adds between nothing and a core per stolen
+  core. A reading that some sensitivity in that range explains is never extreme, never invalid and
+  always reaches the fit. Until a steal model is fitted, CUSUM and a pending change's verification
+  count only the part of a residual outside that range. Scored in full, the first burst after an
+  upgrade raised an alarm, was verified on the burst's own remaining pairs, and held the margin
+  until a refit the alarm itself kept from running.
+- `fitMeter` fits a detection-only steal model (`stealFit: host = a * own + b + c * steal`) by
+  within-day fixed effects once at least 10 pairs on at least two UTC days carry 0.05 or more stolen
+  cores with enough within-day variance. Within-day demeaning cancels day-level meter offsets, so a
+  day that happens to read high cannot invent a `c`. It keeps `c`, clamped to `[0, 1]`, when it
+  exceeds 0.05, stands three standard errors above zero and its day-block bootstrap 2.5th percentile
+  is above 0.05. The standard error weights each residual by its own leverage (HC3): the meter is
+  noisier under load, which is where steal shows, and residual variance pooled with the idle pairs
+  passed one window in fifty on a meter with no steal term. Loads at which a reading reached the
+  100% cap stay out, since steal is absent at the cap by construction, and so do the first pairs of
+  an unfinished UTC day, which resampled as a day decided the bound. With a model, CUSUM,
+  verification and long-interval residuals read residuals from it.
+
+An established `c` is a property of how Hostinger meters contention, so it carries across quiet
+windows, across a drift change, and across a window too weak to establish one: it goes only when a
+window's own estimate lies three standard errors from it. What the simulator cannot rule out is a
+meter that reads higher at the hours contention happens to fall in, for another reason: on such a
+meter one window in four learns a `c` near 0.1, which costs drift detection a tenth of a core of
+sensitivity per stolen core and nothing else. The governor's own limit probes blank most reading
+intervals during contention, so a model can take weeks to learn (day 29 in study S15); until then
+the range above is what keeps bursts out of drift detection.
 
 A reading at the 100% cap only bounds the meter from below. It never counts as a normal residual and
 never reaches drift detection, so a jump clipped at the cap cannot pass for valid readings; one
@@ -437,13 +460,24 @@ pairs among them, and the hold covers both at every load. Only pairs at three or
 where a fit qualifies, read the slope: near idle, a small offset divided by a tiny load read as a
 multiplier of 2 to 3.3 on the simulated meter's own day-to-day wobble. Capped readings take part in
 neither. From three pairs on, `pending.fit` and `pending.hold` refine upward whenever the running
-mean residual exceeds them (`drift-hold`) and never narrow or loosen until verification ends.
-Offset-shaped alarms verify on every valid pair even when a box has gone too idle to qualify for a
-refit; slope-capable alarms count only pairs carrying enough load to distinguish the slope
-hypothesis from no change, so an idle spell cannot revert a real slope increase. After 48 counted
-pairs the change is verified (`cusum-keep`) if their mean residual is at least 0.5 σ against the old
-fit; otherwise it is withdrawn (`cusum-revert`) and, having changed nothing learned, leaves nothing
-behind.
+mean residual exceeds them (`drift-hold`) and never narrow or loosen until verification ends. Every
+valid pair counts toward verification, also when the box has gone too idle to qualify for a refit: a
+box that went idle after an alarm otherwise kept its hold for good. After 48 pairs the change is
+verified (`cusum-keep`) if their mean residual is at least 0.5 σ against the old fit; otherwise it
+is withdrawn (`cusum-revert`) and, having changed nothing learned, leaves nothing behind. An idle
+pair cannot tell a slope change from no change, so a real slope change can be withdrawn on a box
+that went idle. It is not lost: drift detection is armed again and raises it within a few pairs of
+the load coming back, and in `apply` the clamp follows the readings meanwhile. Counting only loaded
+pairs instead kept a false alarm for eleven days on a box with two loaded hours a day, and for good
+on an idle one.
+
+Verified, the change is measured rather than kept at the alarm's reading. The alarm reads the offset
+from its clearly shifted pairs alone, which overstates a small change several times over: a meter
+that moved 0.025 cores read as +0.20, and a box that stayed idle held +0.24 cores for good, since
+only the fit after the change could lower it and that fit needs load. At `cusum-keep` the offset
+becomes the mean residual of every pair since the change plus three standard errors at the noise of
+a full box, and the hold follows it. A slope reading stays as it is: only the fit after the change
+can judge it.
 
 A verified change holds until a fit on the readings after its change point alone qualifies. That fit
 sets the learned margin, tightening only against the margin learned before the change. Limits during
@@ -621,7 +655,8 @@ detection-only `stealFit`) and the newer `referenceFit` drift detection and oper
 follow, the CUSUM state, `apiStaleSince`, `readingsInvalid`, `invalidReasons` (when invalid),
 `newestFinal`, `longIntervals`, the estimates, `rulesMismatch`, `mismatches`, `invalidSpans`,
 `ownHold`, any sustained-use cooldown, the last limit's class and diagnosis, and `failing`, the time
-a failing evaluation began and the margin below the open estimate it holds, or null. In `apply`,
+a failing evaluation began and the margin below the open estimate it holds, or null. `failing` shows
+in every mode; in `off` and `shadow` nothing is held, so its margin is 0. In `apply`,
 `credits.balance`, `percent` and `minutesAtFull` report the acted estimate; the open estimate is in
 `credits.calibration.estimates.open`.
 
@@ -640,12 +675,19 @@ last diagnosis from the inputs it recorded, the earlier limit a replay from its 
 them: history keeps 50 limit records, and 49 later ones had changed a rerun's gap from 0.140 to
 0.044. Two runs on the same files give the same output. `evidence.fit` is the fit the replayed
 decision used; `evidence.referenceFit` is the newest qualifying fit drift detection follows; and
-`evidence.candidateFit` is a fresh candidate, which may differ when it would not tighten the margin.
-The text form shows the same status fields as the JSON, one topic per line: the settings in force
-and, under a hold, the learned ones and every hold; the meter's fit and, when drift detection
-follows a different one, the drift reference; the readings' state; any cooldown; and the long
-reading intervals. A configuration change takes effect in this output only after the daemon
-restarts.
+`evidence.candidateFit` is the fit the daemon's next refit would make from the recorded inputs: the
+same pairs, change point and carried steal sensitivity. It may differ from `fit` when it would not
+tighten the margin, and is null while an unverified drift change pauses refits. The text form shows
+the same status fields as the JSON, one topic per line: the settings in force and, under a hold, the
+learned ones and every hold; the meter's fit, with the steal model drift detection fitted beside it,
+and, when drift detection follows a different one, the drift reference; the readings' state; any
+cooldown; and the long reading intervals. A configuration change takes effect in this output only
+after the daemon restarts.
+
+A recorded evaluation is rerun only by the governor version that made it, since another version's
+arithmetic cannot reproduce its digest. Right after an upgrade the command says the evaluation was
+made by another version; it works again from the daemon's first evaluation, within ten minutes of
+its start.
 
 To return the calibration margin, floor and learned gap to the configured start:
 

@@ -31,8 +31,6 @@ export function parseSadf(csv: string): Record<string, number>[] {
   return rows;
 }
 
-const pad2 = (n: number) => String(n).padStart(2, "0");
-
 // Resolve sysstat archive files covering [from, to] across the union of local and UTC calendar
 // dates (supporting hosts whose `sadc` writes UTC-dated files under `S_TIME_DEF_TIME=UTC` as well
 // as local-dated files), including both `saYYYYMMDD` (sysstat HISTORY > 28) and legacy `saDD`.
@@ -47,33 +45,28 @@ export async function sysstatFiles(
     }
   },
   dir = "/var/log/sysstat",
+  // The host's own zone, and UTC.
+  zones: (string | undefined)[] = [undefined, "UTC"],
 ): Promise<string[]> {
+  // Calendar dates as each zone's own date of `from` through its date of `to`, counted as dates:
+  // stepping a local clock from midnight skipped the last day where midnight itself is skipped,
+  // as on the night clocks go forward in Beirut or Santiago.
   const dates = new Map<string, [string, string, string]>();
-  const addDate = (y: number, m: number, d: number) => {
-    const yyyy = String(y), mm = pad2(m), dd = pad2(d);
-    dates.set(`${yyyy}${mm}${dd}`, [yyyy, mm, dd]);
-  };
-  const localStart = new Date(from);
-  localStart.setHours(0, 0, 0, 0);
-  const localEnd = new Date(to);
-  localEnd.setHours(0, 0, 0, 0);
-  for (
-    const d = new Date(localStart);
-    d.getTime() <= localEnd.getTime();
-    d.setDate(d.getDate() + 1)
-  ) {
-    addDate(d.getFullYear(), d.getMonth() + 1, d.getDate());
-  }
-  const utcStart = new Date(from);
-  utcStart.setUTCHours(0, 0, 0, 0);
-  const utcEnd = new Date(to);
-  utcEnd.setUTCHours(0, 0, 0, 0);
-  for (
-    const d = new Date(utcStart);
-    d.getTime() <= utcEnd.getTime();
-    d.setUTCDate(d.getUTCDate() + 1)
-  ) {
-    addDate(d.getUTCFullYear(), d.getUTCMonth() + 1, d.getUTCDate());
+  for (const timeZone of zones) {
+    const day = (ms: number) => {
+      const parts = new Intl.DateTimeFormat("en-CA", {
+        timeZone,
+        year: "numeric",
+        month: "2-digit",
+        day: "2-digit",
+      }).formatToParts(ms);
+      const part = (type: string) => Number(parts.find((x) => x.type === type)!.value);
+      return Date.UTC(part("year"), part("month") - 1, part("day"));
+    };
+    for (let at = day(from), end = day(to); at <= end; at += 86_400_000) {
+      const [yyyy, mm, dd] = new Date(at).toISOString().slice(0, 10).split("-");
+      dates.set(`${yyyy}${mm}${dd}`, [yyyy, mm, dd]);
+    }
   }
   const files: string[] = [];
   const seen = new Set<string>();
@@ -203,7 +196,10 @@ export function creditLines(s: PublicState, clock: (ms: number) => string): stri
   const c = s.credits;
   const cal = c.calibration;
   const { surplus, debit } = spending(s);
-  const warnings = calibrationWarnings(s, clock).map((w) => w.statusLine);
+  // Warnings carry the date: a fallback hold starts a day after the readings went stale, and a
+  // drift change or cooldown can be days old, which a time of day alone hid.
+  const dated = (ms: number) => new Date(ms).toISOString().slice(0, 16).replace("T", " ") + "Z";
+  const warnings = calibrationWarnings(s, dated).map((w) => w.statusLine);
   const historyNote = c.anchor
     ? `Hostinger history checked ${clock(c.anchor.checkedAt)}, ${
       cal?.mode === "apply" ? "tighten only" : "diagnostic only"

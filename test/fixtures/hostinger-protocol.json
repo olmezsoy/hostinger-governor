@@ -13,6 +13,7 @@
   "max_token_bytes": 8192,
   "cooldown_seconds": 60,
   "check_window_ms": 43200000,
+  "check_budget_ms": 50000,
   "governor_limit_test_ms": 40000,
   "capability": "request_command v1 supported",
   "temporary_errors": ["busy", "rate_limited"],

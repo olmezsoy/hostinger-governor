@@ -302,6 +302,9 @@ type ControlMeasurements = {
   steal: number;
   outside: number;
   avgOutside: number;
+  // The most any sample of the window ran outside the slice: what a recovery ceiling must still
+  // leave room for before it relaxes.
+  maxOutside: number;
 };
 
 const log = (...parts: unknown[]) => console.log(parts.map(String).join(" "));
@@ -748,6 +751,7 @@ export class Governor {
         ? Math.max(latest.test ? 0 : latest.outside ?? 0, avgOutside)
         : DEFAULT_OUTSIDE_CORES,
       avgOutside,
+      maxOutside: recent.reduce((most, x) => Math.max(most, x.outside ?? 0), 0),
     };
   }
 
@@ -820,7 +824,7 @@ export class Governor {
     const unreadable = !!this.historyStore?.unreadable;
     const empty = !h.slots.length && !h.readings.length && !h.limits.length &&
       !h.calibrations.length && !h.checkpoint;
-    this.adoptLimitRecord();
+    this.adoptLimitRecord(now);
     if (this.withoutState && (unreadable || !empty || this.stateInvalid)) {
       this.s.balance = 0;
       // Status must show a rebuilding estimate, not an empty bank, as on any first start.
@@ -884,7 +888,7 @@ export class Governor {
   // the limit; one still open goes on as a limit, though persist.json lost it or never saved it:
   // left alone, the record never got its lift or class, and the box ran as if unlimited until the
   // limit was detected again under a new record, without the evidence the first had gathered.
-  private adoptLimitRecord() {
+  private adoptLimitRecord(now: number) {
     const behind = !!this.s.historyBehind;
     delete this.s.historyBehind;
     const limit = this.s.limit;
@@ -902,6 +906,7 @@ export class Governor {
       }
       if (limit.record?.lift !== undefined) {
         log("limit: history shows it lifted");
+        this.restoreLifted(limit.record, now);
         this.s.limit = undefined;
       }
       return;
@@ -1150,7 +1155,9 @@ export class Governor {
     };
   }
   calibrationStatus() {
-    const failed = this.applying ? this.s.evaluationFailed : undefined;
+    // A failing evaluation shows in every mode. Only apply holds anything for it, so off and
+    // shadow report no margin below the open estimate.
+    const failed = this.s.evaluationFailed;
     return {
       ...calibrationSummary(
         this.calibrationCfg,
@@ -1158,7 +1165,7 @@ export class Governor {
         this.history,
         this.settings,
       ),
-      failing: failed ? { since: failed.since, behind: failed.behind } : null,
+      failing: failed ? { since: failed.since, behind: this.applying ? failed.behind : 0 } : null,
     };
   }
   private recordDecision(change: Change, now: number) {
@@ -1706,7 +1713,8 @@ export class Governor {
 
   // Work outside an idle slice sits near the host limit with steal: ask the host with burners
   // before entering so noisy neighbours near the cap never trigger a false limit. Returns the
-  // burner delivery and post-test clock when limited, so enterLimit records confirmation metadata.
+  // burner delivery and post-test clock when limited, which place the cap and start recovery's
+  // clock; confirmation still comes from a failed lift test during the limit, as on every path.
   private async confirmPinnedLimit(): Promise<
     { delivery?: { busy: number; demand: number }; finished: Clock } | null
   > {
@@ -1890,7 +1898,7 @@ export class Governor {
       recovery.charged += charged(busyCores, this.settings) * seconds;
     }
     const control = this.controlMeasurements();
-    const { count, busy, steal, outside, avgOutside } = control;
+    const { count, busy, steal, outside, avgOutside, maxOutside } = control;
     const current = await this.io.ceiling(this.slice);
 
     const sfNow = demandSteal(busy, steal);
@@ -1965,6 +1973,8 @@ export class Governor {
     const limit = s.limit;
     let liftedRecord: LimitRecord | undefined;
     let earliestLift = uptime;
+    // The uptime of the last test that still found the limit, and of the end of the one that passed.
+    let liftSince: number | undefined, liftTested = uptime;
     if (limit) {
       const record = limit.record;
       if (record && now - (record.caps.at(-1)?.at ?? 0) >= 1_800_000) {
@@ -1976,18 +1986,18 @@ export class Governor {
           pressing: limitPressing(p, busy, steal),
         });
       }
-      // Relax recovery ceiling back up when a transient outside-load spike ends, while still
-      // respecting any tighter cap lowered because the VM actually pressed on the limit. Tighten
-      // immediately when outside rises; relax upward only beyond CEILING_DEADBAND on 4+ vCPU plans
-      // so small outside jitter does not trigger per-tick helper calls and logs while recovering.
-      const relaxed = Math.min(
-        limit.tightenedCeiling ?? 100 * p.vcpus,
-        recoveryCeiling(p, outside),
-      );
-      const relaxStep = p.vcpus >= 4 ? CEILING_DEADBAND + 1 : 1;
-      if (relaxed < limit.ceiling || relaxed >= limit.ceiling + relaxStep) {
-        limit.ceiling = relaxed;
-      }
+      // The recovery ceiling follows work outside the slice, under any tighter cap set because the
+      // VM actually pressed on the limit. It tightens at once, on the latest sample, and relaxes
+      // back up only to what every sample of the five-minute window allows: a spike gives its
+      // room back once it has left the window, while outside load that keeps swinging holds the
+      // ceiling at its low side instead of sending the helper a new quota every pass. A fixed
+      // step did one or the other: at 20 points a 0.2-core swing moved the quota every pass, and
+      // above it a spike that cost 20 points never gave them back.
+      const pressed = limit.tightenedCeiling ?? 100 * p.vcpus;
+      const tight = Math.min(pressed, recoveryCeiling(p, outside));
+      const calm = Math.min(pressed, recoveryCeiling(p, Math.max(outside, maxOutside)));
+      if (tight < limit.ceiling) limit.ceiling = tight;
+      else if (calm > limit.ceiling) limit.ceiling = calm;
       if (
         !sample.test && limitPressing(p, sample.busy, sample.steal) &&
         uptime - limit.heldFrom >= TIGHTEN_AFTER_MS
@@ -2061,7 +2071,9 @@ export class Governor {
             this.recalibrateDue = true;
             liftedRecord = record;
           }
-          earliestLift = limit.limitedUptime ?? Math.max(uptime, finished.uptime);
+          liftSince = limit.limitedUptime;
+          liftTested = Math.max(uptime, finished.uptime);
+          earliestLift = liftSince ?? liftTested;
           s.limit = undefined;
           log("limit: lifted");
           this.notify("limit-end");
@@ -2106,12 +2118,16 @@ export class Governor {
     if (liftedRecord?.class === "credit") {
       s.probe.quietUntil = earliestLift + quietAfterLiftSeconds(p, this.settings) * 1000;
       // Hostinger guarantees p.recovered (20%) at the actual lift, which occurred between the last
-      // failed lift test (`limitedAt`) and detection. Compute a suffix-minimum lower bound across
-      // that window so heavy outside spending before detection is never overstated. Restore live
-      // state only up to the spending floor (full baseline speed, zero post-lift starvation, without
-      // bursting above baseline on an undiagnosed limit before settled readings reach the lift).
-      const restored = this.creditLiftLowerBound(liftedRecord, now);
-      if (restored < p.recovered) liftedRecord.liftBalance = restored;
+      // failed lift test and detection. The lower bound across that window never overstates heavy
+      // spending before detection. Restore live state only up to the spending floor (full baseline
+      // speed, zero post-lift starvation, without bursting above baseline on an undiagnosed limit
+      // before settled readings reach the lift).
+      const restored = this.creditLiftLowerBound(liftSince, uptime);
+      // The record's lift is stamped when the passing test ended, and its burners ran on a lifted
+      // host: the anchor there is this pass's bound less the most they could have spent. The live
+      // estimate needs no such cut, since the next sample charges the test itself.
+      const anchored = Math.max(0, restored - this.maxDrain * (liftTested - uptime) / 1000);
+      if (anchored < p.recovered) liftedRecord.liftBalance = anchored;
       const floorCap = this.law.floor * p.capacity;
       const target = Math.min(restored, floorCap);
       const clampBelow = this.calibration.estimates.clamp !== null &&
@@ -2142,27 +2158,47 @@ export class Governor {
     }
   }
 
-  // Suffix-minimum lower bound for Hostinger's bank at `now` given it reached `p.recovered` (20%)
-  // at some unknown time t* in [since, now]. Capping at `p.recovered` prevents idle time before t*
-  // from inflating the bound while subtracting any net spending that occurred before detection.
-  private creditLiftLowerBound(record: LimitRecord, now: number): number {
-    const p = this.plan, m = this.settings;
-    const since = record.limitedAt ?? record.entry;
-    if (now <= since) return p.recovered;
-    let balance = p.recovered;
-    let coveredS = 0;
-    eachSampleOverlap(this.s.samples, since, now, (sample, ms) => {
-      const sec = ms / 1000;
-      coveredS += sec;
-      const delta = (p.baseline - charged(sample.busy * p.vcpus, m)) * sec;
-      balance = Math.max(0, Math.min(p.recovered, balance + delta));
-    });
-    const uncovered = Math.max(0, (now - since) / 1000 - coveredS);
-    if (uncovered > 0) {
-      const maxDrain = Math.max(0, charged(p.vcpus, m) - p.baseline);
-      balance = Math.max(0, balance - maxDrain * uncovered);
+  // The most the VM can spend above what it earns, in cores: every vCPU busy at the margin.
+  private get maxDrain() {
+    return Math.max(0, charged(this.plan.vcpus, this.settings) - this.plan.baseline);
+  }
+  // A lower bound for Hostinger's bank at `uptime`, given that it stood at `p.recovered` (20%) at
+  // some unknown moment since `since`, the last lift test that still found the limit. From any such
+  // moment the bank moved by what the VM earned and spent after it, so the bound is the worst
+  // suffix: the recovery level less the largest net spending over any stretch that ends now. It
+  // runs on uptime, which a wall-clock step cannot move: on wall time a step back between the two
+  // tests returned the full 20% whatever was spent. Time no sample covers counts at the most the
+  // VM can spend, and so does a sample that averages time the daemon did not watch: five idle
+  // minutes followed by five at every core read as net earning throughout. Without a failed test
+  // this boot nothing bounds the stretch, and the bound is zero.
+  private creditLiftLowerBound(since: number | undefined, uptime: number): number {
+    if (since === undefined) return 0;
+    const p = this.plan, m = this.settings, drain = this.maxDrain;
+    let balance = p.recovered, covered = 0;
+    for (const sample of this.s.samples) {
+      if (sample.uptime === undefined || !sample.seconds) continue;
+      const seconds = (Math.min(uptime, sample.uptime) -
+        Math.max(since, sample.uptime - sample.seconds * 1000)) / 1000;
+      if (seconds <= 0) continue;
+      covered += seconds;
+      const rate = sample.unobserved ? -drain : p.baseline - charged(sample.busy * p.vcpus, m);
+      balance = Math.max(0, Math.min(p.recovered, balance + rate * seconds));
     }
-    return balance;
+    const uncovered = Math.max(0, (uptime - since) / 1000 - covered);
+    return Math.max(0, balance - drain * uncovered);
+  }
+  // persist.json missed the pass that found a credit lift, and with it the bank that pass gave back
+  // (tick). The record's lower bound stands in, less the most the VM could have spent since, and
+  // capped at the spending floor as there.
+  private restoreLifted(record: LimitRecord, now: number) {
+    if (record.class !== "credit" || record.lift === undefined) return;
+    const p = this.plan;
+    const bound = (record.liftBalance ?? p.recovered) -
+      this.maxDrain * Math.abs(now - record.lift) / 1000;
+    const target = Math.min(bound, this.law.floor * p.capacity);
+    if (target <= this.s.balance) return;
+    this.s.balance = target;
+    this.s.used = 0;
   }
 
   private async applyCeiling(

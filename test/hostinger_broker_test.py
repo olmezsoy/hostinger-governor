@@ -343,6 +343,150 @@ class UpstreamTest(unittest.TestCase):
             signal.setitimer(signal.ITIMER_REAL, 0.0, 0.0)
             signal.signal(signal.SIGALRM, previous)
 
+    def test_total_http_deadline_cuts_a_reply_that_trickles_over_a_real_socket(self):
+        import signal
+        import socket
+        import threading
+        import time
+
+        # A patched opener that sleeps shows the handler interrupts a sleep. This is the case the
+        # deadline exists for: every read returns a byte in time, so no socket timeout ever fires.
+        server = socket.socket()
+        server.bind(("127.0.0.1", 0))
+        server.listen(1)
+        stop = threading.Event()
+
+        def trickle():
+            connection, _ = server.accept()
+            with connection:
+                connection.recv(4096)
+                connection.sendall(
+                    b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n"
+                    b"Content-Length: 4000\r\n\r\n"
+                )
+                while not stop.is_set():
+                    try:
+                        connection.sendall(b" ")
+                    except OSError:
+                        return
+                    time.sleep(0.02)
+
+        thread = threading.Thread(target=trickle, daemon=True)
+        thread.start()
+        previous = signal.getsignal(signal.SIGALRM)
+        started = time.monotonic()
+        try:
+            with patch.object(BROKER, "API_SECONDS", 0.3), patch.object(
+                BROKER, "API", "http://127.0.0.1:%d" % server.getsockname()[1]
+            ):
+                with self.assertRaises(BROKER.Refused) as raised:
+                    BROKER.upstream(TOKEN, vm_request())
+        finally:
+            stop.set()
+            thread.join(2)
+            server.close()
+        self.assertEqual(raised.exception.code, BROKER.UPSTREAM_UNAVAILABLE)
+        self.assertLess(time.monotonic() - started, 1.5)
+        self.assertEqual(signal.getsignal(signal.SIGALRM), previous)
+        self.assertEqual(signal.getitimer(signal.ITIMER_REAL), (0.0, 0.0))
+
+    def test_outer_timer_is_off_while_the_handler_is_swapped_and_once_the_reply_is_in(self):
+        import signal
+
+        previous = signal.getsignal(signal.SIGALRM)
+        armed = []
+        real_signal = signal.signal
+
+        def recording_signal(signum, handler):
+            # An outer timer still armed here could expire into the deadline's handler before
+            # the try that restores both had been entered.
+            armed.append((handler, signal.getitimer(signal.ITIMER_REAL)))
+            return real_signal(signum, handler)
+
+        def status(code):
+            # The HTTP error's own handler runs after the deadline was taken off.
+            armed.append(("status", signal.getitimer(signal.ITIMER_REAL)))
+            return True
+
+        error = urllib.error.HTTPError("https://x", 503, "Unavailable", {}, io.BytesIO())
+        opener = SimpleNamespace(open=Mock(side_effect=error))
+        try:
+            signal.signal(signal.SIGALRM, lambda *_: None)
+            signal.setitimer(signal.ITIMER_REAL, 30.0)
+            with patch.object(BROKER.signal, "signal", recording_signal), patch.object(
+                BROKER, "http_status", status
+            ), patch.object(BROKER.urllib.request, "build_opener", return_value=opener):
+                with self.assertRaises(BROKER.Refused) as raised:
+                    BROKER.upstream(TOKEN, vm_request())
+            self.assertEqual(raised.exception.code, BROKER.UPSTREAM_STATUS)
+            self.assertEqual(
+                [(key, timer) for key, timer in armed if key in (BROKER._alarm_timeout, "status")],
+                [(BROKER._alarm_timeout, (0.0, 0.0)), ("status", (0.0, 0.0))],
+            )
+            self.assertGreater(signal.getitimer(signal.ITIMER_REAL)[0], 29.0)
+        finally:
+            signal.setitimer(signal.ITIMER_REAL, 0.0, 0.0)
+            signal.signal(signal.SIGALRM, previous)
+
+    def test_deadline_that_fires_after_the_reply_is_one_fixed_code_and_restores_the_handler(self):
+        import signal
+
+        previous = signal.getsignal(signal.SIGALRM)
+        response = Mock()
+        response.__enter__ = Mock(return_value=response)
+        response.__exit__ = Mock(return_value=False)
+        response.read.return_value = b'{"id":123,"cpus":8,"ipv4":[]}'
+        opener = SimpleNamespace(open=Mock(return_value=response))
+
+        def late(*_):
+            # An expiry already pending when the timer was taken off runs its handler here.
+            raise BROKER._ApiDeadline()
+
+        with patch.object(BROKER, "require", late), patch.object(
+            BROKER.urllib.request, "build_opener", return_value=opener
+        ):
+            with self.assertRaises(BROKER.Refused) as raised:
+                BROKER.api_body(TOKEN, "/123")
+        self.assertEqual(raised.exception.code, BROKER.UPSTREAM_UNAVAILABLE)
+        self.assertEqual(signal.getsignal(signal.SIGALRM), previous)
+        self.assertEqual(signal.getitimer(signal.ITIMER_REAL), (0.0, 0.0))
+
+    def test_periodic_outer_timer_that_expired_meanwhile_keeps_its_phase(self):
+        import signal
+        import time
+
+        previous = signal.getsignal(signal.SIGALRM)
+        fired = []
+
+        def uninterruptible(_req, timeout=None):
+            # A call that returns 0.13 s after the deadline it was given, as C code may.
+            try:
+                time.sleep(1)
+            except BROKER._ApiDeadline:
+                time.sleep(0.13)
+                raise
+
+        try:
+            signal.signal(signal.SIGALRM, lambda *_: fired.append(time.monotonic()))
+            # Expiries 0.05, 0.25, 0.45 s from now.
+            signal.setitimer(signal.ITIMER_REAL, 0.05, 0.2)
+            with patch.object(
+                BROKER.urllib.request,
+                "build_opener",
+                return_value=SimpleNamespace(open=uninterruptible),
+            ):
+                with self.assertRaises(BROKER.Refused):
+                    BROKER.upstream(TOKEN, vm_request())
+            # 0.18 s in: the missed expiry was delivered, and the next is 0.07 s away, not a
+            # whole period from now.
+            remaining, interval = signal.getitimer(signal.ITIMER_REAL)
+            self.assertEqual(len(fired), 1)
+            self.assertAlmostEqual(interval, 0.2, places=2)
+            self.assertLess(remaining, 0.12)
+        finally:
+            signal.setitimer(signal.ITIMER_REAL, 0.0, 0.0)
+            signal.signal(signal.SIGALRM, previous)
+
     def run_main(self, argv, **patches):
         output = io.StringIO()
         with patch.object(BROKER.sys, "argv", argv), patch.object(

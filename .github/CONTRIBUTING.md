@@ -62,7 +62,7 @@ Include before and after numbers for the scenarios your change affects, such as 
 `paused_h` and `used_pct`. The top of `test/sim.ts` lists the model's assumptions. A good simulation
 result is not proof of live Hostinger behavior.
 
-The calibration studies S1 to S14 take about a minute each, so CI runs them apart from
+The calibration studies S1 to S15 take about a minute each, so CI runs them apart from
 `deno task check`. `deno task sim:check` fails when a study's outcome or limit count changes. If
 your change means to change one, run `deno task sim:record` and update `docs/calibration-results.md`
 to match.

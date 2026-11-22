@@ -1367,6 +1367,7 @@ Deno.test("confirmed credit lift restores starving balance and clamp up to floor
       else await f.advance(30, 0.1 / 8, 0, 0.05);
     }
     lim.record!.limitedAt = f.g.s.at;
+    lim.limitedUptime = f.g.s.uptime;
     lim.testAt = 0;
     f.g.s.balance = 0;
     f.g.io.demand = () => Promise.resolve({ busy: 5 / 8, steal: 0, seconds: 25 });
@@ -1391,6 +1392,7 @@ Deno.test("confirmed credit lift restores starving balance and clamp up to floor
     lim.record!.confirmed = true;
     lim.record!.caps = [{ at: onset, busy: 2.4, demand: 4.0, ceiling: 800, pressing: true }];
     lim.record!.limitedAt = f.g.s.at;
+    lim.limitedUptime = f.g.s.uptime;
     lim.testAt = 1e15;
     // 10 minutes of 8-core outside work after limitedAt.
     for (let i = 0; i < 19; i++) await f.advance(30, 8.0 / 8, 0, 0);
@@ -1572,4 +1574,157 @@ Deno.test("detection-only stealFit does not add live steal billing to creditStep
   await f.advance(30, 4.0 / 8, 1.0 / 8, 0.2);
   const expected = 20_000 + (p.baseline - (f.g.settings.mul * 4.0 + f.g.settings.add)) * 30;
   assertAlmostEquals(f.g.s.balance, expected, 1e-6);
+});
+
+// A confirmed credit limit whose last failed lift test is now, ready for the pass that finds the
+// lift: `between` runs what happens from that test to the lift.
+async function liftAfter(between: (f: ReturnType<typeof fixture>) => Promise<void>) {
+  const f = fixture();
+  await f.g.tick();
+  f.g.enterLimit(f.g.s.at + 30_000, true, "probe");
+  const lim = f.g.s.limit!;
+  lim.startedAt = -3_600_000;
+  lim.record!.confirmed = true;
+  lim.record!.caps = [{ at: f.g.s.at, busy: 2.4, demand: 4.0, ceiling: 800, pressing: true }];
+  lim.testAt = 1e15;
+  await f.advance(30, 0.2 / 8, 0, 0);
+  lim.record!.limitedAt = f.g.s.at;
+  lim.limitedUptime = f.g.s.uptime;
+  await between(f);
+  lim.testAt = 0;
+  f.g.s.balance = 0;
+  f.g.io.demand = () => Promise.resolve({ busy: 5 / 8, steal: 0, seconds: 25 });
+  return { f, lim };
+}
+const drain = 1.05 * 8 + 0.08 - p.baseline;
+
+Deno.test("a credit lift's lower bound counts spending on uptime, takes unwatched time at its worst, and stops at the end of the test", async () => {
+  // Five minutes at every core, with the wall clock stepping back an hour as they begin. On wall
+  // time the lift then came before the last failed test, and the bound was the full 20%.
+  {
+    const { f } = await liftAfter(async (f) => {
+      await f.advance(30, 1, 0, 0, -3600);
+      for (let i = 0; i < 9; i++) await f.advance(30, 1, 0, 0);
+    });
+    await f.advance(30, 1, 0, 0);
+    const rec = f.g.history.limits.at(-1)!;
+    assertEquals(rec.class, "credit");
+    assertAlmostEquals(rec.liftBalance!, p.recovered - drain * 330, 1);
+    assertAlmostEquals(f.g.s.balance, rec.liftBalance!, 1e-6);
+  }
+  // Ten minutes the daemon did not watch, averaging four cores: under the baseline as an average,
+  // though they may have been five idle minutes and five at every core after the lift.
+  {
+    const { f } = await liftAfter((f) => f.advance(600, 4 / 8, 0, 0));
+    assert(f.g.s.samples.at(-1)!.unobserved);
+    await f.advance(30, 0.2 / 8, 0, 0);
+    const rec = f.g.history.limits.at(-1)!;
+    // Less the worst of those ten minutes, plus what the idle pass that found the lift earned.
+    const earned = (p.baseline - (1.05 * 0.2 + 0.08)) * 30;
+    assertAlmostEquals(rec.liftBalance!, p.recovered - drain * 600 + earned, 1);
+  }
+  // The record's lift is stamped when the passing test ends, 35 seconds of burners later: the
+  // anchor there is lower by the most they could spend, while the live estimate, which the next
+  // sample charges for the test, is not.
+  {
+    const { f } = await liftAfter(() => Promise.resolve());
+    f.g.io.demand = () => {
+      f.elapse(35, 5 / 8, 0, 0);
+      return Promise.resolve({ busy: 5 / 8, steal: 0, seconds: 25 });
+    };
+    await f.advance(30, 0.2 / 8, 0, 0);
+    const rec = f.g.history.limits.at(-1)!;
+    assertEquals(rec.lift, f.g.s.at + 35_000);
+    assertAlmostEquals(rec.liftBalance!, p.recovered - drain * 35, 1e-6);
+    assertAlmostEquals(f.g.s.balance, p.recovered, 1e-6);
+  }
+  // Without a failed test this boot nothing says how long ago the lift may have been: no restore.
+  {
+    const { f, lim } = await liftAfter(() => Promise.resolve());
+    lim.limitedUptime = undefined;
+    await f.advance(30, 0.2 / 8, 0, 0);
+    const rec = f.g.history.limits.at(-1)!;
+    assertEquals(rec.class, "credit");
+    assertEquals(rec.liftBalance, 0);
+    assert(f.g.s.balance < 200, `${f.g.s.balance}`);
+  }
+});
+
+Deno.test("a start that finds its limit lifted in history gives back what the lost pass restored", async () => {
+  // persist.json was last saved during the limit; the pass that found the lift reached history
+  // only. The limit ends at the start either way, but the bank that pass restored was lost.
+  const apply = {
+    hostinger: { vm_id: 1, token_file: "/etc/governor/hostinger-token" },
+    calibration: { mode: "apply" as const },
+  };
+  for (const liftBalance of [undefined, 900]) {
+    const f = fixture(apply);
+    await f.g.tick();
+    f.g.enterLimit(f.g.s.at, true, "probe");
+    f.g.s.balance = 0;
+    const saved = JSON.parse(JSON.stringify(f.g.s));
+    const history = structuredClone(f.g.history);
+    const lifted = history.limits.at(-1)!;
+    Object.assign(lifted, { confirmed: true, class: "credit", lift: f.g.s.at + 60_000 });
+    if (liftBalance !== undefined) lifted.liftBalance = liftBalance;
+    const g = new Governor(apply, p, saved, f.io);
+    g.adoptHistory(history, lifted.lift! + 10_000);
+    assertEquals(g.s.limit, undefined);
+    const floor = g.law.floor * p.capacity;
+    const settings = g.settings;
+    const spent = (settings.mul * 8 + settings.add - p.baseline) * 10;
+    assertAlmostEquals(g.s.balance, Math.min(floor, (liftBalance ?? p.recovered) - spent), 1e-6);
+  }
+  // A limit that was not a confirmed credit limit gives nothing back.
+  const f = fixture(apply);
+  await f.g.tick();
+  f.g.enterLimit(f.g.s.at, true, "probe");
+  f.g.s.balance = 0;
+  const saved = JSON.parse(JSON.stringify(f.g.s));
+  const history = structuredClone(f.g.history);
+  Object.assign(history.limits.at(-1)!, { class: "unknown", lift: f.g.s.at + 60_000 });
+  const g = new Governor(apply, p, saved, f.io);
+  g.adoptHistory(history, f.g.s.at + 70_000);
+  assertEquals([g.s.limit, g.s.balance], [undefined, 0]);
+});
+
+Deno.test("a recovery ceiling gives back what an outside spike cost once the spike has left the window", async () => {
+  for (const vcpus of [4, 8]) {
+    const small = plan(vcpus);
+    const f = fixture({ vcpus });
+    const g = new Governor({ vcpus }, small, undefined, f.io);
+    await g.tick();
+    g.enterLimit(start, false);
+    g.s.limit!.testAt = 1e15;
+    const pass = async (outside: number) => {
+      f.elapse(30, outside / vcpus, 0, 0);
+      await g.tick();
+      g.s.limit!.testAt = 1e15;
+    };
+    for (let i = 0; i < 11; i++) await pass(0.1);
+    const calm = g.s.limit!.ceiling;
+    // A 0.2-core spike costs 10 or 20 points at once. Relaxing only by more than a 20-point
+    // deadband, in a ceiling that moves in tens, never gave them back.
+    await pass(0.3);
+    const spiked = g.s.limit!.ceiling;
+    assert(calm - spiked === 10 || calm - spiked === 20, `KVM ${vcpus}: ${calm} to ${spiked}`);
+    for (let i = 0; i < 9; i++) await pass(0.1);
+    assertEquals(g.s.limit!.ceiling, spiked, `KVM ${vcpus}: still in the window`);
+    for (let i = 0; i < 2; i++) await pass(0.1);
+    assertEquals(g.s.limit!.ceiling, calm, `KVM ${vcpus}`);
+  }
+});
+
+Deno.test("status shows a failing evaluation in off and shadow, where nothing is held for it", async () => {
+  for (const mode of ["off", "shadow", "apply"] as const) {
+    const f = fixture({
+      hostinger: { vm_id: 1, token_file: "/etc/governor/hostinger-token" },
+      calibration: { mode },
+    });
+    await f.g.tick();
+    f.g.s.balance = 20_000;
+    f.g.s.evaluationFailed = { since: start, logged: start, behind: 1_000 };
+    const failing = f.g.publicState(start).credits.calibration!.failing;
+    assertEquals(failing, { since: start, behind: mode === "apply" ? 1_000 : 0 }, mode);
+  }
 });

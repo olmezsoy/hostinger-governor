@@ -36,6 +36,11 @@ export type Study = {
   meterJump?: number;
   // A broken feed from day 7: readings report this multiple of the meter, billing does not change.
   readingScale?: number;
+  // Neighbours' contention every third day from 10:00 to 13:00 UTC, from day 1: they take up to
+  // `cores` of what the guest runs, at most a quarter of it. Hostinger's reading adds `meter`
+  // cores per stolen core, as the audited KVM 8's did, and its billing adds `bill`: the reading's
+  // unless given, since what the API shows and what the bank is charged are separate facts.
+  contention?: { cores: number; meter: number; bill?: number };
   // The workload and meter noise seed; the recorded studies use 13.
   seed?: number;
   // Calibration settings over the study's own.
@@ -58,6 +63,7 @@ export const STUDIES: Study[] = [
   { id: "S12", mode: "shadow", drift: true },
   { id: "S13", noise: 1.5 },
   { id: "S14", drift: true },
+  { id: "S15", contention: { cores: 1, meter: 0.5 } },
 ];
 // The study clock counts seconds; history.ts's DAY is in milliseconds.
 const DAY_S = 86400;
@@ -172,15 +178,23 @@ export async function study(sc: Study) {
       if (limited) hostCap = Math.min(hostCap, p.limit);
       let busy = Math.min(ownWant, hostCap);
       if (sc.neighbours && day === 7 && hour >= 8 && hour < 8.1) busy *= 0.3;
+      // A limit's cap is Hostinger's, not the neighbours': contention shows only outside one.
+      let stolen = 0;
+      if (sc.contention && !limited && !down && day % 3 === 1 && hour >= 10 && hour < 13) {
+        stolen = Math.min(sc.contention.cores, 0.25 * busy);
+        busy -= stolen;
+      }
       const steal = ownWant - busy;
       const a = sc.drift && t >= 28 * DAY_S ? 1.07 : 1.0463;
       const noise = (0.0214 + 0.0119 * busy) * (sc.noise ?? 1) * intervalZ;
       // A whole interval shares its residual. Billing and the published mean use that same meter.
       const jump = sc.meterJump && day >= 7 ? sc.meterJump : 0;
-      const metered = Math.max(0, a * busy + 0.0193 + jump + dayWobble + noise);
+      const stealMeter = (sc.contention?.meter ?? 0) * stolen;
+      const metered = Math.max(0, a * busy + 0.0193 + jump + dayWobble + noise + stealMeter);
       meterSum += metered;
       meterSeconds++;
-      const bill = Math.max(0, metered + (sc.gap ?? 0));
+      const stealBill = (sc.contention?.bill ?? sc.contention?.meter ?? 0) * stolen;
+      const bill = Math.max(0, metered - stealMeter + stealBill + (sc.gap ?? 0));
       gapBilled += bill - metered;
       // The simulated host stops earning while limited at the governor's own pressing test.
       const pressing = limited && steal / Math.max(0.001, ownWant) >= LIMIT_PRESSING;
@@ -451,6 +465,8 @@ export async function study(sc: Study) {
       limitedHours: limitedSeconds / 3600,
       cpuCoreHours: busyTotal / 3600,
       gap: g.calibration.gap,
+      // The steal sensitivity drift detection ended with, if it learned one.
+      stealModel: g.calibration.referenceFit?.stealFit?.c ?? null,
       gapBilledCoreSeconds: gapBilled,
       corruptionRecovered,
       ticksAfterCorruption,
@@ -701,6 +717,33 @@ export function assessStudy(
       "Drift detection did not alarm on the slope change.",
     );
   }
+  if (sc.id === "S15") {
+    // Neighbours' steal that the reading counts is neither drift nor a broken feed: scored as
+    // either, each burst raised an alarm or marked the readings invalid, and held the margin.
+    exception(
+      !r.decisions.some((d) => d.trigger === "cusum-alarm" || d.trigger === "drift-hold"),
+      "Contention raised a drift alarm.",
+    );
+    exception(
+      !r.decisions.some((d) => d.trigger === "readings-invalid"),
+      "Contention marked the readings invalid.",
+    );
+    exception(
+      r.stealModel !== null && Math.abs(r.stealModel - sc.contention!.meter) <= 0.15,
+      "Drift detection did not learn the meter's steal sensitivity.",
+    );
+    // Steal is not charged as it happens, so the first burst that meets a bank at its floor can
+    // empty it. That limit teaches the gap; a second would mean it taught nothing.
+    exception(r.creditLimits <= 1, "More than one credit limit occurred.");
+    exception(
+      comparison?.creditLimits === 0,
+      "A limit occurred though the bank was not charged for steal.",
+    );
+    exception(
+      comparison !== null && Math.abs(r.cpuCoreHours / comparison.cpuCoreHours - 1) <= 0.01,
+      "CPU differs by more than 1% from a bank that isn't charged for steal.",
+    );
+  }
   return {
     status: notes.length ? "exception" : "pass",
     notes,
@@ -729,6 +772,8 @@ export async function runStudies(only?: string) {
         S12: { mode: "off" as const },
         S13: { noise: 1 },
         S14: { clamp: false },
+        // The same contention in the readings, but with a bank that isn't charged for it.
+        S15: { contention: { ...sc.contention!, bill: 0 } },
       }[sc.id];
       if (against) comparison = await study({ ...sc, id: `${sc.id}-comparison`, ...against });
       const result = { ...r, comparison, assessment: assessStudy(sc, r, comparison) };

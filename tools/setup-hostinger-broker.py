@@ -55,7 +55,8 @@ ROOT_SETUP_SECONDS = 600
 LOCAL_COMMAND_SECONDS = 30
 QUICK_COMMAND_SECONDS = 5
 CHILD_CLEANUP_SECONDS = 5
-# check-hostinger makes two broker requests, each with Governor's deadline.
+# check-hostinger keeps its two broker requests, and any wait for a busy broker, inside
+# two of Governor's request deadlines (check_budget_ms in the protocol fixture).
 CONNECTION_CHECK_SECONDS = 2 * BROKER.REQUEST_SECONDS + QUICK_COMMAND_SECONDS
 # Governor finishes its active tick and waits for an in-flight diagnostic request
 # on SIGTERM. Startup derives the plan locally and publishes after one full tick.

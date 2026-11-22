@@ -118,7 +118,11 @@ export const LIMIT_PRESSING = 0.02;
 export const LIFT_STEAL = 0.15;
 // Pressing on a limit needs both steal as a share of demand and total demand / stolen cores that a
 // VM-wide or per-vCPU cap could actually cause: on an idle noisy host, 0.005 cores of neighbour
-// steal on 0.15 cores busy is over 2% of demand without coming near any cap.
+// steal on 0.15 cores busy is over 2% of demand without coming near any cap. Demand counts from
+// four fifths of one vCPU's share, not the whole share: a thread's demand varies from one
+// scheduling period to the next, so one that averages 0.27 cores under a 0.30 cap is still
+// throttled in a third of its periods, which is what stops earning. At the whole share the
+// governor never saw that thread pressing and left it paused for six simulated hours.
 export const limitPressing = (p: Plan, busy: number, steal: number) =>
   demandSteal(busy, steal) >= LIMIT_PRESSING &&
   (busy + steal) * p.vcpus >= 0.8 * (p.limit / p.vcpus) &&

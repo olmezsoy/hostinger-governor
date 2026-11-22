@@ -312,6 +312,20 @@ Deno.test("sysstatFiles resolves union of local and UTC dates across both saYYYY
     ),
     ["/var/log/sysstat/sa20261120", "/var/log/sysstat/sa20261121"],
   );
+  // Beirut skips midnight the night its clocks go forward: 2026-03-29 begins at 01:00. A window
+  // from that night to half past midnight on the 30th covers three local dates. Walking a local
+  // clock from midnight, the walk began at 01:00, passed the end, and left out the 30th.
+  const dates = async (zone: string) =>
+    (await sysstatFiles(
+      Date.parse("2026-03-28T22:30:00Z"),
+      Date.parse("2026-03-29T21:30:00Z"),
+      (path) => Promise.resolve(/sa\d{8}$/.test(path)),
+      "/x",
+      [zone],
+    )).map((path) => path.slice("/x/sa".length));
+  assertEquals(await dates("Asia/Beirut"), ["20260329", "20260330"]);
+  assertEquals(await dates("UTC"), ["20260328", "20260329"]);
+  assertEquals(await dates("America/Los_Angeles"), ["20260328", "20260329"]);
 });
 
 Deno.test("report surfaces calibration warnings, shadow-mode holds, and ceiling failure during or outside limits", () => {

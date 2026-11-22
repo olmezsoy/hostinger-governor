@@ -164,8 +164,6 @@ export type StealFit = {
 export type MeterFit = {
   a: number;
   b: number;
-  // Legacy optional steal coefficient kept only so validators and readers handle older states.
-  c?: number;
   stealFit?: StealFit;
   aHi: number;
   sigma: [number, number];
@@ -174,8 +172,9 @@ export type MeterFit = {
   pairs: number;
   days: number;
 };
-// Recorded on checkpoints written by this evaluator; older checkpoints omit it and replay under
-// legacy v0.3.2 semantics when their digest differs from the current evaluator.
+// The evaluator's semantics, recorded on every checkpoint it writes. A checkpoint replays only under
+// the version that wrote it: one from v0.3.2 or earlier, which carries none, ran other arithmetic,
+// so its digest cannot verify here whatever its inputs.
 export const EVALUATOR_VERSION = 2;
 // Box A's no-limit bound: billing more than 0.167 cores above its readings would have emptied its
 // bank. It starts the daily bound and caps what counts as a plausible gap.
@@ -347,7 +346,6 @@ export function pairLongIntervals(
   readings: Reading[],
   slots: Slot[],
   after: number,
-  legacy = false,
 ): LongPair[] {
   const pairs: LongPair[] = [];
   for (let i = Math.max(1, firstIndex(readings, (r) => r.at <= after)); i < readings.length; i++) {
@@ -361,8 +359,8 @@ export function pairLongIntervals(
       host: readings[i].v / 100 * p.vcpus,
       own: whole.own,
       ownLast: last.own,
-      ...(!legacy && whole.steal > 0 ? { steal: whole.steal } : {}),
-      ...(!legacy && last.steal > 0 ? { stealLast: last.steal } : {}),
+      ...(whole.steal > 0 ? { steal: whole.steal } : {}),
+      ...(last.steal > 0 ? { stealLast: last.steal } : {}),
     });
   }
   return pairs;
@@ -392,34 +390,44 @@ function qualifies(pairs: Pair[], config: CalibrationConfig["fit"]): boolean {
   return high.length >= config.min_pairs &&
     new Set(high.map((r) => Math.floor(r.at / DAY))).size >= config.min_days;
 }
-// Minimum active steal pairs, within-day residual steal variance, independent contention days and
-// t-statistic before fitting a detection-only steal model. Within-day fixed effects cancel day-to-
-// day meter offsets so a single coincident shift day or autocorrelated noise cannot invent a c.
+// A detection-only steal model needs contention to learn from: this many pairs with at least
+// STEAL_FIT_CORES stolen, on two days whose steal varies, and a coefficient three standard errors
+// above zero. Within-day fixed effects cancel day-to-day meter offsets, so a day that happens to
+// read high cannot invent one.
 const STEAL_FIT_PAIRS = 10, STEAL_FIT_CORES = 0.05, STEAL_FIT_VAR = 1e-4, STEAL_FIT_T = 3.0;
-const STEAL_FIT_MIN_C = 0.05;
+const STEAL_FIT_MIN_C = 0.05, STEAL_FIT_DAYS = 2, STEAL_FIT_DAY_PAIRS = 6;
 function fitStealModel(
   selected: Pair[],
-  xs: number[],
-  zs: number[],
-  ys: number[],
   config: CalibrationConfig["fit"],
   seed: number,
+  now: number,
   stickyC?: number,
 ): StealFit | undefined {
+  // A reading at the 100% cap only bounds the meter from below, and steal is absent there by
+  // construction: clipped readings bent the fit toward a steal term the meter didn't have. So did
+  // the readings beside them that stayed under the cap, which are the low side of their noise
+  // alone. Every load at which the cap was reached stays out.
+  const clipped = selected.reduce((own, r) => r.capped ? Math.min(own, r.own) : own, Infinity);
+  const rows = selected.filter((r) => r.own < clipped);
   const byDay = new Map<number, Pair[]>();
-  for (const r of selected) {
+  for (const r of rows) {
     const d = Math.floor(r.at / DAY);
     const group = byDay.get(d) ?? [];
     group.push(r);
     byDay.set(d, group);
   }
-  const dayStats = [...byDay.values()].filter((rs) => rs.length >= 2).map((rs) => {
+  // As for aHi in fitMeter, the first pairs of an unfinished UTC day are no day: two points fit
+  // any coefficient exactly, and resampled as a whole day they decided the bound.
+  const today = Math.floor(now / DAY), perDay = Math.ceil(config.min_pairs / config.min_days);
+  const dayStats = [...byDay].filter(([day, rs]) =>
+    rs.length >= STEAL_FIT_DAY_PAIRS && (day < today || rs.length >= perDay)
+  ).map(([, rs]) => {
     const n = rs.length;
     const mx = mean(rs.map((r) => r.own));
     const mz = mean(rs.map((r) => r.steal ?? 0));
     const my = mean(rs.map((r) => r.host));
     let sxx = 0, szz = 0, sxz = 0, sxy = 0, szy = 0, active = 0;
-    for (const r of rs) {
+    const centred = rs.map((r) => {
       const st = r.steal ?? 0;
       const dx = r.own - mx, dz = st - mz, dy = r.host - my;
       sxx += dx * dx;
@@ -428,51 +436,67 @@ function fitStealModel(
       sxy += dx * dy;
       szy += dz * dy;
       if (st >= STEAL_FIT_CORES) active++;
-    }
-    return { n, sxx, szz, sxz, sxy, szy, active, rs, mx, mz, my };
+      return { dx, dz, dy };
+    });
+    return { n, sxx, szz, sxz, sxy, szy, active, centred };
   });
-  const activeDays = dayStats.filter((d) => d.szz >= STEAL_FIT_VAR * d.n && d.active > 0);
+  type Sums = { sxx: number; szz: number; sxz: number; sxy: number; szy: number };
+  const sum = (days: Sums[]): Sums =>
+    days.reduce((t, d) => ({
+      sxx: t.sxx + d.sxx,
+      szz: t.szz + d.szz,
+      sxz: t.sxz + d.sxz,
+      sxy: t.sxy + d.sxy,
+      szy: t.szy + d.szy,
+    }), { sxx: 0, szz: 0, sxz: 0, sxy: 0, szy: 0 });
+  const isActive = (d: typeof dayStats[number]) => d.szz >= STEAL_FIT_VAR * d.n && d.active > 0;
+  const activeDays = dayStats.filter(isActive), calm = sum(dayStats.filter((d) => !isActive(d)));
   const totalN = dayStats.reduce((n, d) => n + d.n, 0);
-  const sxx = dayStats.reduce((n, d) => n + d.sxx, 0);
-  const szz = dayStats.reduce((n, d) => n + d.szz, 0);
-  const sxz = dayStats.reduce((n, d) => n + d.sxz, 0);
-  const sxy = dayStats.reduce((n, d) => n + d.sxy, 0);
-  const szy = dayStats.reduce((n, d) => n + d.szy, 0);
+  const activeN = activeDays.reduce((n, d) => n + d.n, 0);
+  const { sxx, szz, sxz, sxy, szy } = sum(dayStats);
   const totalActive = dayStats.reduce((n, d) => n + d.active, 0);
   const det = sxx * szz - sxz * sxz;
   const df = totalN - dayStats.length - 2;
-  const minStealDays = Math.min(2, config.min_days);
-  const sufficient = totalActive >= STEAL_FIT_PAIRS && activeDays.length >= minStealDays &&
-    df > 0 && sxx > 1e-12 && det > 1e-12 && det / (totalN * sxx) >= STEAL_FIT_VAR;
+  // Two days whatever fit.min_days says: one day's contention resampled is the same day each time.
+  const sufficient = totalActive >= STEAL_FIT_PAIRS && activeDays.length >= STEAL_FIT_DAYS &&
+    df > 0 && sxx > 1e-12 && det > 1e-12 && det / (activeN * sxx) >= STEAL_FIT_VAR;
   let stealC = 0;
   if (sufficient) {
     const aW = (szz * sxy - sxz * szy) / det;
     const cW = (sxx * szy - sxz * sxy) / det;
-    let rss = 0;
+    // The meter is noisier under load, which is where steal shows, so residual variance pooled
+    // with the idle pairs understated the coefficient's error by half and passed one window in
+    // fifty on a meter without a steal term. Each residual counts for itself, scaled up by its
+    // own leverage (HC3): a dozen contended pairs among hundreds each pull the fit toward them.
+    const slope = sxz / sxx, spread = det / sxx;
+    let meat = 0;
     for (const d of dayStats) {
-      for (const r of d.rs) {
-        const e = (r.host - d.my) - aW * (r.own - d.mx) - cW * ((r.steal ?? 0) - d.mz);
-        rss += e * e;
+      for (const r of d.centred) {
+        const w = r.dz - slope * r.dx;
+        const pull = 1 / d.n + r.dx * r.dx / sxx + w * w / spread;
+        const e = (r.dy - aW * r.dx - cW * r.dz) / Math.max(1e-9, 1 - pull);
+        meat += w * w * e * e;
       }
     }
-    const seC = Math.sqrt(Math.max(0, (rss / df) * (sxx / det)));
+    const seC = Math.sqrt(Math.max(0, meat)) / spread;
     // Exact noiseless identification gives seC === 0; treat it as passing rather than discarding c.
     const tOk = seC === 0 || cW / seC >= STEAL_FIT_T;
+    // Contention days are resampled; calm days stay, as they fix the slope in own either way.
     const rng = seeded(seed + 1), cBoots: number[] = [];
     for (let i = 0; i < 1000; i++) {
-      let bxx = 0, bzz = 0, bxz = 0, bxy = 0, bzy = 0;
+      const b = { ...calm };
       for (let j = 0; j < activeDays.length; j++) {
         const d = activeDays[Math.floor(rng() * activeDays.length)];
-        bxx += d.sxx;
-        bzz += d.szz;
-        bxz += d.sxz;
-        bxy += d.sxy;
-        bzy += d.szy;
+        b.sxx += d.sxx;
+        b.szz += d.szz;
+        b.sxz += d.sxz;
+        b.sxy += d.sxy;
+        b.szy += d.szy;
       }
-      const bdet = bxx * bzz - bxz * bxz;
+      const bdet = b.sxx * b.szz - b.sxz * b.sxz;
       cBoots.push(
-        bdet > 1e-12 * bxx * bzz && bzz > 1e-12
-          ? Math.max(0, Math.min(1, (bxx * bzy - bxz * bxy) / bdet))
+        bdet > 1e-12 * b.sxx * b.szz && b.szz > 1e-12
+          ? Math.max(0, Math.min(1, (b.sxx * b.szy - b.sxz * b.sxy) / bdet))
           : 0,
       );
     }
@@ -480,6 +504,13 @@ function fitStealModel(
     const cLo = cBoots[Math.floor(0.025 * cBoots.length)];
     if (aW > 0 && cW > STEAL_FIT_MIN_C && tOk && cLo > STEAL_FIT_MIN_C) {
       stealC = Math.min(1, cW);
+    } else if (
+      stickyC !== undefined && stickyC > STEAL_FIT_MIN_C &&
+      Math.abs(cW - stickyC) <= STEAL_FIT_T * seC
+    ) {
+      // A window too weak to establish a coefficient is too weak to refute one: an established c
+      // goes only when the window's own estimate lies three standard errors from it.
+      stealC = Math.min(1, stickyC);
     }
   } else if (stickyC !== undefined && stickyC > STEAL_FIT_MIN_C) {
     // Insufficient steal variation in a quiet window is not evidence that c became zero: keep the
@@ -487,10 +518,12 @@ function fitStealModel(
     stealC = Math.min(1, stickyC);
   }
   if (stealC <= 0) return undefined;
-  const adjusted = regression(xs, ys.map((y, i) => y - stealC * zs[i]));
+  const xs = rows.map((r) => r.own);
+  const ys = rows.map((r) => r.host - stealC * (r.steal ?? 0));
+  const adjusted = regression(xs, ys);
   if (!adjusted || adjusted[0] <= 0) return undefined;
   const [aS, bS] = adjusted;
-  const absoluteS = xs.map((x, i) => Math.abs(ys[i] - (aS * x + bS + stealC * zs[i])));
+  const absoluteS = xs.map((x, i) => Math.abs(ys[i] - (aS * x + bS)));
   const noiseS = regression(xs, absoluteS) ?? [0, mean(absoluteS)];
   const lightS = absoluteS.filter((_, i) => xs[i] < config.min_cores);
   return {
@@ -509,7 +542,7 @@ export function fitMeter(
   config = CALIBRATION.fit,
   seed = FIT_SEED,
   now = pairs.at(-1)?.at ?? 0,
-  options: { legacy?: boolean; stickyC?: number } = {},
+  options: { stickyC?: number } = {},
 ): MeterFit | null {
   if (!pairs.length) return null;
   const since = pairs.at(-1)!.at - config.days * DAY;
@@ -517,9 +550,7 @@ export function fitMeter(
   const qualifying = selected.filter((r) => r.own >= config.min_cores);
   const days = new Set(qualifying.map((r) => Math.floor(r.at / DAY))).size;
   if (qualifying.length < config.min_pairs || days < config.min_days) return null;
-  const xs = selected.map((r) => r.own);
-  const zs = selected.map((r) => r.steal ?? 0);
-  const ys = selected.map((r) => r.host);
+  const xs = selected.map((r) => r.own), ys = selected.map((r) => r.host);
   const fit = regression(xs, ys);
   if (!fit || fit[0] <= 0) return null;
   const [a, b] = fit;
@@ -572,9 +603,7 @@ export function fitMeter(
   // then every ordinary idle residual counts as extreme. The noise is never below what the
   // light-load pairs show; above them the line rises past it, so the premium doesn't change.
   const light = absolute.filter((_, i) => xs[i] < config.min_cores);
-  const stealFit = options.legacy
-    ? undefined
-    : fitStealModel(selected, xs, zs, ys, config, seed, options.stickyC);
+  const stealFit = fitStealModel(selected, config, seed, now, options.stickyC);
   return {
     a,
     b,
@@ -630,7 +659,7 @@ export type Cusum = {
 };
 export const emptyCusum = (): Cusum => ({ s: 0, down: 0, residual: 0, own: 0, alarm: false });
 export function cusumStep(state: Cusum, pair: Pair, fit: MeterFit, c = CALIBRATION.cusum): Cusum {
-  const residual = pair.host - detectPredicts(fit, pair.own, pair.steal ?? 0);
+  const residual = driftResidual(fit, pair);
   const z = residual / detectSigmaAt(fit, pair.own);
   const s = Math.max(0, state.s + z - c.k);
   return {
@@ -738,21 +767,16 @@ export function replaySettled(
   });
   // Slot pieces of (start, end], or null where local coverage is missing or untrustworthy.
   const piecesOf = (start: number, end: number) => {
-    const pieces: { slot: Slot; seconds: number; busy: number; steal: number }[] = [];
+    const pieces: { slot: Slot; seconds: number; busy: number }[] = [];
     for (let j = firstSlot(slots, start); j < slots.length && slots[j].at < end; j++) {
       const s = slots[j], fraction = overlap(s, start, end);
       if (!fraction) continue;
       if (s.flags & (FLAGS.clockInvalid | FLAGS.reboot)) return null;
-      pieces.push({
-        slot: s,
-        seconds: s.seconds * fraction,
-        busy: s.busy * fraction,
-        steal: s.steal * fraction,
-      });
+      pieces.push({ slot: s, seconds: s.seconds * fraction, busy: s.busy * fraction });
     }
     return covered(pieces.reduce((n, s) => n + s.seconds, 0), (end - start) / 1000) ? pieces : null;
   };
-  type Piece = { slot: Slot; seconds: number; busy: number; steal: number };
+  type Piece = { slot: Slot; seconds: number; busy: number };
   // Steps the bank across the pieces of (start, end] inside the replay. `bill` receives each piece,
   // the seconds replayed and their share of the piece. Returns false once the replay can stop.
   const step = (
@@ -886,18 +910,13 @@ export function replayOwn(
 // governor's charge, any possible hypervisor steal billing (up to 1x stolen cores), and the gap's
 // upper bound. Slots that pay more lower it too, so the bank is certified full only while that
 // bound itself sits at capacity, even in off/shadow modes where stored charges omit steal.
-export function certifiedAnchors(
-  p: Plan,
-  slots: Slot[],
-  upper: number,
-  legacy = false,
-): Anchor[] {
+export function certifiedAnchors(p: Plan, slots: Slot[], upper: number): Anchor[] {
   let bound = 0, end = -Infinity;
   const anchors: Anchor[] = [];
   for (const s of slots) {
     const full = (s.flags & FLAGS.atCapacity) && s.seconds >= FULL_SLOT_S &&
       !(s.flags & (FLAGS.noEarn | FLAGS.clockInvalid | FLAGS.reboot | FLAGS.pressing));
-    const spare = p.baseline * s.seconds - s.charged - (legacy ? 0 : s.steal) - upper * s.seconds;
+    const spare = p.baseline * s.seconds - s.charged - s.steal - upper * s.seconds;
     // A missing slot, or any slot below capacity, starts a new run.
     bound = full ? Math.max(0, Math.min(p.capacity, (s.at === end ? bound : 0) + spare)) : 0;
     end = s.at + SLOT_MS;
@@ -935,10 +954,9 @@ export function historyAnchors(
   h: History,
   upper: number,
   side: AnchorSide = "low",
-  legacy = false,
 ): Anchor[] {
   return [
-    ...certifiedAnchors(p, h.slots, upper, legacy),
+    ...certifiedAnchors(p, h.slots, upper),
     ...(side === "low" ? rebootAnchors(h) : []),
     ...h.limits.flatMap((l): Anchor[] =>
       l.class === "credit"
@@ -982,7 +1000,6 @@ export type DiagnosisOptions = {
   // A second confirmed credit limit within confirm_days while readings are invalid or stale: the
   // full own-count result goes to the temporary hold (#13 §6, step 3).
   fullOwnStep?: boolean;
-  legacy?: boolean;
 };
 // Bisection on the readings replay, bridged across gaps with the fit (#13 §6). Without usable
 // readings, or once bridging covers more than a tenth of the span, it root-finds on the guest's own
@@ -1032,10 +1049,10 @@ export function diagnoseGap(
   fit: MeterFit | null,
   options: DiagnosisOptions = {},
 ): GapDiagnosis {
-  const { useReadings = true, invalid = [], fullOwnStep = false, legacy = false } = options;
+  const { useReadings = true, invalid = [], fullOwnStep = false } = options;
   const onset = record.onset - c.learning.onset_margin_s * 1000;
   const anchor = options.anchor === undefined
-    ? historyAnchors(p, h, upper, "high", legacy).findLast((a) => a.at < onset) ?? null
+    ? historyAnchors(p, h, upper, "high").findLast((a) => a.at < onset) ?? null
     : options.anchor;
   const unavailable: GapDiagnosis = {
     gap: null,
@@ -1141,7 +1158,7 @@ export function diagnosisEvidence(
   upper: number,
   fit: MeterFit | null,
   diagnosis: GapDiagnosis,
-  options: Required<Omit<DiagnosisOptions, "anchor" | "legacy">>,
+  options: Required<Omit<DiagnosisOptions, "anchor">>,
 ): NonNullable<LimitRecord["diagnosisEvidence"]> {
   const { useReadings: readingsUsable, invalid, fullOwnStep } = options;
   const anchor = diagnosis.anchor;
@@ -1544,7 +1561,10 @@ export function replayCheckpoint(
     };
     return inputsDigest(replayed) === checkpoint.digest ? replayed : null;
   }
-  const current = updateCalibration(
+  // Another evaluator's arithmetic gave another digest: nothing here can verify it, and a rerun
+  // that happened to match would not be the evaluation the daemon made.
+  if (checkpoint.evaluator !== EVALUATOR_VERSION) return null;
+  const replayed = updateCalibration(
     p,
     checkpoint.history,
     checkpoint.before,
@@ -1552,22 +1572,7 @@ export function replayCheckpoint(
     checkpoint.at,
     checkpoint.open,
   );
-  if (inputsDigest(current) === checkpoint.digest) return current;
-  // Checkpoints written by v0.3.1 / v0.3.2 omit `evaluator`. Fall back to legacy replay semantics
-  // so upgrading verifies intact pre-v0.3.3 checkpoints without failing explain or crash recovery.
-  if (checkpoint.evaluator === undefined) {
-    const legacy = updateCalibration(
-      p,
-      checkpoint.history,
-      checkpoint.before,
-      checkpoint.config,
-      checkpoint.at,
-      checkpoint.open,
-      { legacy: true },
-    );
-    if (inputsDigest(legacy) === checkpoint.digest) return legacy;
-  }
-  return null;
+  return inputsDigest(replayed) === checkpoint.digest ? replayed : null;
 }
 // The configured start bounds the learned settings from below (#13 §4), so a tighter start, a higher
 // gap_start or a raised start floor takes effect at once; the saved state only adds to it.
@@ -1720,11 +1725,7 @@ function spacingInvalid(readings: Reading[], now: number): boolean {
   return invalid > DAY / 2;
 }
 const predicts = (fit: MeterFit, own: number) => fit.a * own + fit.b;
-const detectModel = (fit: MeterFit) =>
-  fit.stealFit ??
-    (fit.c !== undefined && fit.c > 0
-      ? { a: fit.a, b: fit.b, c: fit.c, sigma: fit.sigma, sigmaFloor: fit.sigmaFloor }
-      : null);
+const detectModel = (fit: MeterFit) => fit.stealFit ?? null;
 const detectPredicts = (fit: MeterFit, own: number, steal = 0) => {
   const m = detectModel(fit);
   return m ? m.a * own + m.b + m.c * steal : fit.a * own + fit.b;
@@ -1733,8 +1734,18 @@ const detectSigmaAt = (fit: MeterFit, u: number) => {
   const m = detectModel(fit);
   return m ? Math.max(1e-6, m.sigmaFloor ?? 0, m.sigma[0] + m.sigma[1] * u) : sigmaAt(fit, u);
 };
+// A reading's residual for drift detection, in cores. Until a steal model is fitted, neighbour
+// steal may have added anything from nothing to a core per stolen core, so only what lies outside
+// that range counts: a contention burst is neither drift nor evidence against it. Scored at its
+// full residual, the first burst after an upgrade raised an alarm, verified it on the burst's own
+// remaining pairs, and held the margin until a refit that the alarm itself kept from running.
+const driftResidual = (fit: MeterFit, pair: Pair) => {
+  const steal = pair.steal ?? 0, residual = pair.host - detectPredicts(fit, pair.own, steal);
+  if (detectModel(fit) || steal <= 0 || residual <= 0) return residual;
+  return Math.max(0, residual - steal);
+};
 const residualZ = (pair: Pair, fit: MeterFit) =>
-  (pair.host - detectPredicts(fit, pair.own, pair.steal ?? 0)) / detectSigmaAt(fit, pair.own);
+  driftResidual(fit, pair) / detectSigmaAt(fit, pair.own);
 // Shift a fit's offset (or slope) consistently across both its 1D relation and detection model.
 const shiftOffset = (fit: MeterFit, offset: number): MeterFit => ({
   ...fit,
@@ -1758,37 +1769,20 @@ const shiftSlope = (fit: MeterFit, slope: number): MeterFit => {
 export const driftReference = (s: CalibrationState): MeterFit | null => s.referenceFit ?? s.fit;
 // A residual's z for the extreme test and the fit's 6-sigma filter. While a change is pending, the
 // meter may be at the reference, the offset hypothesis (`pending.fit`) or the slope hypothesis
-// (`pending.slopeFit`), so a reading is judged against the full band spanning them. When the
-// reference has no fitted steal model yet and a pair carries neighbour steal, the upper edge also
-// covers the physical `[0, 1] * steal` range so upgrading from a 1D fit does not reject the exact
-// contention pairs needed to learn `stealFit`.
-const residualBandZ = (
-  s: CalibrationState,
-  reference: MeterFit,
-  pair: Pair,
-  legacy = false,
-): number => {
+// (`pending.slopeFit`), so a reading is judged against the full band spanning them. Each line is
+// itself a range under neighbour steal: whatever sensitivity was fitted, or none yet, the meter
+// adds between nothing and a core per stolen core. A reading some sensitivity in that range
+// explains is never extreme, so the contention pairs a steal model is learned from, or refuted
+// by, always reach the fit; judged against a fitted coefficient alone, one that had gone wrong
+// marked every large burst invalid and kept those pairs from the refit that would have dropped it.
+const residualBandZ = (s: CalibrationState, reference: MeterFit, pair: Pair): number => {
   const steal = pair.steal ?? 0;
-  const basePred = detectPredicts(reference, pair.own, steal);
-  const baseSigma = detectSigmaAt(reference, pair.own);
-  let lo = basePred, loSigma = baseSigma;
-  let hi = basePred, hiSigma = baseSigma;
-  const cover = (pred: number, sig: number) => {
-    if (pred < lo) [lo, loSigma] = [pred, sig];
-    if (pred > hi) [hi, hiSigma] = [pred, sig];
-  };
-  if (!legacy && !detectModel(reference) && steal > 0) cover(basePred + steal, baseSigma);
-  if (s.pending?.fit) {
-    cover(
-      detectPredicts(s.pending.fit, pair.own, steal),
-      detectSigmaAt(s.pending.fit, pair.own),
-    );
-  }
-  if (!legacy && s.pending?.slopeFit) {
-    cover(
-      detectPredicts(s.pending.slopeFit, pair.own, steal),
-      detectSigmaAt(s.pending.slopeFit, pair.own),
-    );
+  let lo = Infinity, loSigma = 0, hi = -Infinity, hiSigma = 0;
+  for (const fit of [reference, s.pending?.fit, s.pending?.slopeFit]) {
+    if (!fit) continue;
+    const base = detectPredicts(fit, pair.own, 0), sigma = detectSigmaAt(fit, pair.own);
+    if (base < lo) [lo, loSigma] = [base, sigma];
+    if (base + steal > hi) [hi, hiSigma] = [base + steal, sigma];
   }
   if (pair.host > hi) return (pair.host - hi) / hiSigma;
   if (pair.host < lo) return (pair.host - lo) / loSigma;
@@ -1802,13 +1796,27 @@ export function eligiblePairs(
   s: CalibrationState,
   model: MeterFit | null = driftReference(s),
   from = -Infinity,
-  legacy = false,
 ): Pair[] {
   const since = Math.max(from, s.fitSince ?? -Infinity);
   return pairs.filter((r) =>
     r.at >= since && !inSpan(s.invalidSpans, r.at) &&
-    (!model || Math.abs(residualBandZ(s, model, r, legacy)) <= EXTREME_Z)
+    (!model || Math.abs(residualBandZ(s, model, r)) <= EXTREME_Z)
   );
+}
+// What a refit reads from this state, shared with explain so its candidate is the fit the daemon
+// would make. A verified change refits on the readings after it alone; an unverified one pauses
+// refits. A steal sensitivity already established carries across both: it is a property of how
+// Hostinger meters contention, which a quiet window, or a shift in the meter's offset, says
+// nothing about.
+export function refitInputs(s: CalibrationState): { from: number; stickyC?: number } | null {
+  const changed = s.pending;
+  if (changed && !changed.verified) return null;
+  const known = changed ? changed.oldFit : driftReference(s);
+  const stickyC = known ? detectModel(known)?.c : undefined;
+  return {
+    from: changed ? changed.at : -Infinity,
+    ...(stickyC !== undefined ? { stickyC } : {}),
+  };
 }
 export type InvalidReason = "metric" | "spacing" | "residuals";
 function invalidReasons(
@@ -1829,7 +1837,6 @@ type Run = {
   h: History;
   c: CalibrationConfig;
   now: number;
-  legacy: boolean;
   previous: CalibrationState;
   s: CalibrationState;
   latest: number | null;
@@ -1848,10 +1855,8 @@ export function updateCalibration(
   c: CalibrationConfig,
   now: number,
   open: number,
-  options: { legacy?: boolean } = {},
 ): Evaluation {
-  const legacy = !!options.legacy;
-  const { run, s, history, changes, updates } = newRun(p, h, previous, c, now, legacy);
+  const { run, s, history, changes, updates } = newRun(p, h, previous, c, now);
   s.evaluatedAt = now;
   s.serial = (previous.serial ?? 0) + 1;
   const { pairs, usable: fresh, stale } = assessReadings(run);
@@ -1870,9 +1875,9 @@ export function updateCalibration(
   // Readings a limit corroborated count again in this evaluation, and the holds end with them.
   if (residualInvalid && !s.residualInvalid) readingsValidity(run, stale, "corroborated");
   if (s.rulesMismatch) run.tighten(fallbackMargin);
-  const longPairs = pairLongIntervals(p, h.readings, h.slots, s.longPairedAt, legacy);
+  const longPairs = pairLongIntervals(p, h.readings, h.slots, s.longPairedAt);
   if (longPairs.length) s.longPairedAt = longPairs.at(-1)!.at;
-  s.replayBase = settledBase(p, history, s, legacy);
+  s.replayBase = settledBase(p, history, s);
   s.estimates = calculateEstimates(p, history, s, c, now, open);
   return { state: s, changes, limits: [...updates.values()], longPairs };
 }
@@ -1885,7 +1890,7 @@ export function classifyLimits(
   c: CalibrationConfig,
   now: number,
 ): Evaluation {
-  const { run, s, changes, updates } = newRun(p, h, previous, c, now, false);
+  const { run, s, changes, updates } = newRun(p, h, previous, c, now);
   classifyLifted(run);
   return { state: s, changes, limits: [...updates.values()], longPairs: [] };
 }
@@ -1895,7 +1900,6 @@ function newRun(
   previous: CalibrationState,
   c: CalibrationConfig,
   now: number,
-  legacy: boolean,
 ) {
   const s = structuredClone(previous), changes: Change[] = [];
   const history: History = { ...h, limits: h.limits.map((r) => ({ ...r })) };
@@ -1905,7 +1909,6 @@ function newRun(
     h: history,
     c,
     now,
-    legacy,
     previous,
     s,
     latest: h.readings.at(-1)?.at ?? null,
@@ -1948,7 +1951,7 @@ function assessReadings(run: Run) {
   if (s.residualInvalid && reference) {
     for (const pair of pairs.filter((r) => r.at > s.lastPaired)) {
       s.lastPaired = pair.at;
-      const z = residualBandZ(s, reference, pair, run.legacy);
+      const z = residualBandZ(s, reference, pair);
       if (censored(pair, z)) continue;
       if (Math.abs(z) <= EXTREME_Z) {
         if (!s.cleanReadings) s.cleanFrom = pair.at;
@@ -2018,7 +2021,7 @@ function readingsValidity(
 }
 // Meter fit and drift detection (#13 §3, §8).
 function trackMeter(run: Run, pairs: Pair[], usable: boolean) {
-  const { p, c, now, s, change, legacy } = run;
+  const { p, c, now, s, change } = run;
   // Invalid readings, and any residual beyond 6 sigma against drift detection's reference (or the
   // band up to a pending change's raised/slope fits), never fit the meter either: like drift
   // detection, the fit must not let a bad feed tighten the margin. Only a refit or new pairs need
@@ -2029,18 +2032,20 @@ function trackMeter(run: Run, pairs: Pair[], usable: boolean) {
     const since = Math.max(from, s.fitSince ?? -Infinity);
     let out = filtered.get(since);
     if (!out) {
-      out = eligiblePairs(pairs, s, model, from, legacy);
+      out = eligiblePairs(pairs, s, model, from);
       filtered.set(since, out);
     }
     return out;
   };
-  const changed = s.pending;
+  const changed = s.pending, stickyC = refitInputs(s)?.stickyC;
   if (usable && changed?.verified) {
     // A verified change refits on the readings after it alone, so a window mixing both sides of the
     // change cannot distort the slope or the noise. That fit sets the learned margin, tightening
     // only against the margin learned before the change, and the hold ends.
     const after = eligible(changed.at);
-    const post = qualifies(after, c.fit) ? fitMeter(after, c.fit, FIT_SEED, now, { legacy }) : null;
+    const post = qualifies(after, c.fit)
+      ? fitMeter(after, c.fit, FIT_SEED, now, { stickyC })
+      : null;
     if (post) {
       s.fitAt = now;
       // Limits during the change were explained by it, and this fit carries it, so what they
@@ -2049,18 +2054,17 @@ function trackMeter(run: Run, pairs: Pair[], usable: boolean) {
       // Under a rules mismatch it only tightens, so widen() steps learned meanwhile stay. So does
       // a change the margin's fit already covered: drift detection follows a newer, lower fit
       // (#19), so a change can rise above it and still read below the margin's fit everywhere.
-      // A crossing fit can still read lower at the operating load (or at positive steal when a
-      // steal model changed). Only a rise across the full load and steal range can supersede what
-      // a limit taught; otherwise resetting would loosen.
-      const hasSteal = !legacy && !!(detectModel(s.fit!) || detectModel(post));
-      const rises = s.fit
+      // A crossing fit can still read lower at the operating load, or under steal when a steal
+      // model changed. Only a rise across the whole load range, and at both ends of the steal each
+      // load leaves room for, can supersede what a limit taught; otherwise resetting would loosen.
+      const margin = s.fit;
+      const rises = margin
         ? [c.fit.min_cores, p.vcpus].flatMap((u) => [
-          predicts(post, u) - predicts(s.fit!, u),
-          ...(hasSteal
-            ? [
-              detectPredicts(post, u, 0) - detectPredicts(s.fit!, u, 0),
-              detectPredicts(post, u, 1) - detectPredicts(s.fit!, u, 1),
-            ]
+          predicts(post, u) - predicts(margin, u),
+          ...(detectModel(margin) || detectModel(post)
+            ? [0, Math.max(0, p.vcpus - u)].map((steal) =>
+              detectPredicts(post, u, steal) - detectPredicts(margin, u, steal)
+            )
             : []),
         ])
         : null;
@@ -2083,11 +2087,9 @@ function trackMeter(run: Run, pairs: Pair[], usable: boolean) {
       });
     }
   } else if (!changed) {
-    const prevRef = driftReference(s);
-    const stickyC = legacy || !prevRef ? undefined : detectModel(prevRef)?.c;
     const fitted =
       usable && (!s.fit || (pairs.at(-1)?.at ?? 0) > s.lastPaired && now - (s.fitAt ?? 0) >= DAY)
-        ? fitMeter(eligible(), c.fit, FIT_SEED, now, { legacy, stickyC })
+        ? fitMeter(eligible(), c.fit, FIT_SEED, now, { stickyC })
         : null;
     if (fitted) {
       s.fitAt = now;
@@ -2135,7 +2137,7 @@ function trackMeter(run: Run, pairs: Pair[], usable: boolean) {
     // that went idle still catches a broken feed.
     const reference = driftReference(s);
     if (!reference) continue;
-    const z = residualBandZ(s, reference, pair, legacy);
+    const z = residualBandZ(s, reference, pair);
     if (censored(pair, z)) continue;
     // An extreme residual is not evidence of drift: neither CUSUM nor a pending verification sees
     // it. Three in a row make the readings invalid, from the first of them.
@@ -2160,13 +2162,13 @@ function trackMeter(run: Run, pairs: Pair[], usable: boolean) {
     s.extreme = 0;
     s.extremeFrom = null;
     run.normal++;
-    if (legacy && !qualified) continue;
     const pending = s.pending;
     if (pending) {
-      // The pairs since the change refine its size upward only: narrowing `pending.fit` during an
-      // idle spell would turn heavy pairs from a real slope change into extreme residuals and trip
-      // readings-invalid without changing `pending.hold`.
-      pending.residual += pair.host - detectPredicts(pending.oldFit, pair.own, pair.steal ?? 0);
+      // A change is judged on every pair, whether or not the window still qualifies for a fit: a
+      // box that went idle after an alarm kept its hold for good, since no pair counted.
+      // Until it is verified the pairs since the change refine its size upward only: narrowing
+      // `pending.fit` on a few pairs would leave a change first seen at its smallest half covered.
+      pending.residual += driftResidual(pending.oldFit, pair);
       pending.n++;
       const offset = pending.residual / pending.n;
       if (pending.n >= REFINE_PAIRS && offset > pending.fit.b - pending.oldFit.b) {
@@ -2181,30 +2183,41 @@ function trackMeter(run: Run, pairs: Pair[], usable: boolean) {
       }
       // A verified change waits for its fit; drift detection resumes after it.
       if (pending.verified) continue;
-      // Offset alarms can verify and revert even on an idle box. Slope-capable alarms only count
-      // pairs whose load carries enough power to distinguish the slope hypothesis from no change,
-      // so an idle spell never reverts a real slope increase.
-      const slope = pending.slopeFit ? pending.slopeFit.a - pending.oldFit.a : 0;
-      const slopeCapable = !legacy && (slope > 0 || pending.hold.mul > pending.from.mul);
-      const verifies = !slopeCapable || pair.own >= c.fit.min_cores ||
-        slope > 0 &&
-          slope * pair.own / detectSigmaAt(pending.oldFit, pair.own) >= 2 * c.cusum.verify_z;
-      if (verifies) {
-        pending.readings++;
-        pending.z += residualZ(pair, pending.oldFit);
-        if (pending.readings >= c.cusum.verify_readings) {
-          const keep = pending.z / pending.readings >= c.cusum.verify_z;
-          change(keep ? "cusum-keep" : "cusum-revert", {
-            meanZ: pending.z / pending.readings,
-            readings: pending.readings,
-          }, () => {
-            // Kept, the change holds until a fit on the readings after it qualifies. Withdrawn, it
-            // leaves nothing behind: it never changed the learned settings.
-            if (keep) pending.verified = true;
-            else s.pending = null;
-            s.cusum = emptyCusum();
-          });
-        }
+      pending.readings++;
+      pending.z += residualZ(pair, pending.oldFit);
+      if (pending.readings >= c.cusum.verify_readings) {
+        const keep = pending.z / pending.readings >= c.cusum.verify_z;
+        // The alarm read the offset from its clearly shifted pairs alone, which overstates a small
+        // change several times over, and nothing after it could lower the hold: a box that stayed
+        // idle held +0.24 cores for a meter that had moved 0.025. Verified, the offset becomes
+        // what every pair since the change has shown, plus three standard errors at the noise of
+        // a full box. A slope reading stays as it is: only the fit after the change can judge it.
+        const measured = Math.max(
+          0,
+          pending.residual / pending.n +
+            3 * detectSigmaAt(pending.oldFit, p.vcpus) / Math.sqrt(pending.n),
+        );
+        const narrows = keep && measured < pending.fit.b - pending.oldFit.b;
+        change(keep ? "cusum-keep" : "cusum-revert", {
+          meanZ: pending.z / pending.readings,
+          readings: pending.readings,
+          ...(narrows ? { offset: measured } : {}),
+        }, () => {
+          // Kept, the change holds until a fit on the readings after it qualifies. Withdrawn, it
+          // leaves nothing behind: it never changed the learned settings.
+          if (!keep) s.pending = null;
+          else {
+            pending.verified = true;
+            if (narrows) {
+              pending.fit = shiftOffset(pending.oldFit, measured);
+              const hold = marginFromFit(p, pending.fit, s.gap, s.applied, c);
+              pending.hold = pending.slopeFit
+                ? maxSettings(hold, marginFromFit(p, pending.slopeFit, s.gap, s.applied, c))
+                : hold;
+            }
+          }
+          s.cusum = emptyCusum();
+        });
       }
       continue;
     }
@@ -2219,7 +2232,7 @@ function trackMeter(run: Run, pairs: Pair[], usable: boolean) {
       // only bound the meter from below, so neither reading takes them.
       const run = eligible().filter((r) => r.at >= since && r.at <= pair.at && !r.capped);
       const shifted = run.filter((r) => residualZ(r, oldFit) > 1);
-      const residual = (r: Pair) => r.host - detectPredicts(oldFit, r.own, r.steal ?? 0);
+      const residual = (r: Pair) => driftResidual(oldFit, r);
       const offset = Math.max(0, mean(shifted.map(residual)));
       // A slope only shows where there is load to scale: near idle, any offset divided by a tiny
       // load reads as a multiplier several times the meter's. Only pairs at min_cores or more,
@@ -2243,7 +2256,7 @@ function trackMeter(run: Run, pairs: Pair[], usable: boolean) {
           gapFrom: s.gap,
           oldFit,
           fit: raised,
-          ...(!legacy && slope > 0 ? { slopeFit: steeper } : {}),
+          ...(slope > 0 ? { slopeFit: steeper } : {}),
           hold: maxSettings(
             marginFromFit(p, steeper, s.gap, s.applied, c),
             marginFromFit(p, raised, s.gap, s.applied, c),
@@ -2260,10 +2273,10 @@ function trackMeter(run: Run, pairs: Pair[], usable: boolean) {
 }
 // The daily no-limit bound is plausibility evidence only. Its replays stop at every gap, which can
 // only make it looser.
-function updateBound({ p, h, c, now, s, latest, legacy }: Run) {
+function updateBound({ p, h, c, now, s, latest }: Run) {
   if (now - s.boundAt < DAY) return;
   const bounds: number[] = [];
-  const syncs = historyAnchors(p, h, s.gapUpperBound, "high", legacy).filter((a) => a.balance > 0);
+  const syncs = historyAnchors(p, h, s.gapUpperBound, "high").filter((a) => a.balance > 0);
   for (let i = 0; i < syncs.length; i++) {
     const anchor = syncs[i];
     const next = h.limits.reduce<LimitRecord | null>(
@@ -2373,10 +2386,7 @@ function learnGaps(run: Run, usable: boolean) {
       );
     const options = { useReadings: usable, invalid, fullOwnStep };
     const reference = driftReference(s);
-    const diagnosis = diagnoseGap(p, h, record, c, s.gapUpperBound, reference, {
-      ...options,
-      legacy: run.legacy,
-    });
+    const diagnosis = diagnoseGap(p, h, record, c, s.gapUpperBound, reference, options);
     // Readings that corroborate the rise show the meter changed and the pinned rules still hold.
     const corroborated = corroboration(run, record, diagnosis);
     const latched = s.rulesMismatch;
@@ -2559,9 +2569,7 @@ function meanResidual(p: Plan, h: History, fit: MeterFit, from: number, to: numb
   const first = Math.max(0, firstIndex(h.readings, (r) => r.at <= from) - 1);
   const pairs = pairReadings(p, h.readings.slice(first), h.slots, h.meterPairs)
     .filter((r) => r.at > from && r.at <= to && !r.capped);
-  return pairs.length
-    ? mean(pairs.map((r) => r.host - detectPredicts(fit, r.own, r.steal ?? 0)))
-    : null;
+  return pairs.length ? mean(pairs.map((r) => driftResidual(fit, r))) : null;
 }
 // Harsher real rules leave a gap the meter cannot explain: beyond a whole core, above gap_max,
 // or above the plausible bound for a flat cap below the pinned limit.
@@ -2749,7 +2757,6 @@ function settledBase(
   p: Plan,
   h: History,
   s: CalibrationState,
-  legacy = false,
 ): NonNullable<CalibrationState["replayBase"]> | null {
   const newest = h.readings.at(-1)?.at ?? -Infinity, previous = s.replayBase;
   // A base from an earlier evaluation continues the same replay: the bank there sums up everything
@@ -2758,9 +2765,9 @@ function settledBase(
   // met time local samples don't cover. A base at or past the newest reading, from an evaluation
   // without a new reading or from an operator's seed, has nothing new to replay.
   const rolling = previous ? { at: previous.at, balance: previous.balance, exact: false } : null;
-  const anchor = historyAnchors(p, h, s.gapUpperBound, "low", legacy).findLast((a) =>
-    legacy ? a.at < newest : a.at <= newest
-  );
+  // An anchor at the newest reading itself counts: after a reboot that is the first reading local
+  // samples cover again, and waiting for the one after it left the clamp off for another interval.
+  const anchor = historyAnchors(p, h, s.gapUpperBound).findLast((a) => a.at <= newest);
   // A base grown from an operator's seed goes first until history has a newer anchor: the seed is
   // newer evidence than any anchor before it. Otherwise history's anchor goes first, so a changed
   // gap or newly invalid readings are replayed again from it.

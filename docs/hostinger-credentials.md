@@ -197,26 +197,29 @@ The launcher and sudo rule stay as they are, and the next request runs the new s
 older broker reports a wrong unit or value as a plain failure, so readings go stale instead of
 raising `readings-invalid`, and a broker older than the IPv4 change omits `ipv4`.
 
-The reference broker uses nested budgets: a 15-second total HTTP deadline (enforced across the whole
-request and body read, not only per socket read), 18-second worker runtime, 23-second `systemd-run`
-timeout, 24-second launcher alarm and Governor's 25-second command deadline. Non-JSON HTTP 200
-replies map to `upstream_unavailable` without exposing upstream text. Systemd bounds the start job
-and worker startup at three seconds, and stop at one second. Startup, runtime and stop together fit
-inside the outer command budget. The shared protocol fixture tests these limits, cooldown,
-connection-check window, capability marker, temporary error codes and the non-IPv4 values both sides
-must reject. Hooks and token commands use their own runners because they need process-group cleanup,
-while a broker has bounded JSON output and can be privileged.
+The reference broker uses nested budgets: a 15-second total HTTP deadline (enforced across the
+connection, TLS and the whole body read, not only per socket read), 18-second worker runtime,
+23-second `systemd-run` timeout, 24-second launcher alarm and Governor's 25-second command deadline.
+Name resolution runs inside the C library, where the deadline cannot interrupt it: a resolver that
+hangs is ended by the worker's runtime limit, as a plain failure. Non-JSON HTTP 200 replies map to
+`upstream_unavailable` without exposing upstream text. Systemd bounds the start job and worker
+startup at three seconds, and stop at one second. Startup, runtime and stop together fit inside the
+outer command budget. The shared protocol fixture tests these limits, cooldown, connection-check
+window, capability marker, temporary error codes and the non-IPv4 values both sides must reject.
+Hooks and token commands use their own runners because they need process-group cleanup, while a
+broker has bounded JSON output and can be privileged.
 
 Run `governor check-hostinger` as the daemon's Unix user to test both operations without changing
-the credit estimate. It retries briefly on a transient `busy` response from an overlapping daemon
-poll, then prints the VM ID, CPU count, an `ipv4` array of address strings and the number of
-complete CPU readings. A deployment can require an address in `ipv4` to match one of the host's own
-addresses, in addition to checking the CPU count. An empty list cannot verify the host's identity.
-An older broker that omits the field produces a warning on stderr while stdout remains JSON. A
-present empty or null list does not trigger the upgrade warning. Upgrade both Governor and the
-installed broker to obtain addresses. The reference broker refreshes a cached VM response that lacks
-`ipv4` once after an upgrade, even within the 60-second cache window; subsequent requests share the
-new result. Failed refreshes still consume the rate allowance.
+the credit estimate. It retries a transient `busy` response from an overlapping daemon poll, runs
+both requests inside one 50-second budget (two command deadlines, which setup's 55-second connection
+check allows for), then prints the VM ID, CPU count, an `ipv4` array of address strings and the
+number of complete CPU readings. A deployment can require an address in `ipv4` to match one of the
+host's own addresses, in addition to checking the CPU count. An empty list cannot verify the host's
+identity. An older broker that omits the field produces a warning on stderr while stdout remains
+JSON. A present empty or null list does not trigger the upgrade warning. Upgrade both Governor and
+the installed broker to obtain addresses. The reference broker refreshes a cached VM response that
+lacks `ipv4` once after an upgrade, even within the 60-second cache window; subsequent requests
+share the new result. Failed refreshes still consume the rate allowance.
 
 ## Reference broker
 

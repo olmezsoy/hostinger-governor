@@ -112,11 +112,16 @@ export function calibrationWarnings(
   const warnings: CalibrationWarning[] = [];
   if (cal.failing) {
     const since = clock(cal.failing.since);
+    // Off and shadow apply nothing, but a failing evaluation there is what an operator needs to
+    // see before turning apply on.
+    const note = applying
+      ? "holding fallback margin"
+      : `estimates not updating in ${cal.mode} mode`;
     warnings.push({
       condition: "Calibration evaluation",
       severity: "danger",
-      stateText: `Failing since ${since}; holding fallback margin`,
-      statusLine: `Calibration failing since ${since}; holding fallback margin`,
+      stateText: `Failing since ${since}; ${note}`,
+      statusLine: `Calibration failing since ${since}; ${note}`,
     });
   }
   if (cal.rulesMismatch) {

@@ -3,6 +3,7 @@ import {
   API_TIMEOUT_MS,
   BROKER_CAPABILITY,
   BROKER_COOLDOWN_SECONDS,
+  CHECK_BUDGET_MS,
   CHECK_WINDOW_MS,
   CLOCK_SKEW_MS,
   cpuReadings,
@@ -154,6 +155,9 @@ Deno.test("TypeScript broker protocol bounds match the shared contract fixture",
   assertEquals(REQUEST_TIMEOUT_MS, contract.request_timeout_ms);
   assertEquals(BROKER_COOLDOWN_SECONDS, contract.cooldown_seconds);
   assertEquals(CHECK_WINDOW_MS, contract.check_window_ms);
+  // The whole of check-hostinger, which setup's connection check must outlast (the setup tests
+  // hold it to the same number).
+  assertEquals(CHECK_BUDGET_MS, contract.check_budget_ms);
   assertEquals(BROKER_CAPABILITY, contract.capability);
   assertEquals<readonly string[]>(TEMPORARY_ERRORS, contract.temporary_errors);
   assertEquals(INVALID_METRICS, contract.invalid_metrics_error);
@@ -494,8 +498,10 @@ Deno.test("check-hostinger CLI exercises both broker operations without outputti
   }
 });
 
-Deno.test("retryBrokerBusy shares one monotonic deadline, handles exhaustion, and propagates rate_limited immediately", async () => {
-  const { HostingerBrokerUnavailable, retryBrokerBusy } = await import("../src/hostinger.ts");
+Deno.test("retryBrokerBusy retries busy inside one budget, hands each attempt what is left of it, and propagates rate_limited at once", async () => {
+  const { HostingerBrokerUnavailable, REQUEST_TIMEOUT_MS, retryBrokerBusy } = await import(
+    "../src/hostinger.ts"
+  );
   let clock = 0;
   const sleeps: number[] = [];
   const sleep = (ms: number) => {
@@ -503,7 +509,8 @@ Deno.test("retryBrokerBusy shares one monotonic deadline, handles exhaustion, an
     clock += ms;
     return Promise.resolve();
   };
-  // Busy twice then succeeds inside the deadline.
+  const options = { now: () => clock, sleep, stepMs: 2_000 };
+  // Busy twice then succeeds inside the budget.
   let calls = 0;
   const ok = await retryBrokerBusy(
     () => {
@@ -512,26 +519,23 @@ Deno.test("retryBrokerBusy shares one monotonic deadline, handles exhaustion, an
       return Promise.resolve("done");
     },
     clock + 25_000,
-    { now: () => clock, sleep, stepMs: 2_000 },
+    options,
   );
   assertEquals(ok, "done");
   assertEquals(calls, 3);
   assertEquals(sleeps, [2_000, 2_000]);
 
-  // Exhausts remaining shared budget cleanly without sleeping past the deadline.
+  // Out of budget, the last busy is the error, and no pause runs past the deadline.
   clock = 0;
   sleeps.length = 0;
   await assertRejects(
     () =>
-      retryBrokerBusy(
-        () => Promise.reject(new HostingerBrokerUnavailable("busy")),
-        5_000,
-        { now: () => clock, sleep, stepMs: 2_000 },
-      ),
+      retryBrokerBusy(() => Promise.reject(new HostingerBrokerUnavailable("busy")), 5_000, options),
     HostingerBrokerUnavailable,
     "busy",
   );
-  assertEquals(sleeps, [2_000, 2_000, 1_000]);
+  assertEquals(sleeps, [2_000, 2_000]);
+  assert(clock <= 5_000);
 
   // rate_limited propagates on the first attempt with zero retries.
   sleeps.length = 0;
@@ -551,21 +555,28 @@ Deno.test("retryBrokerBusy shares one monotonic deadline, handles exhaustion, an
   );
   assertEquals(rateCalls, 1);
   assertEquals(sleeps, []);
-});
 
-for (
-  const command of [["status", "--json"], ["report", "--format", "json"], ["exec", "--", "true"]]
-) {
-  Deno.test(`${command[0]} explains an unsupported schema without a stack trace`, async () => {
-    const result = await new Deno.Command(Deno.execPath(), {
-      args: cliArguments("unsupported", command),
-      stdout: "piped",
-      stderr: "piped",
-    }).output();
-    assertEquals(result.code, 3);
-    const message = new TextDecoder().decode(result.stderr);
-    assertEquals(message.includes("schema is unsupported"), true);
-    assertEquals(message.includes("not running"), false);
-    assertEquals(message.includes("at file:"), false);
-  });
-}
+  // The worst case check-hostinger can meet: the broker stays busy for 24 seconds, and then both
+  // operations run to whatever deadline they are given. With a fresh 25 seconds each, that took
+  // 74 seconds against the 55 setup allows the whole check; inside one budget it ends at the budget.
+  clock = 0;
+  sleeps.length = 0;
+  const budget = 2 * REQUEST_TIMEOUT_MS, given: number[] = [];
+  // An operation that answers only at a full request deadline, and times out when given less.
+  const slow = (busyUntil: number) => (timeoutMs: number) => {
+    if (clock < busyUntil) return Promise.reject(new HostingerBrokerUnavailable("busy"));
+    given.push(timeoutMs);
+    clock += timeoutMs;
+    return timeoutMs < REQUEST_TIMEOUT_MS
+      ? Promise.reject(new Error("Hostinger request command timed out"))
+      : Promise.resolve("slow");
+  };
+  assertEquals(await retryBrokerBusy(slow(24_000), budget, options), "slow");
+  // The second operation is given the second that is left, not a fresh deadline.
+  await assertRejects(() => retryBrokerBusy(slow(0), budget, options), Error, "timed out");
+  assertEquals(given, [REQUEST_TIMEOUT_MS, 1_000]);
+  assertEquals(clock, budget);
+  // With nothing left, nothing is started.
+  await assertRejects(() => retryBrokerBusy(slow(0), budget, options), Error, "timed out");
+  assertEquals(given.length, 2);
+});

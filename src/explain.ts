@@ -6,6 +6,7 @@ import {
   driftReference,
   effectiveSettings,
   eligiblePairs,
+  EVALUATOR_VERSION,
   fallbackMargin,
   FIT_SEED,
   fitMeter,
@@ -13,6 +14,7 @@ import {
   type MeterFit,
   openEstimates,
   pairReadings,
+  refitInputs,
   replayCheckpoint,
 } from "./calibration.ts";
 import { LAW } from "./credits.ts";
@@ -22,6 +24,7 @@ import {
   boundHistory,
   DAY,
   decodeHistoryFiles,
+  type History,
   planKey,
   readHistoryFiles,
   sameSettings,
@@ -80,6 +83,14 @@ async function readDaemonFiles(cfg: Config, p: Plan, lib: string, read: Read) {
         "no recorded calibration evaluation; wait for the next completed slot or fetch",
       );
     }
+    // A reset's checkpoint replays under any version; an evaluation only under the one that made
+    // it, so the one an older release left behind is said to be that, not to be damaged.
+    if (checkpoint.action !== "reset" && checkpoint.evaluator !== EVALUATOR_VERSION) {
+      throw new Error(
+        "the recorded calibration evaluation was made by another governor version; " +
+          "run it again after the daemon's next evaluation, within ten minutes of its start",
+      );
+    }
     const replayed = replayCheckpoint(p, checkpoint);
     if (!replayed) throw new Error("calibration evidence differs from its recorded evaluation");
     const serial = saved.calibration?.serial, recorded = replayed.state.serial;
@@ -122,14 +133,16 @@ export async function explainCalibration(
   const diagnosed = history.limits.findLast((r) => r.diagnosisEvidence);
   const inputs = diagnosed?.diagnosisEvidence;
   // The settings in force: off and shadow actuate the legacy margin and floor. While calibration
-  // fails, apply holds the fallback and acts below the open estimate, as the daemon does.
-  const failed = c.mode === "apply" ? saved.evaluationFailed : undefined;
+  // fails, apply holds the fallback and acts below the open estimate, as the daemon does. The
+  // failure itself is reported in every mode: off and shadow are where an operator decides whether
+  // to turn apply on.
+  const failed = saved.evaluationFailed;
   const inForce = c.mode !== "apply"
     ? { ...saved.margin, floor: LAW.floor }
     : failed
     ? fallbackMargin(effectiveSettings(calibration))
     : effectiveSettings(calibration);
-  if (failed) {
+  if (failed && c.mode === "apply") {
     const e = calibration.estimates;
     calibration.estimates = {
       ...e,
@@ -145,21 +158,7 @@ export async function explainCalibration(
       verified: true,
       fit: calibration.fit,
       referenceFit: calibration.referenceFit ?? null,
-      candidateFit: fitMeter(
-        eligiblePairs(
-          pairReadings(
-            p,
-            checkpoint.history.readings,
-            checkpoint.history.slots,
-            checkpoint.history.meterPairs,
-          ).filter((r) => r.at >= checkpoint.at - c.fit.days * DAY),
-          checkpoint.before,
-          driftReference(checkpoint.before),
-        ),
-        c.fit,
-        FIT_SEED,
-        checkpoint.at,
-      ),
+      candidateFit: candidateFit(p, checkpoint),
       anchors: historyAnchors(p, checkpoint.history, calibration.gapUpperBound),
       estimates: calibration.estimates,
       decisions: replayed.changes,
@@ -195,15 +194,42 @@ export async function explainCalibration(
   };
 }
 
+// The fit the daemon's next refit would make from the recorded inputs: the same pairs, change
+// point and carried steal sensitivity (refitInputs). Null while an unverified drift change pauses
+// refits, or while the window does not qualify.
+function candidateFit(p: Plan, checkpoint: NonNullable<History["checkpoint"]>): MeterFit | null {
+  const c = checkpoint.config, before = checkpoint.before, inputs = refitInputs(before);
+  if (!inputs) return null;
+  const pairs = pairReadings(
+    p,
+    checkpoint.history.readings,
+    checkpoint.history.slots,
+    checkpoint.history.meterPairs,
+  ).filter((r) => r.at >= checkpoint.at - c.fit.days * DAY);
+  return fitMeter(
+    eligiblePairs(pairs, before, driftReference(before), inputs.from),
+    c.fit,
+    FIT_SEED,
+    checkpoint.at,
+    { stickyC: inputs.stickyC },
+  );
+}
+
 const cores = (n: number) => String(Math.round(n * 10_000) / 10_000);
-const fitText = (f: MeterFit) => {
-  const stealC = f.stealFit?.c ?? f.c;
-  return `a=${cores(f.a)}, b=${cores(f.b)}${
-    stealC !== undefined && stealC > 0 ? `, c=${cores(stealC)}` : ""
-  }, aHi=${f.aHi}, sigma ${cores(f.sigma[0])} + ${cores(f.sigma[1])} per own core${
+// The margin's relation and the detection-only steal model are two fits with their own slope and
+// offset: printed as one line, a 1D slope stood beside a coefficient it was never fitted with.
+const fitText = (f: MeterFit) =>
+  `a=${cores(f.a)}, b=${cores(f.b)}, aHi=${f.aHi}, sigma ${cores(f.sigma[0])} + ${
+    cores(f.sigma[1])
+  } per own core${
     f.sigmaFloor !== undefined ? `, at least ${cores(f.sigmaFloor)}` : ""
-  }, ${f.pairs} pairs on ${f.days} days`;
-};
+  }, ${f.pairs} pairs on ${f.days} days${
+    f.stealFit
+      ? `; for drift detection a=${cores(f.stealFit.a)}, b=${cores(f.stealFit.b)}, c=${
+        cores(f.stealFit.c)
+      } per stolen core`
+      : ""
+  }`;
 const percent = (n: number) => `${Math.round(n * 1000) / 10}%`;
 const time = (ms: number) => new Date(ms).toISOString();
 const settings = (s: Settings) => `x${s.mul} +${cores(s.add)} cores, floor ${percent(s.floor)}`;
@@ -255,7 +281,7 @@ export function explainText(r: Explained) {
     ...(pending ? [`drift change ${settings(pending.hold)}`] : []),
   ];
   const cusum = r.cusum;
-  if (r.failing) {
+  if (r.failing && r.mode === "apply") {
     holds.unshift(`the fallback while calibration fails, since ${time(r.failing.since)}`);
   }
   return [
@@ -268,9 +294,11 @@ export function explainText(r: Explained) {
       : []),
     ...(r.failing
       ? [
-        `Calibration failing since ${time(r.failing.since)}: acting ${
-          Math.round(r.failing.behind)
-        } core-seconds below the open estimate`,
+        `Calibration failing since ${time(r.failing.since)}: ${
+          r.mode === "apply"
+            ? `acting ${Math.round(r.failing.behind)} core-seconds below the open estimate`
+            : `what follows is from its last evaluation; ${r.mode} applies none of it`
+        }`,
       ]
       : []),
     ...(holdSettings.length ? [`Hold settings ${holdSettings.join("; ")}`] : []),

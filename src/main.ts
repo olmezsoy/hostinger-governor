@@ -33,7 +33,7 @@ import { readClock } from "./sample.ts";
 import { execOptions, scopeArgs, waitForAccepting } from "./exec.ts";
 import {
   BROKER_CAPABILITY,
-  CHECK_BUSY_DEADLINE_MS,
+  CHECK_BUDGET_MS,
   CHECK_WINDOW_MS,
   cpuReadings,
   retryBrokerBusy,
@@ -120,19 +120,20 @@ try {
       if (args.length) usage();
       const h = (await loadConfig()).hostinger;
       if (!h?.vm_id) throw new Error("hostinger.vm_id is not configured");
-      // A live daemon poll can hold the broker lock for up to WORKER_SECONDS (18 s); share one
-      // monotonic retry deadline across both operations so `busy` rides out an overlapping poll
-      // while `rate_limited` and upstream failures propagate immediately.
-      const deadline = performance.now() + CHECK_BUSY_DEADLINE_MS;
-      const details = await retryBrokerBusy(() => vm(h, h.vm_id!), deadline);
+      // A live daemon poll can hold the broker lock for up to WORKER_SECONDS (18 s). Both
+      // operations share one monotonic budget, so `busy` rides out an overlapping poll, the whole
+      // check still ends inside the time setup allows it, and `rate_limited` and upstream failures
+      // propagate at once.
+      const deadline = performance.now() + CHECK_BUDGET_MS;
+      const details = await retryBrokerBusy((ms) => vm(h, h.vm_id!, ms), deadline);
       if (h.request_command && details.ipv4 === undefined) {
         console.error(
           "Hostinger broker omitted IPv4 addresses; upgrade the installed broker before using this check to verify the host's identity",
         );
       }
-      const readings = await retryBrokerBusy(() => {
+      const readings = await retryBrokerBusy((ms) => {
         const now = Date.now();
-        return cpuReadings(h, h.vm_id!, now - CHECK_WINDOW_MS, now);
+        return cpuReadings(h, h.vm_id!, now - CHECK_WINDOW_MS, now, false, ms);
       }, deadline);
       console.log(
         JSON.stringify({
