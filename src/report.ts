@@ -1,6 +1,13 @@
 // Read-only collection for the channel-neutral resource report.
 import type { PublicState } from "./governor.ts";
-import { buildReport, type Point, renderReport, type ReportFormat, spending } from "./resource.ts";
+import {
+  buildReport,
+  calibrationWarnings,
+  type Point,
+  renderReport,
+  type ReportFormat,
+  spending,
+} from "./resource.ts";
 import { vcpusSeen } from "./sample.ts";
 export { sparkline } from "./resource.ts";
 
@@ -26,8 +33,9 @@ export function parseSadf(csv: string): Record<string, number>[] {
 
 const pad2 = (n: number) => String(n).padStart(2, "0");
 
-// Resolve sysstat archive files covering [from, to] in local system time, supporting both
-// `saYYYYMMDD` (used when sysstat HISTORY > 28, e.g. Ubuntu 26.04) and legacy `saDD`.
+// Resolve sysstat archive files covering [from, to] across the union of local and UTC calendar
+// dates (supporting hosts whose `sadc` writes UTC-dated files under `S_TIME_DEF_TIME=UTC` as well
+// as local-dated files), including both `saYYYYMMDD` (sysstat HISTORY > 28) and legacy `saDD`.
 export async function sysstatFiles(
   from: number,
   to: number,
@@ -40,22 +48,42 @@ export async function sysstatFiles(
   },
   dir = "/var/log/sysstat",
 ): Promise<string[]> {
-  const start = new Date(from);
-  start.setHours(0, 0, 0, 0);
-  const end = new Date(to);
-  end.setHours(0, 0, 0, 0);
+  const dates = new Map<string, [string, string, string]>();
+  const addDate = (y: number, m: number, d: number) => {
+    const yyyy = String(y), mm = pad2(m), dd = pad2(d);
+    dates.set(`${yyyy}${mm}${dd}`, [yyyy, mm, dd]);
+  };
+  const localStart = new Date(from);
+  localStart.setHours(0, 0, 0, 0);
+  const localEnd = new Date(to);
+  localEnd.setHours(0, 0, 0, 0);
+  for (
+    const d = new Date(localStart);
+    d.getTime() <= localEnd.getTime();
+    d.setDate(d.getDate() + 1)
+  ) {
+    addDate(d.getFullYear(), d.getMonth() + 1, d.getDate());
+  }
+  const utcStart = new Date(from);
+  utcStart.setUTCHours(0, 0, 0, 0);
+  const utcEnd = new Date(to);
+  utcEnd.setUTCHours(0, 0, 0, 0);
+  for (
+    const d = new Date(utcStart);
+    d.getTime() <= utcEnd.getTime();
+    d.setUTCDate(d.getUTCDate() + 1)
+  ) {
+    addDate(d.getUTCFullYear(), d.getUTCMonth() + 1, d.getUTCDate());
+  }
   const files: string[] = [];
   const seen = new Set<string>();
-  for (const d = new Date(start); d.getTime() <= end.getTime(); d.setDate(d.getDate() + 1)) {
-    const yyyy = String(d.getFullYear());
-    const mm = pad2(d.getMonth() + 1);
-    const dd = pad2(d.getDate());
-    const longPath = `${dir}/sa${yyyy}${mm}${dd}`;
-    const shortPath = `${dir}/sa${dd}`;
-    const chosen = await exists(longPath) ? longPath : await exists(shortPath) ? shortPath : null;
-    if (chosen && !seen.has(chosen)) {
-      seen.add(chosen);
-      files.push(chosen);
+  const ordered = [...dates.entries()].sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0);
+  for (const [, [yyyy, mm, dd]] of ordered) {
+    for (const candidate of [`${dir}/sa${yyyy}${mm}${dd}`, `${dir}/sa${dd}`]) {
+      if (!seen.has(candidate) && await exists(candidate)) {
+        seen.add(candidate);
+        files.push(candidate);
+      }
     }
   }
   return files;
@@ -171,51 +199,11 @@ export async function collectReport(
   );
 }
 
-function calibrationWarnings(s: PublicState, clock: (ms: number) => string): string[] {
-  const cal = s.credits.calibration;
-  if (!cal) return [];
-  const warnings: string[] = [];
-  if (cal.failing) {
-    warnings.push(`Calibration failing since ${clock(cal.failing.since)}; holding fallback margin`);
-  }
-  if (cal.rulesMismatch) {
-    warnings.push("Rules mismatch latched until calibration reset; holding fallback margin");
-  }
-  if (cal.hold) {
-    warnings.push(
-      `Fallback hold active (${cal.hold.reason} readings since ${clock(cal.hold.since)})`,
-    );
-  }
-  if (cal.ownHold) {
-    warnings.push(
-      `Own-count hold active (${Math.round(cal.ownHold.gap * 1000) / 1000}-core gap)`,
-    );
-  }
-  if (cal.readingsInvalid) {
-    const why = cal.invalidReasons?.length ? ` (${cal.invalidReasons.join(", ")})` : "";
-    warnings.push(`Hostinger readings invalid${why}; excluded from calibration`);
-  } else if (cal.apiStaleSince !== null) {
-    warnings.push(`Hostinger readings stale since ${clock(cal.apiStaleSince)}`);
-  }
-  if (cal.cusum.pending) {
-    const p = cal.cusum.pending;
-    warnings.push(
-      p.verified
-        ? `Drift change verified since ${clock(p.at)}, waiting for refit`
-        : `Drift change pending verification since ${clock(p.at)} (${p.readings} readings)`,
-    );
-  }
-  if (cal.cooldownUntil !== null) {
-    warnings.push(`Sustained-use cooldown until ${clock(cal.cooldownUntil)}`);
-  }
-  return warnings;
-}
-
 export function creditLines(s: PublicState, clock: (ms: number) => string): string[] {
   const c = s.credits;
   const cal = c.calibration;
   const { surplus, debit } = spending(s);
-  const warnings = calibrationWarnings(s, clock);
+  const warnings = calibrationWarnings(s, clock).map((w) => w.statusLine);
   const historyNote = c.anchor
     ? `Hostinger history checked ${clock(c.anchor.checkedAt)}, ${
       cal?.mode === "apply" ? "tighten only" : "diagnostic only"

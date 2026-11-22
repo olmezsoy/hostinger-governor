@@ -229,19 +229,26 @@ Deno.test("canProbeSlice and pinnedAtCap handle low sliceBusy and outside-pinned
   // 2.2 cores outside pins the 2.4-core cap even while sliceDemand is 0.45: defer to pinnedAtCap.
   assertEquals(pinnedAtCap(p, 2.38 / 8, 1.0 / 8, 2.2), true);
   assertEquals(canProbeSlice(p, 2.38 / 8, 1.0 / 8, 2.2), false);
-  // Slice busy at or below the 0.20-core probe floor cannot be meaningfully cut on KVM 8.
+  // Slice busy at or below the 0.20-core probe floor cannot be cut by a 20% cgroup quota on any
+  // plan (including KVM 1 and 2); cap-shaped VMs route to pinnedAtCap burner confirmation instead.
   assertEquals(canProbeSlice(p, 0.20 / 8, 0.30 / 8, 0), false);
   assertEquals(canProbeSlice(p, 0.25 / 8, 0.30 / 8, 0), true);
-  // KVM 1 and 2 allow probing a 0.35-core slice under a 50% cap (0.175 busy cores).
-  assertEquals(canProbeSlice(plan(1), 0.40, 0.40, 0.225), true);
-  assertEquals(canProbeSlice(plan(2), 0.30, 0.30, 0.425), true);
+  assertEquals(canProbeSlice(plan(1), 0.40, 0.40, 0.225), false);
+  assertEquals(pinnedAtCap(plan(1), 0.40, 0.40, 0.225), true);
+  assertEquals(canProbeSlice(plan(2), 0.30, 0.30, 0.425), false);
+  assertEquals(pinnedAtCap(plan(2), 0.30, 0.30, 0.425), true);
+  // Above 0.20 busy cores on KVM 1 and 2, the 20% probe quota does cut consumed CPU.
+  assertEquals(canProbeSlice(plan(1), 0.40, 0.40, 0.15), true);
+  assertEquals(canProbeSlice(plan(2), 0.30, 0.30, 0.35), true);
 });
 
-Deno.test("limitPressing and limitOnsetSample reject idle neighbour steal while keeping per-vCPU caps", () => {
+Deno.test("limitPressing and limitOnsetSample reject idle neighbour steal and above-cap delivery while keeping per-vCPU caps", () => {
   const p = plan(8);
   // Idle box with 0.15 busy + 0.005 steal (3.2% of demand): neither pressing nor limit onset.
   assertEquals(limitPressing(p, 0.15 / 8, 0.005 / 8), false);
   assertEquals(limitOnsetSample(p, 0.15 / 8, 0.03 / 8), false);
+  // Healthy busy box delivering more than p.limit (3.0 > 2.4 + 0.1) cannot be a credit limit onset.
+  assertEquals(limitOnsetSample(p, 3.0 / 8, 0.4 / 8), false);
   // Single thread under KVM 8 per-vCPU 0.30-core cap at 28% ceiling (0.28 demand, 0.012 steal).
   assertEquals(limitPressing(p, 0.268 / 8, 0.012 / 8), true);
   // Single thread clearly hitting KVM 8 per-vCPU cap (0.30 busy, 0.20 steal).

@@ -62,11 +62,19 @@ export const validFit = (f: MeterFit) =>
   !!f && finite(f.a, f.b, f.aHi, f.pairs, f.days) && Array.isArray(f.sigma) &&
   f.sigma.length === 2 && finite(...f.sigma) &&
   (f.sigmaFloor === undefined || finite(f.sigmaFloor) && f.sigmaFloor >= 0) &&
-  (f.c === undefined || finite(f.c) && f.c >= 0 && f.c <= 1);
+  (f.c === undefined || finite(f.c) && f.c >= 0 && f.c <= 1) &&
+  (f.stealFit === undefined ||
+    !!f.stealFit && finite(f.stealFit.a, f.stealFit.b, f.stealFit.c) &&
+      f.stealFit.a > 0 && f.stealFit.c >= 0 && f.stealFit.c <= 1 &&
+      Array.isArray(f.stealFit.sigma) && f.stealFit.sigma.length === 2 &&
+      finite(...f.stealFit.sigma) &&
+      (f.stealFit.sigmaFloor === undefined ||
+        finite(f.stealFit.sigmaFloor) && f.stealFit.sigmaFloor >= 0));
 // A drift change as persist.json and decisions record it (#13 §8).
 export const validPending = (v: NonNullable<CalibrationState["pending"]>) =>
   !!v && finite(v.at, v.readings, v.z, v.gapFrom, v.residual, v.n) && validSettings(v.from) &&
   validFit(v.oldFit) && validFit(v.fit) && validSettings(v.hold) &&
+  (v.slopeFit === undefined || validFit(v.slopeFit)) &&
   typeof v.verified === "boolean";
 export type LimitClass = "credit" | "sustained-use" | "unknown";
 export type LimitRecord = {
@@ -92,6 +100,9 @@ export type LimitRecord = {
   // The last lift test that still found the limit, when the bank was below Hostinger's 20%.
   limitedAt?: number;
   lift?: number;
+  // Lower-bound bank at the detected lift when heavy spending between `limitedAt` and `lift` could
+  // have spent part of Hostinger's 20% recovery guarantee before detection.
+  liftBalance?: number;
   recovery?: {
     elapsedSeconds: number;
     estimatedRecoverySeconds: number | null;
@@ -169,6 +180,7 @@ export type History = {
   calibrations: Decision[];
   checkpoint?: {
     action?: "reset";
+    evaluator?: number;
     at: number;
     open: number;
     config: CalibrationConfig;
@@ -651,6 +663,7 @@ export const validLimit = (r: LimitRecord): boolean =>
       r.legacyMargin.mul >= 1 && r.legacyMargin.add >= 0) &&
   optionalFinite(r.lift) && optionalFinite(r.limitedAt) && optionalFinite(r.heldGap) &&
   optionalFinite(r.acted) &&
+  (r.liftBalance === undefined || finite(r.liftBalance) && r.liftBalance >= 0) &&
   (r.class === undefined || ["credit", "sustained-use", "unknown"].includes(r.class)) &&
   (r.diagnosis === undefined || validDiagnosis(r.diagnosis)) &&
   // Its rows are checked as they are decoded, which differs between the files and persist.json. The

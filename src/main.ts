@@ -27,15 +27,16 @@ import {
 import { requestTick, TickError } from "./control.ts";
 import { creditLines, report } from "./report.ts";
 import { explainCalibration, explainText } from "./explain.ts";
-import { reportOptions } from "./resource.ts";
+import { isCapFailed, reportOptions } from "./resource.ts";
 import { configureDocker, enrollService } from "./workloads.ts";
 import { readClock } from "./sample.ts";
 import { execOptions, scopeArgs, waitForAccepting } from "./exec.ts";
 import {
   BROKER_CAPABILITY,
+  CHECK_BUSY_DEADLINE_MS,
   CHECK_WINDOW_MS,
   cpuReadings,
-  HostingerBrokerUnavailable,
+  retryBrokerBusy,
   vm,
 } from "./hostinger.ts";
 
@@ -119,33 +120,20 @@ try {
       if (args.length) usage();
       const h = (await loadConfig()).hostinger;
       if (!h?.vm_id) throw new Error("hostinger.vm_id is not configured");
-      // A live daemon poll holds the broker lock for a few seconds; retry briefly on `busy` so a
-      // verification check lands on the warm cache instead of failing transiently.
-      const retryBusy = async <T>(call: () => Promise<T>): Promise<T> => {
-        for (let attempt = 0;; attempt++) {
-          try {
-            return await call();
-          } catch (error) {
-            if (
-              attempt < 3 && error instanceof HostingerBrokerUnavailable && error.code === "busy"
-            ) {
-              await new Promise((resolve) => setTimeout(resolve, 2000));
-              continue;
-            }
-            throw error;
-          }
-        }
-      };
-      const details = await retryBusy(() => vm(h, h.vm_id!));
+      // A live daemon poll can hold the broker lock for up to WORKER_SECONDS (18 s); share one
+      // monotonic retry deadline across both operations so `busy` rides out an overlapping poll
+      // while `rate_limited` and upstream failures propagate immediately.
+      const deadline = performance.now() + CHECK_BUSY_DEADLINE_MS;
+      const details = await retryBrokerBusy(() => vm(h, h.vm_id!), deadline);
       if (h.request_command && details.ipv4 === undefined) {
         console.error(
           "Hostinger broker omitted IPv4 addresses; upgrade the installed broker before using this check to verify the host's identity",
         );
       }
-      const readings = await retryBusy(() => {
+      const readings = await retryBrokerBusy(() => {
         const now = Date.now();
         return cpuReadings(h, h.vm_id!, now - CHECK_WINDOW_MS, now);
-      });
+      }, deadline);
       console.log(
         JSON.stringify({
           vm_id: h.vm_id,
@@ -176,11 +164,13 @@ try {
         console.log(
           [
             `${s.plan.name} · ceiling ${s.ceiling}% · ${
-              s.limit
+              s.limit && isCapFailed(s)
+                ? "LIMITED by Hostinger (recovery ceiling not applied)"
+                : s.limit
                 ? "LIMITED by Hostinger"
-                : s.accepting
-                ? "not limited"
-                : "not limited (new work paused: ceiling not applied)"
+                : isCapFailed(s)
+                ? "not limited (new work paused: ceiling not applied)"
+                : "not limited"
             }`,
             ...creditLines(s, clock),
           ].join("\n"),

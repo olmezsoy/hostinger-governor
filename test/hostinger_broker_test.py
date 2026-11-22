@@ -271,6 +271,78 @@ class UpstreamTest(unittest.TestCase):
         self.assertEqual(signal.getsignal(signal.SIGALRM), previous)
         self.assertEqual(signal.getitimer(signal.ITIMER_REAL), (0.0, 0.0))
 
+    def test_http_deadline_is_not_swallowed_by_oserror_fallback_loop(self):
+        import time
+
+        self.assertFalse(issubclass(BROKER._ApiDeadline, OSError))
+        attempts = 0
+
+        def multi_address_connect(_req, timeout=None):
+            nonlocal attempts
+            for _ in range(3):
+                attempts += 1
+                try:
+                    time.sleep(0.5)
+                except OSError:
+                    continue
+            raise AssertionError("deadline was swallowed by OSError handler")
+
+        opener = SimpleNamespace(open=multi_address_connect)
+        with patch.object(BROKER, "API_SECONDS", 0.05), patch.object(
+            BROKER.urllib.request, "build_opener", return_value=opener
+        ):
+            with self.assertRaises(BROKER.Refused) as raised:
+                BROKER.upstream(TOKEN, vm_request())
+        self.assertEqual(raised.exception.code, BROKER.UPSTREAM_UNAVAILABLE)
+        self.assertEqual(attempts, 1)
+
+    def test_nested_outer_alarm_is_restored_with_interval_and_fires_when_expired(self):
+        import signal
+        import time
+
+        previous = signal.getsignal(signal.SIGALRM)
+        outer_fired = []
+
+        def outer_handler(_signum, _frame):
+            outer_fired.append(True)
+
+        # Case 1: later outer timer (like main()'s alarm(24)) with a repeat interval survives intact.
+        response = Mock()
+        response.__enter__ = Mock(return_value=response)
+        response.__exit__ = Mock(return_value=False)
+        response.read.return_value = b'{"id":123,"cpus":8,"ipv4":[]}'
+        opener = SimpleNamespace(open=Mock(return_value=response))
+        try:
+            signal.signal(signal.SIGALRM, outer_handler)
+            signal.setitimer(signal.ITIMER_REAL, 10.0, 2.0)
+            with patch.object(BROKER.urllib.request, "build_opener", return_value=opener):
+                self.assertEqual(
+                    BROKER.upstream(TOKEN, vm_request()), {"cpus": 8, "ipv4": []}
+                )
+            rem, interval = signal.getitimer(signal.ITIMER_REAL)
+            self.assertGreater(rem, 8.0)
+            self.assertAlmostEqual(interval, 2.0, places=2)
+            self.assertEqual(signal.getsignal(signal.SIGALRM), outer_handler)
+            self.assertEqual(outer_fired, [])
+
+            # Case 2: earlier outer deadline fires before API_SECONDS and re-raises on outer handler.
+            def slow_open(_req, timeout=None):
+                time.sleep(0.5)
+                raise AssertionError("earlier outer deadline did not fire")
+
+            signal.setitimer(signal.ITIMER_REAL, 0.05, 0.0)
+            with patch.object(BROKER, "API_SECONDS", 1.0), patch.object(
+                BROKER.urllib.request, "build_opener", return_value=SimpleNamespace(open=slow_open)
+            ):
+                with self.assertRaises(BROKER.Refused) as raised:
+                    BROKER.upstream(TOKEN, vm_request())
+            self.assertEqual(raised.exception.code, BROKER.UPSTREAM_UNAVAILABLE)
+            self.assertEqual(outer_fired, [True])
+            self.assertEqual(signal.getsignal(signal.SIGALRM), outer_handler)
+        finally:
+            signal.setitimer(signal.ITIMER_REAL, 0.0, 0.0)
+            signal.signal(signal.SIGALRM, previous)
+
     def run_main(self, argv, **patches):
         output = io.StringIO()
         with patch.object(BROKER.sys, "argv", argv), patch.object(

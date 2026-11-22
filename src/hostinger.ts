@@ -31,6 +31,10 @@ export const MAX_VM_ID = Number.MAX_SAFE_INTEGER;
 export const REQUEST_TIMEOUT_MS = 25_000;
 export const BROKER_COOLDOWN_SECONDS = 60;
 export const CHECK_WINDOW_MS = 12 * 3_600_000;
+// One shared retry budget for `check-hostinger`: exceeds a live broker worker's 18-second lock so
+// verification rides out an overlapping daemon poll while fitting inside setup's 55-second cap.
+export const CHECK_BUSY_DEADLINE_MS = 25_000;
+export const CHECK_BUSY_STEP_MS = 2_000;
 export const BROKER_CAPABILITY = "request_command v1 supported";
 export const TEMPORARY_ERRORS = ["busy", "rate_limited"] as const;
 // The broker's code for metrics no CPU percentage can be, which the daemon treats as invalid
@@ -61,6 +65,36 @@ export class HostingerBrokerUnavailable extends Error {
         ? "Hostinger broker is busy; retry shortly"
         : `Hostinger broker is cooling down after a failed request; retry in ${BROKER_COOLDOWN_SECONDS} seconds`,
     );
+  }
+}
+
+// Retry transient broker `busy` errors until a shared monotonic deadline; `rate_limited` and every
+// other error propagate immediately.
+export async function retryBrokerBusy<T>(
+  call: () => Promise<T>,
+  deadline: number,
+  options: {
+    now?: () => number;
+    sleep?: (ms: number) => Promise<void>;
+    stepMs?: number;
+  } = {},
+): Promise<T> {
+  const now = options.now ?? (() => performance.now());
+  const sleep = options.sleep ?? ((ms) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
+  const stepMs = options.stepMs ?? CHECK_BUSY_STEP_MS;
+  for (;;) {
+    try {
+      return await call();
+    } catch (error) {
+      if (error instanceof HostingerBrokerUnavailable && error.code === "busy") {
+        const remaining = deadline - now();
+        if (remaining > 0) {
+          await sleep(Math.min(stepMs, remaining));
+          continue;
+        }
+      }
+      throw error;
+    }
   }
 }
 

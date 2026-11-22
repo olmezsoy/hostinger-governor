@@ -49,15 +49,33 @@ Deno.test("creditLines surfaces abnormal calibration states and invalid reasons"
     hold: { since: 2_000, reason: "stale" as const },
     ownHold: { gap: 0.25, settings: { mul: 1.05, add: 0.35, floor: 0.05 } },
     readingsInvalid: true,
+    apiStaleSince: 3_000,
     invalidReasons: ["spacing" as const, "residuals" as const],
     cooldownUntil: 99_000,
   });
-  const text = creditLines(s, () => "00:00").join("\n");
+  const text = creditLines(s, (ms) => `T${ms}`).join("\n");
   assert(text.includes("readings invalid (spacing, residuals)"));
-  assert(text.includes("Warning: Calibration failing since 00:00"));
+  assert(text.includes("Warning: Calibration failing since T1000"));
   assert(text.includes("Warning: Rules mismatch latched"));
-  assert(text.includes("Warning: Fallback hold active (stale readings since 00:00)"));
+  assert(text.includes("Warning: Fallback hold active (stale readings since T2000)"));
   assert(text.includes("Warning: Own-count hold active (0.25-core gap)"));
-  assert(text.includes("Warning: Hostinger readings invalid (spacing, residuals)"));
-  assert(text.includes("Warning: Sustained-use cooldown until 00:00"));
+  assert(text.includes("Warning: Hostinger readings invalid (spacing, residuals) since T3000"));
+  assert(text.includes("Warning: Sustained-use cooldown until T99000"));
+
+  // In shadow mode, holds and rules mismatch are marked as not applied rather than active.
+  s.credits.calibration!.mode = "shadow";
+  const shadowText = creditLines(s, (ms) => `T${ms}`).join("\n");
+  assert(
+    shadowText.includes(
+      "Fallback hold recorded (stale readings since T2000; not applied in shadow mode)",
+    ),
+  );
+  assert(
+    shadowText.includes("Own-count hold recorded (0.25-core gap; not applied in shadow mode)"),
+  );
+  assert(
+    shadowText.includes(
+      "Rules mismatch latched until calibration reset; not applied in shadow mode",
+    ),
+  );
 });

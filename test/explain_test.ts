@@ -38,7 +38,11 @@ Deno.test("explain text shows the fit's noise and its floor", () => {
   const text = explainText(explained({ fit }));
   assertStringIncludes(text, "sigma 0.0214 + 0.0119 per own core, at least 0.012, 222 pairs");
   assert(!text.includes(", c="));
-  const withSteal = explainText(explained({ fit: { ...fit, c: 0.5151 } }));
+  const withSteal = explainText(
+    explained({
+      fit: { ...fit, stealFit: { a: 1.01, b: 0.02, c: 0.5151, sigma: [0.01, 0.01] } },
+    }),
+  );
   assertStringIncludes(withSteal, "a=1.0463, b=0.0193, c=0.5151, aHi=1.051");
   const { sigmaFloor: _, ...line } = fit;
   const without = explainText(explained({ fit: line }));
@@ -425,4 +429,82 @@ Deno.test("calibrate --explain without access to the private files says so, with
   assertEquals(rootOnly.code, 1);
   assertStringIncludes(rootErr, "run it with sudo");
   assertEquals(rootErr.includes("governor user"), false, rootErr);
+});
+
+Deno.test("explainCalibration computes candidateFit using checkpoint.before so it matches the daemon's refit inputs", async () => {
+  const { DAY, encodeHistory, SLOT_MS } = await import("../src/history.ts");
+  const { EVALUATOR_VERSION, inputsDigest, updateCalibration } = await import(
+    "../src/calibration.ts"
+  );
+  const h = emptyHistory(planKey(p), 1, start);
+  const looseOldFit: MeterFit = {
+    a: 1.0,
+    b: 0,
+    aHi: 1.01,
+    sigma: [0.05, 0],
+    pairs: 200,
+    days: 7,
+  };
+  h.readings = [{ at: start, v: 0 }];
+  for (let d = 0; d < 7; d++) {
+    for (let k = 0; k < 48; k++) {
+      const t = start + d * DAY + k * 1_800_000;
+      const own = k % 2 === 0 ? 4.0 : 0.5;
+      for (let j = 0; j < 3; j++) {
+        h.slots.push({
+          at: t + j * SLOT_MS,
+          seconds: 600,
+          busy: own * 600,
+          steal: 0,
+          managed: own * 600,
+          outside: 0,
+          charged: own * 600,
+          flags: 0,
+        });
+      }
+      // Two +0.20-core blips are 4 sigma against looseOldFit (included in the daemon's refit),
+      // but > 6 sigma against the tighter refit produced by the pass.
+      const blip = d === 3 && (k === 10 || k === 20);
+      const host = 1.01 * own + (blip ? 0.20 : 0.001 * ((k % 3) - 1));
+      h.readings.push({ at: t + 1_800_000, v: Math.round(host / p.vcpus * 10000) / 100 });
+    }
+  }
+  const now = h.readings.at(-1)!.at + 60_000;
+  const before = {
+    ...initialCalibration(c, start),
+    fit: looseOldFit,
+    referenceFit: looseOldFit,
+    fitAt: start + 5 * DAY,
+    lastPaired: h.readings.at(-2)!.at,
+  };
+  const evaluated = updateCalibration(p, h, before, c, now, p.capacity);
+  h.checkpoint = {
+    evaluator: EVALUATOR_VERSION,
+    at: now,
+    open: p.capacity,
+    config: c,
+    before,
+    history: { ...h },
+    digest: inputsDigest(evaluated),
+  };
+  const files: Record<string, string> = {
+    "/lib/persist.json": JSON.stringify({
+      planKey: planKey(p),
+      at: now,
+      balance: p.capacity,
+      margin: { mul: 1.05, add: 0.08 },
+      calibration: evaluated.state,
+    }),
+    "/lib/history.json": encodeHistory(h),
+  };
+  const out = await explainCalibration(
+    { vcpus: 8, hostinger: { vm_id: 1, token_file: "/x" } } as Config,
+    "/lib",
+    (path) => {
+      if (path in files) return Promise.resolve(files[path]);
+      return Promise.reject(new Deno.errors.NotFound(path));
+    },
+  );
+  assertEquals(out.evidence.candidateFit?.pairs, evaluated.state.referenceFit?.pairs);
+  assertEquals(out.evidence.candidateFit?.a, evaluated.state.referenceFit?.a);
 });

@@ -281,10 +281,10 @@ Deno.test("report reserve follows the spending floor while idle recovery retains
   );
 });
 
-Deno.test("sysstatFiles resolves saYYYYMMDD before legacy saDD across local days", async () => {
-  const day1 = new Date(2026, 10, 19, 10, 0, 0).getTime();
-  const day2 = new Date(2026, 10, 20, 10, 0, 0).getTime();
-  const day3 = new Date(2026, 10, 21, 10, 0, 0).getTime();
+Deno.test("sysstatFiles resolves union of local and UTC dates across both saYYYYMMDD and saDD forms", async () => {
+  const day1 = Date.UTC(2026, 10, 19, 10, 0, 0);
+  const day2 = Date.UTC(2026, 10, 20, 10, 0, 0);
+  const day3 = Date.UTC(2026, 10, 21, 10, 0, 0);
   const present = new Set([
     "/var/log/sysstat/sa20261119",
     "/var/log/sysstat/sa19",
@@ -294,13 +294,27 @@ Deno.test("sysstatFiles resolves saYYYYMMDD before legacy saDD across local days
   const files = await sysstatFiles(day1, day3, (path) => Promise.resolve(present.has(path)));
   assertEquals(files, [
     "/var/log/sysstat/sa20261119",
+    "/var/log/sysstat/sa19",
     "/var/log/sysstat/sa20",
     "/var/log/sysstat/sa20261121",
   ]);
   assertEquals(await sysstatFiles(day2, day2, () => Promise.resolve(false)), []);
+  // Near UTC midnight (00:10Z = 01:10 CET or 16:10 PST), both the prior UTC date and current UTC
+  // date are checked so hosts with S_TIME_DEF_TIME=UTC never miss the previous UTC archive.
+  const afterUtcMidnight = Date.UTC(2026, 10, 21, 0, 10, 0);
+  const beforeUtcMidnight = afterUtcMidnight - 3_600_000; // 2026-11-20 23:10Z
+  const utcOnly = new Set(["/var/log/sysstat/sa20261120", "/var/log/sysstat/sa20261121"]);
+  assertEquals(
+    await sysstatFiles(
+      beforeUtcMidnight,
+      afterUtcMidnight,
+      (path) => Promise.resolve(utcOnly.has(path)),
+    ),
+    ["/var/log/sysstat/sa20261120", "/var/log/sysstat/sa20261121"],
+  );
 });
 
-Deno.test("report surfaces calibration warnings and ceiling failure without cluttering healthy output", () => {
+Deno.test("report surfaces calibration warnings, shadow-mode holds, and ceiling failure during or outside limits", () => {
   const f = fixture();
   assert(!f.report().sections.some((s) => s.title === "Calibration warnings"));
   const state = new Governor({
@@ -308,6 +322,7 @@ Deno.test("report surfaces calibration warnings and ceiling failure without clut
     calibration: { mode: "apply" },
   }, plan(8)).publicState(now);
   state.accepting = false;
+  state.capFailed = true;
   state.credits.anchor = {
     checkedAt: now - 60_000,
     exact: false,
@@ -320,6 +335,7 @@ Deno.test("report surfaces calibration warnings and ceiling failure without clut
     hold: { since: now - 3_600_000, reason: "invalid" as const },
     ownHold: { gap: 0.25, settings: { mul: 1.05, add: 0.35, floor: 0.05 } },
     readingsInvalid: true,
+    apiStaleSince: now - 1_800_000,
     invalidReasons: ["residuals" as const],
     cooldownUntil: now + 3_600_000,
   });
@@ -329,8 +345,22 @@ Deno.test("report surfaces calibration warnings and ceiling failure without clut
   assert(text.includes("Calibration warnings"));
   assert(text.includes("Failing since"));
   assert(text.includes("Rules mismatch"));
-  assert(text.includes("Invalid (residuals)"));
+  assert(text.includes(`Invalid (residuals) since ${new Date(now - 1_800_000).toISOString()}`));
   assert(text.includes("Own-count hold"));
   assert(text.includes("Sustained-use cooldown"));
   assert(text.includes("Readings are invalid (residuals) and excluded from calibration"));
+
+  // Recovery quota failure remains visible even while an active limit is present.
+  state.limit = { since: now - 60_000, ceiling: 100, heldFrom: 0 };
+  assert(
+    renderReport(buildReport(state, f.resources, 12, now)).includes(
+      "New work paused (recovery ceiling not applied)",
+    ),
+  );
+
+  // Shadow mode renders holds as recorded/not applied rather than active.
+  state.credits.calibration!.mode = "shadow";
+  const shadowText = renderReport(buildReport(state, f.resources, 12, now));
+  assert(shadowText.includes("Recorded (invalid readings since"));
+  assert(shadowText.includes("not applied in shadow mode"));
 });

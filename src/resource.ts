@@ -89,6 +89,112 @@ const peak = (points: Point[], fallback = 0) => Math.max(fallback, ...points.map
 const badge = (value: number, warning: number, danger: number) =>
   value >= danger ? "🔴" : value >= warning ? "🟡" : "🟢";
 
+// Whether the last quota update failed. Reads the explicit field when present and falls back to
+// the pre-v0.3.3 inference (`!limit && !accepting`) for older saved state files.
+export const isCapFailed = (state: PublicState) =>
+  state.capFailed ?? (!state.limit && !state.accepting);
+
+export type CalibrationWarning = {
+  condition: string;
+  severity: "danger" | "warning";
+  stateText: string;
+  statusLine: string;
+};
+
+// Shared, mode-aware calibration warnings for `governor status` and `governor report`.
+export function calibrationWarnings(
+  state: PublicState,
+  clock: (ms: number) => string,
+): CalibrationWarning[] {
+  const cal = state.credits.calibration;
+  if (!cal) return [];
+  const applying = cal.mode === "apply";
+  const warnings: CalibrationWarning[] = [];
+  if (cal.failing) {
+    const since = clock(cal.failing.since);
+    warnings.push({
+      condition: "Calibration evaluation",
+      severity: "danger",
+      stateText: `Failing since ${since}; holding fallback margin`,
+      statusLine: `Calibration failing since ${since}; holding fallback margin`,
+    });
+  }
+  if (cal.rulesMismatch) {
+    const note = applying ? "holding fallback margin" : `not applied in ${cal.mode} mode`;
+    warnings.push({
+      condition: "Rules mismatch",
+      severity: "danger",
+      stateText: `Latched until calibration reset; ${note}`,
+      statusLine: `Rules mismatch latched until calibration reset; ${note}`,
+    });
+  }
+  if (cal.hold) {
+    const since = clock(cal.hold.since);
+    const kind = applying ? "Active" : "Recorded";
+    const modeNote = applying ? "" : `; not applied in ${cal.mode} mode`;
+    warnings.push({
+      condition: "Fallback hold",
+      severity: "warning",
+      stateText: `${kind} (${cal.hold.reason} readings since ${since}${modeNote})`,
+      statusLine:
+        `Fallback hold ${kind.toLowerCase()} (${cal.hold.reason} readings since ${since}${modeNote})`,
+    });
+  }
+  if (cal.ownHold) {
+    const gap = Math.round(cal.ownHold.gap * 1000) / 1000;
+    const kind = applying ? "Active" : "Recorded";
+    const modeNote = applying ? "" : `; not applied in ${cal.mode} mode`;
+    warnings.push({
+      condition: "Own-count hold",
+      severity: "warning",
+      stateText: `${kind} (${gap}-core gap${modeNote})`,
+      statusLine: `Own-count hold ${kind.toLowerCase()} (${gap}-core gap${modeNote})`,
+    });
+  }
+  if (cal.readingsInvalid) {
+    const why = cal.invalidReasons?.length ? ` (${cal.invalidReasons.join(", ")})` : "";
+    const since = cal.apiStaleSince !== null ? ` since ${clock(cal.apiStaleSince)}` : "";
+    const scope = applying ? "calibration and clamping" : "calibration";
+    warnings.push({
+      condition: "Hostinger readings",
+      severity: "danger",
+      stateText: `Invalid${why}${since}; excluded from ${scope}`,
+      statusLine: `Hostinger readings invalid${why}${since}; excluded from ${scope}`,
+    });
+  } else if (cal.apiStaleSince !== null) {
+    const since = clock(cal.apiStaleSince);
+    warnings.push({
+      condition: "Hostinger readings",
+      severity: "warning",
+      stateText: `Stale since ${since}`,
+      statusLine: `Hostinger readings stale since ${since}`,
+    });
+  }
+  if (cal.cusum.pending) {
+    const pend = cal.cusum.pending;
+    const since = clock(pend.at);
+    const detail = pend.verified
+      ? `Verified since ${since}, waiting for refit`
+      : `Pending verification since ${since} (${pend.readings} readings)`;
+    warnings.push({
+      condition: "Drift change",
+      severity: "warning",
+      stateText: detail,
+      statusLine: `Drift change ${detail[0].toLowerCase()}${detail.slice(1)}`,
+    });
+  }
+  if (cal.cooldownUntil !== null) {
+    const until = clock(cal.cooldownUntil);
+    warnings.push({
+      condition: "Sustained-use cooldown",
+      severity: "warning",
+      stateText: `Active until ${until}`,
+      statusLine: `Sustained-use cooldown until ${until}`,
+    });
+  }
+  return warnings;
+}
+
 // What the estimate can spend above the reserve, and how fast every vCPU spends it. State from
 // before v0.3 has no law: it always spent down to the legacy floor.
 export function spending(state: PublicState) {
@@ -146,6 +252,8 @@ export function buildReport(
         "Work admission",
         state.accepting
           ? "🟢 Accepting work"
+          : state.limit && isCapFailed(state)
+          ? "🔴 New work paused (recovery ceiling not applied)"
           : state.limit
           ? "🔴 New work paused"
           : "🔴 New work paused (ceiling not applied)",
@@ -200,64 +308,15 @@ export function buildReport(
       chart: `${"█".repeat(filled)}${"░".repeat(20 - filled)}  ${percent.toFixed(1)}%`,
       table: { headers: ["Credit metric", "Current estimate"], rows },
     });
-    const cal = c.calibration;
-    if (cal) {
-      const warnRows: string[][] = [];
-      const iso = (ms: number) => new Date(ms).toISOString();
-      if (cal.failing) {
-        warnRows.push([
-          "Calibration evaluation",
-          `🔴 Failing since ${iso(cal.failing.since)}; holding fallback margin`,
-        ]);
-      }
-      if (cal.rulesMismatch) {
-        warnRows.push([
-          "Rules mismatch",
-          "🔴 Latched until calibration reset; holding fallback margin",
-        ]);
-      }
-      if (cal.hold) {
-        warnRows.push([
-          "Fallback hold",
-          `🟡 Active (${cal.hold.reason} readings since ${iso(cal.hold.since)})`,
-        ]);
-      }
-      if (cal.ownHold) {
-        warnRows.push([
-          "Own-count hold",
-          `🟡 Active (${number(cal.ownHold.gap, 3)}-core gap)`,
-        ]);
-      }
-      if (cal.readingsInvalid) {
-        const why = cal.invalidReasons?.length ? ` (${cal.invalidReasons.join(", ")})` : "";
-        warnRows.push([
-          "Hostinger readings",
-          `🔴 Invalid${why}; excluded from calibration and clamping`,
-        ]);
-      } else if (cal.apiStaleSince !== null) {
-        warnRows.push(["Hostinger readings", `🟡 Stale since ${iso(cal.apiStaleSince)}`]);
-      }
-      if (cal.cusum.pending) {
-        const pend = cal.cusum.pending;
-        warnRows.push([
-          "Drift change",
-          pend.verified
-            ? `🟡 Verified since ${iso(pend.at)}, waiting for refit`
-            : `🟡 Pending verification since ${iso(pend.at)} (${pend.readings} readings)`,
-        ]);
-      }
-      if (cal.cooldownUntil !== null) {
-        warnRows.push([
-          "Sustained-use cooldown",
-          `🟡 Active until ${iso(cal.cooldownUntil)}`,
-        ]);
-      }
-      if (warnRows.length) {
-        sections.push({
-          title: "Calibration warnings",
-          table: { headers: ["Condition", "State"], rows: warnRows },
-        });
-      }
+    const warnRows = calibrationWarnings(state, (ms) => new Date(ms).toISOString()).map((w) => [
+      w.condition,
+      `${w.severity === "danger" ? "🔴" : "🟡"} ${w.stateText}`,
+    ]);
+    if (warnRows.length) {
+      sections.push({
+        title: "Calibration warnings",
+        table: { headers: ["Condition", "State"], rows: warnRows },
+      });
     }
     if (c.rebuilding) {
       const reasons = {

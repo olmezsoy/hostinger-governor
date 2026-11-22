@@ -206,8 +206,13 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
         )
 
 
+class _ApiDeadline(Exception):
+    # Raised outside OSError so socket.create_connection's address-fallback loop cannot swallow it.
+    pass
+
+
 def _alarm_timeout(_signum, _frame):
-    raise TimeoutError("Hostinger request timed out.")
+    raise _ApiDeadline("Hostinger request timed out.")
 
 
 def api_body(token, suffix=""):
@@ -231,7 +236,7 @@ def api_body(token, suffix=""):
     # read timeout, so a slow trickling response returns upstream_unavailable instead of dying to
     # systemd's RuntimeMaxSec.
     previous_handler = signal.getsignal(signal.SIGALRM)
-    remaining_alarm, _ = signal.getitimer(signal.ITIMER_REAL)
+    remaining_alarm, previous_interval = signal.getitimer(signal.ITIMER_REAL)
     started = time.monotonic()
     budget = min(API_SECONDS, remaining_alarm) if remaining_alarm > 0 else API_SECONDS
     signal.signal(signal.SIGALRM, _alarm_timeout)
@@ -249,6 +254,7 @@ def api_body(token, suffix=""):
             status,
         ) from None
     except (
+        _ApiDeadline,
         urllib.error.URLError,
         OSError,
         http.client.HTTPException,
@@ -263,9 +269,11 @@ def api_body(token, suffix=""):
         if remaining_alarm > 0:
             left = remaining_alarm - (time.monotonic() - started)
             if left <= 0:
+                if previous_interval > 0:
+                    signal.setitimer(signal.ITIMER_REAL, previous_interval, previous_interval)
                 signal.raise_signal(signal.SIGALRM)
             else:
-                signal.setitimer(signal.ITIMER_REAL, left)
+                signal.setitimer(signal.ITIMER_REAL, left, previous_interval)
 
 
 def request_suffix(value):

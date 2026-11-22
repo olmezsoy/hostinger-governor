@@ -494,6 +494,65 @@ Deno.test("check-hostinger CLI exercises both broker operations without outputti
   }
 });
 
+Deno.test("retryBrokerBusy shares one monotonic deadline, handles exhaustion, and propagates rate_limited immediately", async () => {
+  const { HostingerBrokerUnavailable, retryBrokerBusy } = await import("../src/hostinger.ts");
+  let clock = 0;
+  const sleeps: number[] = [];
+  const sleep = (ms: number) => {
+    sleeps.push(ms);
+    clock += ms;
+    return Promise.resolve();
+  };
+  // Busy twice then succeeds inside the deadline.
+  let calls = 0;
+  const ok = await retryBrokerBusy(
+    () => {
+      calls++;
+      if (calls < 3) return Promise.reject(new HostingerBrokerUnavailable("busy"));
+      return Promise.resolve("done");
+    },
+    clock + 25_000,
+    { now: () => clock, sleep, stepMs: 2_000 },
+  );
+  assertEquals(ok, "done");
+  assertEquals(calls, 3);
+  assertEquals(sleeps, [2_000, 2_000]);
+
+  // Exhausts remaining shared budget cleanly without sleeping past the deadline.
+  clock = 0;
+  sleeps.length = 0;
+  await assertRejects(
+    () =>
+      retryBrokerBusy(
+        () => Promise.reject(new HostingerBrokerUnavailable("busy")),
+        5_000,
+        { now: () => clock, sleep, stepMs: 2_000 },
+      ),
+    HostingerBrokerUnavailable,
+    "busy",
+  );
+  assertEquals(sleeps, [2_000, 2_000, 1_000]);
+
+  // rate_limited propagates on the first attempt with zero retries.
+  sleeps.length = 0;
+  let rateCalls = 0;
+  await assertRejects(
+    () =>
+      retryBrokerBusy(
+        () => {
+          rateCalls++;
+          return Promise.reject(new HostingerBrokerUnavailable("rate_limited"));
+        },
+        25_000,
+        { now: () => 0, sleep, stepMs: 2_000 },
+      ),
+    HostingerBrokerUnavailable,
+    "cooling down",
+  );
+  assertEquals(rateCalls, 1);
+  assertEquals(sleeps, []);
+});
+
 for (
   const command of [["status", "--json"], ["report", "--format", "json"], ["exec", "--", "true"]]
 ) {

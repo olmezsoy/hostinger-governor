@@ -153,8 +153,8 @@ export async function explainCalibration(
             checkpoint.history.slots,
             checkpoint.history.meterPairs,
           ).filter((r) => r.at >= checkpoint.at - c.fit.days * DAY),
-          calibration,
-          driftReference(calibration),
+          checkpoint.before,
+          driftReference(checkpoint.before),
         ),
         c.fit,
         FIT_SEED,
@@ -196,12 +196,14 @@ export async function explainCalibration(
 }
 
 const cores = (n: number) => String(Math.round(n * 10_000) / 10_000);
-const fitText = (f: MeterFit) =>
-  `a=${cores(f.a)}, b=${cores(f.b)}${
-    f.c !== undefined && f.c > 0 ? `, c=${cores(f.c)}` : ""
+const fitText = (f: MeterFit) => {
+  const stealC = f.stealFit?.c ?? f.c;
+  return `a=${cores(f.a)}, b=${cores(f.b)}${
+    stealC !== undefined && stealC > 0 ? `, c=${cores(stealC)}` : ""
   }, aHi=${f.aHi}, sigma ${cores(f.sigma[0])} + ${cores(f.sigma[1])} per own core${
     f.sigmaFloor !== undefined ? `, at least ${cores(f.sigmaFloor)}` : ""
   }, ${f.pairs} pairs on ${f.days} days`;
+};
 const percent = (n: number) => `${Math.round(n * 1000) / 10}%`;
 const time = (ms: number) => new Date(ms).toISOString();
 const settings = (s: Settings) => `x${s.mul} +${cores(s.add)} cores, floor ${percent(s.floor)}`;

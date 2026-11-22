@@ -17,16 +17,20 @@ import {
   effectiveSettings,
   eligiblePairs,
   emptyCusum,
+  FIT_SEED,
   fitMeter,
   historyAnchors,
   initialCalibration,
   inputsDigest,
   marginFromFit,
+  type MeterFit,
+  type Pair,
   pairLongIntervals,
   pairReadings,
   pairSamples,
   predictRecovery,
   pruneDiagnosisEvidence,
+  replayCheckpoint,
   replayOwn,
   replaySettled,
   resetCalibration,
@@ -2450,44 +2454,43 @@ function certifiedAnchorsAndReboots(h: History) {
   return historyAnchors(p, h, 0);
 }
 
-Deno.test("fitMeter models Hostinger's steal term when significant, omits c on calm hosts, and prevents false CUSUM alarms", () => {
+Deno.test("fitMeter fits detection-only stealFit via within-day fixed effects, rejects single-day shifts and day-correlated null, handles noiseless c, and beats a real 1D refit in CUSUM", () => {
   const rng = seeded(42);
-  const pairs = Array.from({ length: 240 }, (_, i) => {
-    const own = i % 3 === 0 ? 3.2 + rng() * 3.5 : 0.2 + rng() * 2.5;
-    // Varying neighbour steal uncorrelated with own load.
-    const steal = i % 4 === 0 ? 0.08 + rng() * 0.45 : rng() * 0.03;
-    const noise = (rng() - 0.5) * 0.015;
-    return {
-      at: at + i * 1_800_000,
-      own,
-      steal,
-      host: 1.015 * own + 0.02 + 0.5 * steal + noise,
-    };
-  });
+  const normal = () =>
+    Math.sqrt(-2 * Math.log(Math.max(1e-10, 1 - rng()))) * Math.cos(2 * Math.PI * rng());
+  // Realistic 14-day trace: load-correlated steal + day-level contention + day-level offsets.
+  const pairs: Pair[] = [];
+  for (let d = 0; d < 14; d++) {
+    const contention = Math.exp(normal() * 0.6) * 0.04;
+    const dayOffset = normal() * 0.02;
+    for (let h = 0; h < 24; h++) {
+      const own = h >= 9 && h < 13 ? 3.2 + rng() * 3.5 : 0.2 + rng() * 1.2;
+      const steal = own * contention * Math.exp(normal() * 0.6);
+      const host = 1.015 * own + 0.02 + 0.5 * steal + dayOffset + normal() * 0.015;
+      pairs.push({ at: at + d * DAY + h * 3_600_000, own, steal, host });
+    }
+  }
   const fitted = fitMeter(pairs)!;
-  assert(fitted.c !== undefined, JSON.stringify(fitted));
-  assertAlmostEquals(fitted.a, 1.015, 0.01);
-  assertAlmostEquals(fitted.b, 0.02, 0.01);
-  assertAlmostEquals(fitted.c, 0.5, 0.05);
-  // On a calm host without steal, c is omitted.
-  const calm = fitMeter(pairs.map(({ own, at: t }) => ({
-    at: t,
-    own,
-    steal: 0.005,
-    host: 1.015 * own + 0.02 + (rng() - 0.5) * 0.015,
-  })))!;
-  assertEquals(calm.c, undefined);
-  // Neighbour steal bursts do not trip CUSUM under the 2D fit, while they do under a 1D fit.
-  const fit1d = { ...fitted };
-  delete fit1d.c;
+  assert(fitted.stealFit !== undefined, JSON.stringify(fitted));
+  assertAlmostEquals(fitted.stealFit.a, 1.015, 0.015);
+  assertAlmostEquals(fitted.stealFit.c, 0.5, 0.05);
+  // Real 1D refit on the exact same training data (steal omitted).
+  const fit1d = fitMeter(pairs.map(({ steal: _s, ...q }) => q))!;
+  assertEquals(fit1d.stealFit, undefined);
+  // 1D margin parameters on `fitted` stay identical to the 1D refit (no live steal billing).
+  assertAlmostEquals(fitted.a, fit1d.a, 1e-12);
+  assertAlmostEquals(fitted.b, fit1d.b, 1e-12);
+  assertAlmostEquals(fitted.aHi, fit1d.aHi, 1e-12);
+
+  // Neighbour steal bursts do not trip CUSUM under the 2D stealFit, while they do under a real 1D refit.
   let c2d = emptyCusum(), c1d = emptyCusum();
   let alarms2d = 0, alarms1d = 0;
   for (let i = 0; i < 30; i++) {
     const burst = {
-      at: at + (300 + i) * 1_800_000,
+      at: at + (400 + i) * 1_800_000,
       own: 1.0,
-      steal: 0.35,
-      host: 1.015 * 1.0 + 0.02 + 0.5 * 0.35,
+      steal: 0.45,
+      host: 1.015 * 1.0 + 0.02 + 0.5 * 0.45,
     };
     c2d = cusumStep(c2d, burst, fitted, CALIBRATION.cusum);
     c1d = cusumStep(c1d, burst, fit1d, CALIBRATION.cusum);
@@ -2496,33 +2499,264 @@ Deno.test("fitMeter models Hostinger's steal term when significant, omits c on c
   }
   assertEquals(alarms2d, 0);
   assert(alarms1d > 0);
+
+  // Single coincident shift day (+0.225 offset on day 14 while steal steps 0.05 -> 0.50) is rejected.
+  const coincident: Pair[] = [];
+  for (let d = 0; d < 14; d++) {
+    for (let k = 0; k < 48; k++) {
+      const own = k % 2 === 0 ? 4.0 : 0.5;
+      const steal = d === 13 ? 0.50 : 0.05;
+      const host = 1.0 * own + (d === 13 ? 0.225 : 0) + ((k % 7) - 3) * 0.001;
+      coincident.push({ at: at + d * DAY + k * 1_800_000, own, steal, host });
+    }
+  }
+  assertEquals(fitMeter(coincident)!.stealFit, undefined);
+
+  // Exact noiseless identification (rss === 0, seC === 0) keeps c instead of discarding it.
+  const noiseless: Pair[] = Array.from({ length: 256 }, (_, i) => {
+    const own = i % 2 === 0 ? 4 : 2;
+    const steal = i % 4 === 0 ? 0.5 : 0.25;
+    return { at: at + i * 1_800_000, own, steal, host: own + 0.5 * steal };
+  });
+  assertAlmostEquals(fitMeter(noiseless)!.stealFit!.c, 0.5, 1e-9);
+
+  // Quiet window without steal variation preserves sticky c; a contention window with true c = 0 drops it.
+  const quiet = pairs.map(({ own, at: t }) => ({
+    at: t,
+    own,
+    steal: 0.005,
+    host: 1.015 * own + 0.02 + normal() * 0.015,
+  }));
+  assertEquals(fitMeter(quiet)!.stealFit, undefined);
+  assertAlmostEquals(
+    fitMeter(quiet, CALIBRATION.fit, FIT_SEED, quiet.at(-1)!.at, { stickyC: 0.5 })!.stealFit!.c,
+    0.5,
+    1e-9,
+  );
+  const refuted = pairs.map((q) => ({
+    ...q,
+    host: 1.015 * q.own + 0.02 + normal() * 0.015,
+  }));
+  assertEquals(
+    fitMeter(refuted, CALIBRATION.fit, FIT_SEED, refuted.at(-1)!.at, { stickyC: 0.5 })!.stealFit,
+    undefined,
+  );
 });
 
-Deno.test("replayOwn and bridgeSpan bill steal only on unlimited non-test slots when fit.c > 0", () => {
-  const anchor = { at, balance: 20_000, exact: true };
-  const sUnlimited = { ...slot(at, 4), steal: 600 }; // 1.0 core steal
-  const sLimited = { ...slot(at + SLOT_MS, 2, FLAGS.limited), steal: 600 };
-  const margin = { mul: 1.05, add: 0.04 };
-  const base = replayOwn(p, [sUnlimited, sLimited], anchor, margin, at + 2 * SLOT_MS).balance;
-  const withSteal = replayOwn(
-    p,
-    [sUnlimited, sLimited],
-    anchor,
-    margin,
-    at + 2 * SLOT_MS,
-    0,
-    false,
-    false,
-    0.5,
-  ).balance;
-  // Only the unlimited slot bills 0.5 * 600 = 300 extra core-seconds.
-  assertAlmostEquals(base - withSteal, 300, 1e-6);
+Deno.test("certifiedAnchors accounts for steal so off/shadow cannot falsely certify while idle noisy hosts still certify", () => {
+  // 4.1 busy + 1.5 steal on KVM 8 (off/shadow charge excludes steal): real bank falls if c = 0.5.
+  const heavySteal = Array.from({ length: 240 }, (_, i) => ({
+    ...slot(at + i * SLOT_MS, 4.1, FLAGS.atCapacity),
+    steal: 1.5 * 600,
+    charged: (1.05 * 4.1 + 0.08) * 600,
+  }));
+  assertEquals(certifiedAnchors(p, heavySteal, 0.167), []);
+  // Idle noisy host (0.15 busy + 0.05 steal) still certifies full cleanly.
+  const idleNoisy = Array.from({ length: 20 }, (_, i) => ({
+    ...slot(at + i * SLOT_MS, 0.15, FLAGS.atCapacity),
+    steal: 0.05 * 600,
+    charged: (1.05 * 0.15 + 0.08) * 600,
+  }));
+  assert(certifiedAnchors(p, idleNoisy, 0.167).length > 0);
+});
+
+Deno.test("pairSamples persists explicit zero steal so pairReadings never pulls 10-minute slot steal into clean intervals", () => {
+  const slots = [
+    {
+      at,
+      seconds: 600,
+      busy: 600,
+      steal: 4.0 * 300,
+      managed: 600,
+      outside: 0,
+      charged: 600,
+      flags: 0,
+    },
+    {
+      at: at + 600_000,
+      seconds: 600,
+      busy: 600,
+      steal: 0,
+      managed: 600,
+      outside: 0,
+      charged: 600,
+      flags: 0,
+    },
+    {
+      at: at + 1_200_000,
+      seconds: 600,
+      busy: 600,
+      steal: 0,
+      managed: 600,
+      outside: 0,
+      charged: 600,
+      flags: 0,
+    },
+    {
+      at: at + 1_800_000,
+      seconds: 600,
+      busy: 600,
+      steal: 0,
+      managed: 600,
+      outside: 0,
+      charged: 600,
+      flags: 0,
+    },
+  ];
+  const samples = Array.from({ length: 80 }, (_, i) => ({
+    at: at + (i + 1) * 30_000,
+    seconds: 30,
+    busy: 1 / 8,
+    steal: i < 10 ? 4 / 8 : 0, // 4 cores steal during 00:00-00:05 only
+  }));
+  const readings = [
+    { at: at + 300_000, v: 1 / 8 * 100 },
+    { at: at + 2_100_000, v: 1 / 8 * 100 },
+  ];
+  const exact = pairSamples(p, readings, samples);
+  assertEquals(exact[0].steal, 0);
+  const paired = pairReadings(p, readings, slots, exact);
+  assertEquals(paired[0].steal, undefined);
+});
+
+Deno.test("upgrading from a 1D v0.3.2 reference fit does not mark steal-billed contention invalid and learns stealFit", () => {
+  const c = calibrationConfig({ mode: "apply" });
+  const h = emptyHistory("test", 1, at);
+  const oldFit: MeterFit = {
+    a: 1.0,
+    b: 0,
+    aHi: 1.01,
+    sigma: [0.02, 0],
+    pairs: 240,
+    days: 5,
+  };
+  h.readings = [{ at, v: 0 }];
+  // 5 calm days followed by 2 contention days (0.4-0.8 steal billed at c = 0.5, 10-20 sigma over 1D).
+  for (let d = 0; d < 7; d++) {
+    for (let k = 0; k < 48; k++) {
+      const start = at + d * DAY + k * 1_800_000;
+      const own = k % 2 === 0 ? 4.0 : 0.5;
+      const steal = d >= 5 ? 0.4 + (k % 5) * 0.1 : 0;
+      for (let j = 0; j < 3; j++) {
+        h.slots.push({ ...slot(start + j * SLOT_MS, own), steal: steal * 600 });
+      }
+      const host = own + 0.5 * steal;
+      h.readings.push({ at: start + 1_800_000, v: host / p.vcpus * 100 });
+    }
+  }
+  const s: CalibrationState = {
+    ...initialCalibration(c, at),
+    fit: oldFit,
+    referenceFit: oldFit,
+    fitAt: at + 5 * DAY,
+    lastPaired: at + 5 * DAY,
+  };
+  const r = updateCalibration(p, h, s, c, at + 7 * DAY + 60_000, p.capacity);
+  assertEquals(r.state.invalid, false);
+  assertEquals(r.state.invalidSpans.length, 0);
+  assert(r.state.referenceFit?.stealFit !== undefined);
+  assertAlmostEquals(r.state.referenceFit!.stealFit!.c, 0.5, 0.05);
+});
+
+Deno.test("verified post-change refit keeps learned gap when steal sensitivity drops", () => {
+  const c = calibrationConfig({ mode: "apply" });
+  const h = emptyHistory("test", 1, at);
+  const oldFit: MeterFit = {
+    a: 1.0,
+    b: 0.05,
+    stealFit: { a: 1.0, b: 0.05, c: 0.6, sigma: [0.01, 0] },
+    aHi: 1.01,
+    sigma: [0.01, 0],
+    pairs: 200,
+    days: 7,
+  };
+  h.readings = [{ at, v: 0.5 / p.vcpus * 100 }];
+  for (let d = 0; d < 5; d++) {
+    for (let k = 0; k < 48; k++) {
+      const start = at + d * DAY + k * 1_800_000;
+      const own = k % 2 === 0 ? 4.0 : 0.5;
+      const steal = k % 3 === 0 ? 0.5 : 0.05;
+      for (let j = 0; j < 3; j++) {
+        h.slots.push({ ...slot(start + j * SLOT_MS, own), steal: steal * 600 });
+      }
+      // Higher at steal = 0 (+0.05), but much lower at steal = 1 (-0.45 because c dropped to 0.1).
+      const host = 1.0 * own + 0.10 + 0.1 * steal + ((k % 5) - 2) * 0.001;
+      h.readings.push({ at: start + 1_800_000, v: host / p.vcpus * 100 });
+    }
+  }
+  const last = h.readings.at(-1)!.at;
+  const s: CalibrationState = {
+    ...initialCalibration(c, at - 30 * DAY),
+    fit: oldFit,
+    referenceFit: oldFit,
+    gap: 0.15,
+    applied: { mul: 1.05, add: 0.25, floor: 0.05 },
+    fitAt: at - DAY,
+    lastPaired: last,
+    settledSeenAt: last,
+    lastSettled: last,
+    pending: {
+      at,
+      from: { mul: 1.05, add: 0.04, floor: 0.05 },
+      gapFrom: 0,
+      oldFit,
+      fit: { ...oldFit, b: 0.10 },
+      hold: { mul: 1.05, add: 0.25, floor: 0.05 },
+      readings: 48,
+      z: 100,
+      verified: true,
+      residual: 1,
+      n: 48,
+    },
+  };
+  const r = updateCalibration(p, h, s, c, last + 60_000, p.capacity);
+  assertEquals(r.state.gap, 0.15);
+});
+
+Deno.test("replayCheckpoint verifies legacy v0.3.2 checkpoints across post-reboot and long-interval changes", () => {
+  const c = calibrationConfig({ mode: "apply" });
+  const h = emptyHistory("test", 1, at);
+  h.slots = [
+    { ...slot(at, 0, FLAGS.reboot), seconds: 300 },
+    ...Array.from({ length: 12 }, (_, i) => ({
+      ...slot(at + (i + 1) * SLOT_MS, 1.0),
+      steal: 60,
+    })),
+  ];
+  h.readings = [
+    { at: at + SLOT_MS, v: 12.5 },
+    { at: at + SLOT_MS + 7_200_000, v: 13.0 },
+  ];
+  const before = initialCalibration(c, at);
+  const now = at + SLOT_MS + 7_200_000;
+  // Simulate a v0.3.2 evaluation checkpoint (no evaluator field, legacy replay semantics).
+  const legacyEval = updateCalibration(p, h, before, c, now, 1000, { legacy: true });
+  const v032Checkpoint = {
+    at: now,
+    open: 1000,
+    config: c,
+    before,
+    history: h,
+    digest: inputsDigest(legacyEval),
+  };
+  const verified = replayCheckpoint(p, v032Checkpoint);
+  assert(verified !== null);
+  assertEquals(inputsDigest(verified), v032Checkpoint.digest);
+});
+
+Deno.test("clockBridged preserves steal rate across clock-invalid runs", () => {
+  const bridged = clockBridged([
+    { ...slot(at, 2.0, FLAGS.clockInvalid), steal: 300 },
+    { ...slot(at + SLOT_MS, 2.0, FLAGS.clockInvalid), steal: 300 },
+  ]);
+  assertEquals(bridged.slots.length, 2);
+  assertAlmostEquals(bridged.slots[0].steal, 300, 1e-6);
 });
 
 Deno.test("pending drift change verifies and reverts even when the box goes too idle to qualify for refit", () => {
   const c = calibrationConfig({ mode: "apply" });
   const h = emptyHistory("test", 1, at);
-  // Idle box (< 3 cores): does not qualify for refit, yet pending change must verify and revert.
+  // Idle box (< 3 cores): does not qualify for refit, yet an offset-shaped pending change reverts.
   h.slots = Array.from({ length: 192 }, (_, i) => slot(at + i * SLOT_MS, 0.3));
   const v = (fit.a * 0.3 + fit.b) / p.vcpus * 100;
   h.readings = Array.from({ length: 64 }, (_, i) => ({ at: at + i * 1_800_000, v }));
@@ -2552,39 +2786,108 @@ Deno.test("pending drift change verifies and reverts even when the box goes too 
   assert(r.changes.some((d) => d.trigger === "cusum-revert"));
 });
 
-Deno.test("pending drift fit refines downward after REFINE_PAIRS while keeping hold non-decreasing", () => {
+Deno.test("slope-shaped pending drift change does not narrow during idle or revert on idle pairs", () => {
   const c = calibrationConfig({ mode: "apply" });
-  const h = emptyHistory("test", 1, at);
-  h.slots = Array.from({ length: 60 }, (_, i) => slot(at + i * SLOT_MS, 1.0));
-  // Meter actually rose by 0.05 cores, but initial pending.fit overshot by +0.30 cores.
-  const v = (fit.a * 1.0 + fit.b + 0.05) / p.vcpus * 100;
-  h.readings = Array.from({ length: 20 }, (_, i) => ({ at: at + i * 1_800_000, v }));
-  const pendingAt = at + 3 * 3_600_000;
-  const startHold = { mul: 1.05, add: 0.34, floor: 0.05 };
-  const s: CalibrationState = {
-    ...initialCalibration(c, at),
-    fit,
-    referenceFit: fit,
-    fitAt: at + 30 * DAY,
-    lastPaired: pendingAt,
-    pending: {
-      at: pendingAt,
-      from: { ...c.start },
-      gapFrom: 0,
-      oldFit: fit,
-      fit: { ...fit, b: fit.b + 0.30 },
-      hold: startHold,
-      readings: 0,
-      z: 0,
-      verified: false,
-      residual: 0,
-      n: 0,
-    },
+  const baseFit: MeterFit = {
+    a: 1.0463,
+    b: 0.0193,
+    aHi: 1.05,
+    sigma: [0.0214, 0.0119],
+    sigmaFloor: 0.0375,
+    pairs: 222,
+    days: 10,
   };
-  const r = updateCalibration(p, h, s, c, h.readings.at(-1)!.at + 60_000, 30_000);
-  assert(r.state.pending !== null);
-  assert(r.state.pending.fit.b < fit.b + 0.15, `${r.state.pending.fit.b}`);
-  assertEquals(r.state.pending.hold, startHold);
+  // Case 1: +12% slope change, 4 idle pairs then 3 heavy pairs at 5.5c must not trip readings-invalid.
+  {
+    const h = emptyHistory("test", 1, at);
+    const trueA = baseFit.a + 0.12;
+    const loads = [0.3, 0.3, 0.3, 0.3, 5.5, 5.5, 5.5, 0.3, 5.5, 0.3];
+    h.readings = [{ at, v: (baseFit.a * 0.3 + baseFit.b) / p.vcpus * 100 }];
+    loads.forEach((own, i) => {
+      const start = at + i * 1_800_000;
+      for (let k = 0; k < 3; k++) h.slots.push(slot(start + k * SLOT_MS, own));
+      h.readings.push({ at: start + 1_800_000, v: (trueA * own + baseFit.b) / p.vcpus * 100 });
+    });
+    const s: CalibrationState = {
+      ...initialCalibration(c, at - 30 * DAY),
+      fit: baseFit,
+      referenceFit: baseFit,
+      fitAt: at + 30 * DAY,
+      lastPaired: at,
+      pending: {
+        at,
+        from: { ...c.start },
+        gapFrom: 0,
+        oldFit: baseFit,
+        fit: { ...baseFit, b: baseFit.b + 0.6 },
+        slopeFit: { ...baseFit, a: trueA, aHi: trueA },
+        hold: { mul: 1.17, add: 0.6, floor: 0.05 },
+        readings: 0,
+        z: 0,
+        verified: false,
+        residual: 0,
+        n: 0,
+      },
+    };
+    const r = updateCalibration(p, h, s, c, h.readings.at(-1)!.at + 60_000, 30_000);
+    assertEquals(r.state.invalid, false);
+    assertEquals(r.state.invalidSpans.length, 0);
+    assertEquals(r.state.extreme, 0);
+    assert(r.state.pending!.fit.b >= baseFit.b + 0.6);
+  }
+  // Case 2: +5% slope change with 60 idle pairs at 0.3c does not revert; loaded pairs then keep it.
+  {
+    const h = emptyHistory("test", 1, at);
+    const trueA = baseFit.a + 0.05;
+    h.readings = [{ at, v: (baseFit.a * 0.3 + baseFit.b) / p.vcpus * 100 }];
+    for (let i = 0; i < 60; i++) {
+      const start = at + i * 1_800_000;
+      for (let k = 0; k < 3; k++) h.slots.push(slot(start + k * SLOT_MS, 0.3));
+      h.readings.push({ at: start + 1_800_000, v: (trueA * 0.3 + baseFit.b) / p.vcpus * 100 });
+    }
+    const s: CalibrationState = {
+      ...initialCalibration(c, at - 30 * DAY),
+      fit: baseFit,
+      referenceFit: baseFit,
+      fitAt: at + 30 * DAY,
+      lastPaired: at,
+      pending: {
+        at,
+        from: { ...c.start },
+        gapFrom: 0,
+        oldFit: baseFit,
+        fit: { ...baseFit, b: baseFit.b + 0.27 },
+        slopeFit: { ...baseFit, a: trueA, aHi: trueA },
+        hold: { mul: 1.17, add: 0.6, floor: 0.05 },
+        readings: 0,
+        z: 0,
+        verified: false,
+        residual: 0,
+        n: 0,
+      },
+    };
+    const rIdle = updateCalibration(p, h, s, c, h.readings.at(-1)!.at + 60_000, 30_000);
+    assert(rIdle.state.pending !== null, "idle pairs must not revert a real slope change");
+    assertEquals(rIdle.state.pending.readings, 0);
+    assert(!rIdle.changes.some((d) => d.trigger === "cusum-revert"));
+    // Once loaded pairs return (48 pairs at 4.0c), verification keeps the real slope change.
+    const tLoaded = h.readings.at(-1)!.at;
+    for (let i = 0; i < 48; i++) {
+      const start = tLoaded + i * 1_800_000;
+      for (let k = 0; k < 3; k++) h.slots.push(slot(start + k * SLOT_MS, 4.0));
+      h.readings.push({ at: start + 1_800_000, v: (trueA * 4.0 + baseFit.b) / p.vcpus * 100 });
+    }
+    const rLoaded = updateCalibration(
+      p,
+      h,
+      rIdle.state,
+      c,
+      h.readings.at(-1)!.at + 60_000,
+      30_000,
+    );
+    assert(rLoaded.changes.some((d) => d.trigger === "cusum-keep"));
+    assertEquals(rLoaded.state.pending?.verified, true);
+  }
 });
 
 Deno.test("post-reboot anchor at the newest settled reading immediately seeds the clamp", () => {
