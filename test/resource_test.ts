@@ -1,7 +1,7 @@
 import { assert, assertAlmostEquals, assertEquals, assertThrows } from "@std/assert";
 import { Governor } from "../src/governor.ts";
 import { plan } from "../src/plans.ts";
-import { collectReport, parseSadf, type ReportIO } from "../src/report.ts";
+import { collectReport, parseSadf, type ReportIO, sysstatFiles } from "../src/report.ts";
 import {
   buildReport,
   renderReport,
@@ -168,10 +168,15 @@ Deno.test("missing history stays missing, not zero CPU", () => {
   f.resources.memory.history = [];
   f.resources.swap.history = [];
   f.resources.load.history = [];
-  const text = renderReport(f.report());
+  const report = f.report();
+  const text = renderReport(report);
   assert(text.includes("Not available"));
   assert(text.includes("························"));
   assert(text.includes("History is unavailable"));
+  const storage = report.sections.find((s) => s.title === "Memory, load and storage")!;
+  assertEquals(storage.table!.rows[0][2], "Not available");
+  assertEquals(storage.table!.rows[1][2], "Not available");
+  assertEquals(storage.table!.rows[2][2], "Not available");
 });
 
 Deno.test("Hostinger history is diagnostic and the report does not mutate governor state", () => {
@@ -274,4 +279,102 @@ Deno.test("report reserve follows the spending floor while idle recovery retains
       row[0] === "Earliest idle recovery" && row[1] === "~24 min from limit start"
     ),
   );
+});
+
+Deno.test("sysstatFiles resolves union of local and UTC dates across both saYYYYMMDD and saDD forms", async () => {
+  const day1 = Date.UTC(2026, 10, 19, 10, 0, 0);
+  const day2 = Date.UTC(2026, 10, 20, 10, 0, 0);
+  const day3 = Date.UTC(2026, 10, 21, 10, 0, 0);
+  const present = new Set([
+    "/var/log/sysstat/sa20261119",
+    "/var/log/sysstat/sa19",
+    "/var/log/sysstat/sa20",
+    "/var/log/sysstat/sa20261121",
+  ]);
+  const files = await sysstatFiles(day1, day3, (path) => Promise.resolve(present.has(path)));
+  assertEquals(files, [
+    "/var/log/sysstat/sa20261119",
+    "/var/log/sysstat/sa19",
+    "/var/log/sysstat/sa20",
+    "/var/log/sysstat/sa20261121",
+  ]);
+  assertEquals(await sysstatFiles(day2, day2, () => Promise.resolve(false)), []);
+  // Near UTC midnight (00:10Z = 01:10 CET or 16:10 PST), both the prior UTC date and current UTC
+  // date are checked so hosts with S_TIME_DEF_TIME=UTC never miss the previous UTC archive.
+  const afterUtcMidnight = Date.UTC(2026, 10, 21, 0, 10, 0);
+  const beforeUtcMidnight = afterUtcMidnight - 3_600_000; // 2026-11-20 23:10Z
+  const utcOnly = new Set(["/var/log/sysstat/sa20261120", "/var/log/sysstat/sa20261121"]);
+  assertEquals(
+    await sysstatFiles(
+      beforeUtcMidnight,
+      afterUtcMidnight,
+      (path) => Promise.resolve(utcOnly.has(path)),
+    ),
+    ["/var/log/sysstat/sa20261120", "/var/log/sysstat/sa20261121"],
+  );
+  // Beirut skips midnight the night its clocks go forward: 2026-03-29 begins at 01:00. A window
+  // from that night to half past midnight on the 30th covers three local dates. Walking a local
+  // clock from midnight, the walk began at 01:00, passed the end, and left out the 30th.
+  const dates = async (zone: string) =>
+    (await sysstatFiles(
+      Date.parse("2026-03-28T22:30:00Z"),
+      Date.parse("2026-03-29T21:30:00Z"),
+      (path) => Promise.resolve(/sa\d{8}$/.test(path)),
+      "/x",
+      [zone],
+    )).map((path) => path.slice("/x/sa".length));
+  assertEquals(await dates("Asia/Beirut"), ["20260329", "20260330"]);
+  assertEquals(await dates("UTC"), ["20260328", "20260329"]);
+  assertEquals(await dates("America/Los_Angeles"), ["20260328", "20260329"]);
+});
+
+Deno.test("report surfaces calibration warnings, shadow-mode holds, and ceiling failure during or outside limits", () => {
+  const f = fixture();
+  assert(!f.report().sections.some((s) => s.title === "Calibration warnings"));
+  const state = new Governor({
+    hostinger: { vm_id: 1, token_file: "/etc/governor/hostinger-token" },
+    calibration: { mode: "apply" },
+  }, plan(8)).publicState(now);
+  state.accepting = false;
+  state.capFailed = true;
+  state.credits.anchor = {
+    checkedAt: now - 60_000,
+    exact: false,
+    applied: false,
+    difference: null,
+  };
+  Object.assign(state.credits.calibration!, {
+    failing: { since: now - 120_000, behind: 500 },
+    rulesMismatch: true,
+    hold: { since: now - 3_600_000, reason: "invalid" as const },
+    ownHold: { gap: 0.25, settings: { mul: 1.05, add: 0.35, floor: 0.05 } },
+    readingsInvalid: true,
+    apiStaleSince: now - 1_800_000,
+    invalidReasons: ["residuals" as const],
+    cooldownUntil: now + 3_600_000,
+  });
+  const r = buildReport(state, f.resources, 12, now);
+  const text = renderReport(r);
+  assert(text.includes("New work paused (ceiling not applied)"));
+  assert(text.includes("Calibration warnings"));
+  assert(text.includes("Failing since"));
+  assert(text.includes("Rules mismatch"));
+  assert(text.includes(`Invalid (residuals) since ${new Date(now - 1_800_000).toISOString()}`));
+  assert(text.includes("Own-count hold"));
+  assert(text.includes("Sustained-use cooldown"));
+  assert(text.includes("Readings are invalid (residuals) and excluded from calibration"));
+
+  // Recovery quota failure remains visible even while an active limit is present.
+  state.limit = { since: now - 60_000, ceiling: 100, heldFrom: 0 };
+  assert(
+    renderReport(buildReport(state, f.resources, 12, now)).includes(
+      "New work paused (recovery ceiling not applied)",
+    ),
+  );
+
+  // Shadow mode renders holds as recorded/not applied rather than active.
+  state.credits.calibration!.mode = "shadow";
+  const shadowText = renderReport(buildReport(state, f.resources, 12, now));
+  assert(shadowText.includes("Recorded (invalid readings since"));
+  assert(shadowText.includes("not applied in shadow mode"));
 });

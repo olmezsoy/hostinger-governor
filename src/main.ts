@@ -27,13 +27,20 @@ import {
 import { requestTick, TickError } from "./control.ts";
 import { creditLines, report } from "./report.ts";
 import { explainCalibration, explainText } from "./explain.ts";
-import { reportOptions } from "./resource.ts";
+import { isCapFailed, reportOptions } from "./resource.ts";
 import { configureDocker, enrollService } from "./workloads.ts";
 import { readClock } from "./sample.ts";
 import { execOptions, scopeArgs, waitForAccepting } from "./exec.ts";
-import { BROKER_CAPABILITY, CHECK_WINDOW_MS, cpuReadings, vm } from "./hostinger.ts";
+import {
+  BROKER_CAPABILITY,
+  CHECK_BUDGET_MS,
+  CHECK_WINDOW_MS,
+  cpuReadings,
+  retryBrokerBusy,
+  vm,
+} from "./hostinger.ts";
 
-export const VERSION = "0.3.2";
+export const VERSION = "0.3.3";
 const STALE_MS = 5 * 60_000;
 class UnsupportedStateSchema extends Error {
   constructor() {
@@ -113,14 +120,21 @@ try {
       if (args.length) usage();
       const h = (await loadConfig()).hostinger;
       if (!h?.vm_id) throw new Error("hostinger.vm_id is not configured");
-      const details = await vm(h, h.vm_id);
+      // A live daemon poll can hold the broker lock for up to WORKER_SECONDS (18 s). Both
+      // operations share one monotonic budget, so `busy` rides out an overlapping poll, the whole
+      // check still ends inside the time setup allows it, and `rate_limited` and upstream failures
+      // propagate at once.
+      const deadline = performance.now() + CHECK_BUDGET_MS;
+      const details = await retryBrokerBusy((ms) => vm(h, h.vm_id!, ms), deadline);
       if (h.request_command && details.ipv4 === undefined) {
         console.error(
           "Hostinger broker omitted IPv4 addresses; upgrade the installed broker before using this check to verify the host's identity",
         );
       }
-      const now = Date.now();
-      const readings = await cpuReadings(h, h.vm_id, now - CHECK_WINDOW_MS, now);
+      const readings = await retryBrokerBusy((ms) => {
+        const now = Date.now();
+        return cpuReadings(h, h.vm_id!, now - CHECK_WINDOW_MS, now, false, ms);
+      }, deadline);
       console.log(
         JSON.stringify({
           vm_id: h.vm_id,
@@ -151,7 +165,13 @@ try {
         console.log(
           [
             `${s.plan.name} · ceiling ${s.ceiling}% · ${
-              s.limit ? "LIMITED by Hostinger" : "not limited"
+              s.limit && isCapFailed(s)
+                ? "LIMITED by Hostinger (recovery ceiling not applied)"
+                : s.limit
+                ? "LIMITED by Hostinger"
+                : isCapFailed(s)
+                ? "not limited (new work paused: ceiling not applied)"
+                : "not limited"
             }`,
             ...creditLines(s, clock),
           ].join("\n"),

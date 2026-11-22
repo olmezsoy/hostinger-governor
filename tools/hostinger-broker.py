@@ -206,6 +206,15 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
         )
 
 
+class _ApiDeadline(Exception):
+    # Raised outside OSError so socket.create_connection's address-fallback loop cannot swallow it.
+    pass
+
+
+def _alarm_timeout(_signum, _frame):
+    raise _ApiDeadline("Hostinger request timed out.")
+
+
 def api_body(token, suffix=""):
     opener = urllib.request.build_opener(
         urllib.request.ProxyHandler({}),
@@ -223,21 +232,66 @@ def api_body(token, suffix=""):
             "User-Agent": USER_AGENT,
         },
     )
+    # Enforce a total HTTP deadline inside API_SECONDS (< WORKER_SECONDS), not just a per-socket
+    # read timeout, so a slow trickling response returns upstream_unavailable instead of dying to
+    # systemd's RuntimeMaxSec. It bounds the connection, TLS and the reply. Name resolution runs
+    # inside the C library, where no Python handler can interrupt it: a resolver that hangs is
+    # still ended by RuntimeMaxSec, as a plain failure.
+    previous_handler = signal.getsignal(signal.SIGALRM)
+    # Take any outer timer off before swapping the handler: one expiring between the two calls
+    # raised the deadline outside the try below, where nothing restored the handler or the timer.
+    remaining_alarm, previous_interval = signal.setitimer(signal.ITIMER_REAL, 0)
+    started = time.monotonic()
+    budget = min(API_SECONDS, remaining_alarm) if remaining_alarm > 0 else API_SECONDS
     try:
-        with opener.open(req, timeout=API_SECONDS) as response:
-            body = response.read(MAX_BODY + 1)
+        try:
+            signal.signal(signal.SIGALRM, _alarm_timeout)
+            signal.setitimer(signal.ITIMER_REAL, budget)
+            try:
+                with opener.open(req, timeout=budget) as response:
+                    body = response.read(MAX_BODY + 1)
+            finally:
+                # The reply is in or has failed: nothing after this is the deadline's to interrupt.
+                signal.setitimer(signal.ITIMER_REAL, 0)
             require(len(body) <= MAX_BODY, "Upstream response too large.")
             return decode(body)
-    except urllib.error.HTTPError as error:
-        status = error.code if http_status(error.code) else None
-        raise Refused(
-            "Hostinger returned HTTP " + str(error.code),
-            UPSTREAM_STATUS if status else None,
-            status,
-        ) from None
-    except (urllib.error.URLError, OSError, http.client.HTTPException):
-        # Timeouts, refused/reset connections, TLS failures and truncated HTTP replies.
+        except urllib.error.HTTPError as error:
+            status = error.code if http_status(error.code) else None
+            raise Refused(
+                "Hostinger returned HTTP " + str(error.code),
+                UPSTREAM_STATUS if status else None,
+                status,
+            ) from None
+        except (
+            urllib.error.URLError,
+            OSError,
+            http.client.HTTPException,
+            json.JSONDecodeError,
+            UnicodeDecodeError,
+        ):
+            # Refused/reset connections, TLS failures, truncated or non-JSON HTTP replies.
+            raise Refused("Hostinger is unavailable.", UPSTREAM_UNAVAILABLE) from None
+    except _ApiDeadline:
+        # Wherever it fired, another handler's body included: one fixed code, and the handler and
+        # timer below are still restored.
         raise Refused("Hostinger is unavailable.", UPSTREAM_UNAVAILABLE) from None
+    finally:
+        signal.setitimer(signal.ITIMER_REAL, 0)
+        signal.signal(signal.SIGALRM, previous_handler)
+        if remaining_alarm > 0:
+            left = remaining_alarm - (time.monotonic() - started)
+            if left > 0:
+                signal.setitimer(signal.ITIMER_REAL, left, previous_interval)
+            else:
+                # The outer timer expired meanwhile, so its handler runs now. A periodic one keeps
+                # its phase: the next expiry is what is left of the period it has reached.
+                if previous_interval > 0:
+                    signal.setitimer(
+                        signal.ITIMER_REAL,
+                        previous_interval - (-left) % previous_interval,
+                        previous_interval,
+                    )
+                signal.raise_signal(signal.SIGALRM)
 
 
 def request_suffix(value):

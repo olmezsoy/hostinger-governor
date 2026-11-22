@@ -263,6 +263,17 @@ class DeadlineTests(unittest.TestCase):
             contract["governor_limit_test_ms"],
         )
 
+    def test_connection_check_outlasts_the_whole_of_check_hostinger(self):
+        contract = json.loads(
+            (ROOT / "test/fixtures/hostinger-protocol.json").read_text()
+        )
+        # check-hostinger keeps both requests and any wait for a busy broker inside this
+        # budget; the rest is the CLI's startup. Past it, setup failed a working install.
+        self.assertGreaterEqual(
+            (REMOTE.CONNECTION_CHECK_SECONDS - REMOTE.QUICK_COMMAND_SECONDS) * 1000,
+            contract["check_budget_ms"],
+        )
+
     def test_root_and_bridge_deadlines_cover_setup_and_recovery(self):
         restart = (
             REMOTE.LOCAL_COMMAND_SECONDS

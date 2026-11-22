@@ -37,9 +37,29 @@ const explained = (overrides: Partial<Explained>): Explained =>
 Deno.test("explain text shows the fit's noise and its floor", () => {
   const text = explainText(explained({ fit }));
   assertStringIncludes(text, "sigma 0.0214 + 0.0119 per own core, at least 0.012, 222 pairs");
+  assert(!text.includes(", c="));
+  const withSteal = explainText(
+    explained({
+      fit: { ...fit, stealFit: { a: 1.01, b: 0.02, c: 0.5151, sigma: [0.01, 0.01] } },
+    }),
+  );
+  // The margin's fit and the detection-only steal model are two fits: the coefficient is printed
+  // with the slope and offset it was fitted with, not beside the margin's.
+  assertStringIncludes(withSteal, "a=1.0463, b=0.0193, aHi=1.051");
+  assertStringIncludes(
+    withSteal,
+    "222 pairs on 10 days; for drift detection a=1.01, b=0.02, c=0.5151 per stolen core",
+  );
   const { sigmaFloor: _, ...line } = fit;
   const without = explainText(explained({ fit: line }));
   assertStringIncludes(without, "sigma 0.0214 + 0.0119 per own core, 222 pairs");
+});
+
+Deno.test("explain text lists invalidReasons when readings are invalid", () => {
+  const text = explainText(
+    explained({ readingsInvalid: true, invalidReasons: ["spacing", "residuals"] }),
+  );
+  assertStringIncludes(text, "Readings invalid (spacing, residuals)");
 });
 
 Deno.test("explain text shows a recovered drift reference without a margin fit", () => {
@@ -94,6 +114,14 @@ Deno.test("explain text shows what shadow learned and the fallback a failing eva
   const failing = explainText(explained({ failing: { since: start, behind: 1000 } }));
   assertStringIncludes(failing, "holding the fallback while calibration fails");
   assertStringIncludes(failing, "acting 1000 core-seconds below the open estimate");
+  // Shadow holds nothing for a failing evaluation, but it is where an operator decides whether to
+  // turn apply on: the failure shows, without the hold apply alone makes.
+  const shadowFailing = explainText(
+    explained({ mode: "shadow", failing: { since: start, behind: 0 } }),
+  );
+  assertStringIncludes(shadowFailing, "Calibration failing since");
+  assertStringIncludes(shadowFailing, "shadow applies none of it");
+  assert(!shadowFailing.includes("holding the fallback"));
 });
 
 Deno.test("explain text shows a diagnosis that found no gap", () => {
@@ -415,4 +443,148 @@ Deno.test("calibrate --explain without access to the private files says so, with
   assertEquals(rootOnly.code, 1);
   assertStringIncludes(rootErr, "run it with sudo");
   assertEquals(rootErr.includes("governor user"), false, rootErr);
+});
+
+// One evaluation of a week of half-hourly readings from `before`, recorded as the daemon records
+// it, and explained from the two files.
+async function explainWeek(
+  reference: MeterFit,
+  options: {
+    host?: (own: number, d: number, k: number) => number;
+    pending?: (at: number) => NonNullable<ReturnType<typeof initialCalibration>["pending"]>;
+    checkpoint?: (checkpoint: Record<string, unknown>) => void;
+  } = {},
+) {
+  const { DAY, encodeHistory, SLOT_MS } = await import("../src/history.ts");
+  const { EVALUATOR_VERSION, inputsDigest, updateCalibration } = await import(
+    "../src/calibration.ts"
+  );
+  const h = emptyHistory(planKey(p), 1, start);
+  h.readings = [{ at: start, v: 0 }];
+  for (let d = 0; d < 7; d++) {
+    for (let k = 0; k < 48; k++) {
+      const t = start + d * DAY + k * 1_800_000;
+      const own = k % 2 === 0 ? 4.0 : 0.5;
+      for (let j = 0; j < 3; j++) {
+        h.slots.push({
+          at: t + j * SLOT_MS,
+          seconds: 600,
+          busy: own * 600,
+          steal: 0,
+          managed: own * 600,
+          outside: 0,
+          charged: own * 600,
+          flags: 0,
+        });
+      }
+      const host = options.host?.(own, d, k) ?? 1.01 * own + 0.001 * ((k % 3) - 1);
+      h.readings.push({ at: t + 1_800_000, v: Math.round(host / p.vcpus * 10000) / 100 });
+    }
+  }
+  const now = h.readings.at(-1)!.at + 60_000;
+  const before = {
+    ...initialCalibration(c, start),
+    fit: reference,
+    referenceFit: reference,
+    fitAt: start + 5 * DAY,
+    lastPaired: h.readings.at(-2)!.at,
+    ...(options.pending ? { pending: options.pending(start + 3 * DAY) } : {}),
+  };
+  const evaluated = updateCalibration(p, h, before, c, now, p.capacity);
+  const checkpoint = {
+    evaluator: EVALUATOR_VERSION,
+    at: now,
+    open: p.capacity,
+    config: c,
+    before,
+    history: { ...h },
+    digest: inputsDigest(evaluated),
+  };
+  options.checkpoint?.(checkpoint);
+  h.checkpoint = checkpoint;
+  const files: Record<string, string> = {
+    "/lib/persist.json": JSON.stringify({
+      planKey: planKey(p),
+      at: now,
+      balance: p.capacity,
+      margin: { mul: 1.05, add: 0.08 },
+      calibration: evaluated.state,
+    }),
+    "/lib/history.json": encodeHistory(h),
+  };
+  const out = () =>
+    explainCalibration(
+      { vcpus: 8, hostinger: { vm_id: 1, token_file: "/x" } } as Config,
+      "/lib",
+      (path) => {
+        if (path in files) return Promise.resolve(files[path]);
+        return Promise.reject(new Deno.errors.NotFound(path));
+      },
+    );
+  return { evaluated, out };
+}
+
+Deno.test("explain's candidate fit is the fit the daemon makes: same pairs, change point and carried steal sensitivity", async () => {
+  const looseOldFit: MeterFit = { a: 1.0, b: 0, aHi: 1.01, sigma: [0.05, 0], pairs: 200, days: 7 };
+  // Two +0.20-core blips are 4 sigma against looseOldFit (included in the daemon's refit), but
+  // > 6 sigma against the tighter refit produced by the pass.
+  const blips = await explainWeek(looseOldFit, {
+    host: (own, d, k) =>
+      1.01 * own + (d === 3 && (k === 10 || k === 20) ? 0.20 : 0.001 * ((k % 3) - 1)),
+  });
+  const first = await blips.out();
+  assertEquals(first.evidence.candidateFit?.pairs, blips.evaluated.state.referenceFit?.pairs);
+  assertEquals(first.evidence.candidateFit?.a, blips.evaluated.state.referenceFit?.a);
+  // A quiet week keeps an established steal sensitivity. The candidate was fitted without it, so
+  // explain showed a fit with no steal model beside a reference that had one.
+  const stealFit = { a: 1.01, b: 0, c: 0.5, sigma: [0.05, 0] as [number, number] };
+  const quiet = await explainWeek({ ...looseOldFit, stealFit });
+  assertEquals(quiet.evaluated.state.referenceFit?.stealFit?.c, 0.5);
+  assertEquals(
+    (await quiet.out()).evidence.candidateFit,
+    quiet.evaluated.state.referenceFit,
+  );
+  // The bound a contention window left carries the same way, model or not. Dropped from the
+  // candidate, explain showed a whole core per stolen core beside a daemon charging 0.3.
+  const bounded = await explainWeek({ ...looseOldFit, stealHi: 0.3 });
+  assertEquals(bounded.evaluated.state.referenceFit?.stealHi, 0.3);
+  assertEquals(
+    (await bounded.out()).evidence.candidateFit,
+    bounded.evaluated.state.referenceFit,
+  );
+  // A verified drift change refits on the readings after it alone. The candidate mixed in the
+  // four days before it: here they sit 0.3 cores lower. The steal sensitivity established before
+  // the change carries into that fit too: an offset moving says nothing about contention.
+  const steady = { ...looseOldFit, stealFit };
+  const changed = await explainWeek(steady, {
+    host: (own, d, k) => 1.01 * own + (d >= 3 ? 0.3 : 0) + 0.001 * ((k % 3) - 1),
+    pending: (at) => ({
+      at,
+      from: { ...c.start },
+      gapFrom: 0,
+      oldFit: steady,
+      fit: { ...steady, b: 0.3, stealFit: { ...stealFit, b: 0.3 } },
+      hold: { mul: 1.05, add: 0.4, floor: 0.05 },
+      readings: 48,
+      z: 300,
+      verified: true,
+      residual: 14.4,
+      n: 48,
+    }),
+  });
+  assertEquals(changed.evaluated.state.pending, null);
+  const candidate = (await changed.out()).evidence.candidateFit!;
+  assertEquals(candidate, changed.evaluated.state.fit);
+  assert(Math.abs(candidate.b - 0.3) < 0.01, `${candidate.b}`);
+  assertEquals(candidate.stealFit?.c, 0.5);
+});
+
+Deno.test("explain says an evaluation another version recorded is that, not that its evidence is damaged", async () => {
+  const reference: MeterFit = { a: 1.0, b: 0, aHi: 1.01, sigma: [0.05, 0], pairs: 200, days: 7 };
+  // v0.3.2 and earlier recorded no evaluator version.
+  const older = await explainWeek(reference, { checkpoint: (x) => delete x.evaluator });
+  await assertRejects(() => older.out(), Error, "made by another governor version");
+  // A recorded evaluation whose evidence really was changed still says so.
+  const damaged = await explainWeek(reference, { checkpoint: (x) => x.open = 1 });
+  await assertRejects(() => damaged.out(), Error, "differs from its recorded evaluation");
 });

@@ -3,7 +3,10 @@ import {
   calculateEstimates,
   calibrationSummary,
   diagnoseGap,
+  driftReference,
   effectiveSettings,
+  eligiblePairs,
+  EVALUATOR_VERSION,
   fallbackMargin,
   FIT_SEED,
   fitMeter,
@@ -11,6 +14,7 @@ import {
   type MeterFit,
   openEstimates,
   pairReadings,
+  refitInputs,
   replayCheckpoint,
 } from "./calibration.ts";
 import { LAW } from "./credits.ts";
@@ -20,6 +24,7 @@ import {
   boundHistory,
   DAY,
   decodeHistoryFiles,
+  type History,
   planKey,
   readHistoryFiles,
   sameSettings,
@@ -78,6 +83,14 @@ async function readDaemonFiles(cfg: Config, p: Plan, lib: string, read: Read) {
         "no recorded calibration evaluation; wait for the next completed slot or fetch",
       );
     }
+    // A reset's checkpoint replays under any version; an evaluation only under the one that made
+    // it, so the one an older release left behind is said to be that, not to be damaged.
+    if (checkpoint.action !== "reset" && checkpoint.evaluator !== EVALUATOR_VERSION) {
+      throw new Error(
+        "the recorded calibration evaluation was made by another governor version; " +
+          "run it again after the daemon's next evaluation, within ten minutes of its start",
+      );
+    }
     const replayed = replayCheckpoint(p, checkpoint);
     if (!replayed) throw new Error("calibration evidence differs from its recorded evaluation");
     const serial = saved.calibration?.serial, recorded = replayed.state.serial;
@@ -120,14 +133,16 @@ export async function explainCalibration(
   const diagnosed = history.limits.findLast((r) => r.diagnosisEvidence);
   const inputs = diagnosed?.diagnosisEvidence;
   // The settings in force: off and shadow actuate the legacy margin and floor. While calibration
-  // fails, apply holds the fallback and acts below the open estimate, as the daemon does.
-  const failed = c.mode === "apply" ? saved.evaluationFailed : undefined;
+  // fails, apply holds the fallback and acts below the open estimate, as the daemon does. The
+  // failure itself is reported in every mode: off and shadow are where an operator decides whether
+  // to turn apply on.
+  const failed = saved.evaluationFailed;
   const inForce = c.mode !== "apply"
     ? { ...saved.margin, floor: LAW.floor }
     : failed
     ? fallbackMargin(effectiveSettings(calibration))
     : effectiveSettings(calibration);
-  if (failed) {
+  if (failed && c.mode === "apply") {
     const e = calibration.estimates;
     calibration.estimates = {
       ...e,
@@ -136,24 +151,17 @@ export async function explainCalibration(
   }
   return {
     ...calibrationSummary(c, calibration, history, inForce),
-    failing: failed ? { since: failed.since, behind: failed.behind } : null,
+    // Only apply holds anything for a failing evaluation, as in the daemon's own status.
+    failing: failed
+      ? { since: failed.since, behind: c.mode === "apply" ? failed.behind : 0 }
+      : null,
     evidence: {
       at: checkpoint.at,
       digest: checkpoint.digest,
       verified: true,
       fit: calibration.fit,
       referenceFit: calibration.referenceFit ?? null,
-      candidateFit: fitMeter(
-        pairReadings(
-          p,
-          checkpoint.history.readings,
-          checkpoint.history.slots,
-          checkpoint.history.meterPairs,
-        ).filter((r) => r.at >= checkpoint.at - c.fit.days * DAY),
-        c.fit,
-        FIT_SEED,
-        checkpoint.at,
-      ),
+      candidateFit: candidateFit(p, checkpoint),
       anchors: historyAnchors(p, checkpoint.history, calibration.gapUpperBound),
       estimates: calibration.estimates,
       decisions: replayed.changes,
@@ -189,13 +197,42 @@ export async function explainCalibration(
   };
 }
 
+// The fit the daemon's next refit would make from the recorded inputs: the same pairs, change
+// point and carried steal sensitivity (refitInputs). Null while an unverified drift change pauses
+// refits, or while the window does not qualify.
+function candidateFit(p: Plan, checkpoint: NonNullable<History["checkpoint"]>): MeterFit | null {
+  const c = checkpoint.config, before = checkpoint.before, inputs = refitInputs(before);
+  if (!inputs) return null;
+  const pairs = pairReadings(
+    p,
+    checkpoint.history.readings,
+    checkpoint.history.slots,
+    checkpoint.history.meterPairs,
+  ).filter((r) => r.at >= checkpoint.at - c.fit.days * DAY);
+  return fitMeter(
+    eligiblePairs(pairs, before, driftReference(before), inputs.from),
+    c.fit,
+    FIT_SEED,
+    checkpoint.at,
+    { stickyC: inputs.stickyC, stickyHi: inputs.stickyHi },
+  );
+}
+
 const cores = (n: number) => String(Math.round(n * 10_000) / 10_000);
+// The margin's relation and the detection-only steal model are two fits with their own slope and
+// offset: printed as one line, a 1D slope stood beside a coefficient it was never fitted with.
 const fitText = (f: MeterFit) =>
   `a=${cores(f.a)}, b=${cores(f.b)}, aHi=${f.aHi}, sigma ${cores(f.sigma[0])} + ${
     cores(f.sigma[1])
   } per own core${
     f.sigmaFloor !== undefined ? `, at least ${cores(f.sigmaFloor)}` : ""
-  }, ${f.pairs} pairs on ${f.days} days`;
+  }, ${f.pairs} pairs on ${f.days} days${
+    f.stealFit
+      ? `; for drift detection a=${cores(f.stealFit.a)}, b=${cores(f.stealFit.b)}, c=${
+        cores(f.stealFit.c)
+      } per stolen core`
+      : ""
+  }`;
 const percent = (n: number) => `${Math.round(n * 1000) / 10}%`;
 const time = (ms: number) => new Date(ms).toISOString();
 const settings = (s: Settings) => `x${s.mul} +${cores(s.add)} cores, floor ${percent(s.floor)}`;
@@ -247,7 +284,7 @@ export function explainText(r: Explained) {
     ...(pending ? [`drift change ${settings(pending.hold)}`] : []),
   ];
   const cusum = r.cusum;
-  if (r.failing) {
+  if (r.failing && r.mode === "apply") {
     holds.unshift(`the fallback while calibration fails, since ${time(r.failing.since)}`);
   }
   return [
@@ -260,9 +297,11 @@ export function explainText(r: Explained) {
       : []),
     ...(r.failing
       ? [
-        `Calibration failing since ${time(r.failing.since)}: acting ${
-          Math.round(r.failing.behind)
-        } core-seconds below the open estimate`,
+        `Calibration failing since ${time(r.failing.since)}: ${
+          r.mode === "apply"
+            ? `acting ${Math.round(r.failing.behind)} core-seconds below the open estimate`
+            : `what follows is from its last evaluation; ${r.mode} applies none of it`
+        }`,
       ]
       : []),
     ...(holdSettings.length ? [`Hold settings ${holdSettings.join("; ")}`] : []),
@@ -294,9 +333,15 @@ export function explainText(r: Explained) {
     }; run residual ${cores(cusum.residual)} cores over ${cores(cusum.own)} own cores${
       cusum.alarm ? "; alarm" : ""
     }`,
-    `Readings ${r.readingsInvalid ? "invalid" : r.apiStaleSince !== null ? "stale" : "usable"}${
-      r.apiStaleSince !== null ? ` since ${time(r.apiStaleSince)}` : ""
-    }; newest reading ${r.newestFinal ? "final" : "may still change"}`,
+    `Readings ${
+      r.readingsInvalid
+        ? `invalid${r.invalidReasons?.length ? ` (${r.invalidReasons.join(", ")})` : ""}`
+        : r.apiStaleSince !== null
+        ? "stale"
+        : "usable"
+    }${r.apiStaleSince !== null ? ` since ${time(r.apiStaleSince)}` : ""}; newest reading ${
+      r.newestFinal ? "final" : "may still change"
+    }`,
     ...(r.invalidSpans.length
       ? [
         `Readings invalid and bridged: ${
@@ -314,6 +359,12 @@ export function explainText(r: Explained) {
       : []),
     ...(r.cooldownUntil !== null ? [`Sustained-use cooldown until ${time(r.cooldownUntil)}`] : []),
     `Meter ${r.fit ? fitText(r.fit) : "not qualified"}`,
+    // What a stolen core costs as it happens, which only apply charges.
+    `Neighbours' steal ${r.mode === "apply" ? "charged" : "would be charged in apply"} at ${
+      r.stealBound === 1
+        ? "a whole core per stolen core: no contention window has bounded the meter's sensitivity yet"
+        : `up to ${cores(r.stealBound)} cores per stolen core`
+    }`,
     // Shown when drift detection follows a fit the margin discarded (#19), or when decision-only
     // recovery restored the reference before a margin fit qualified again.
     ...(r.referenceFit && (!r.fit || fitText(r.referenceFit) !== fitText(r.fit))

@@ -1,6 +1,13 @@
 // Read-only collection for the channel-neutral resource report.
 import type { PublicState } from "./governor.ts";
-import { buildReport, type Point, renderReport, type ReportFormat, spending } from "./resource.ts";
+import {
+  buildReport,
+  calibrationWarnings,
+  type Point,
+  renderReport,
+  type ReportFormat,
+  spending,
+} from "./resource.ts";
 import { vcpusSeen } from "./sample.ts";
 export { sparkline } from "./resource.ts";
 
@@ -24,28 +31,77 @@ export function parseSadf(csv: string): Record<string, number>[] {
   return rows;
 }
 
+// Resolve sysstat archive files covering [from, to] across the union of local and UTC calendar
+// dates (supporting hosts whose `sadc` writes UTC-dated files under `S_TIME_DEF_TIME=UTC` as well
+// as local-dated files), including both `saYYYYMMDD` (sysstat HISTORY > 28) and legacy `saDD`.
+export async function sysstatFiles(
+  from: number,
+  to: number,
+  exists: (path: string) => Promise<boolean> = async (path) => {
+    try {
+      return (await Deno.stat(path)).isFile;
+    } catch {
+      return false;
+    }
+  },
+  dir = "/var/log/sysstat",
+  // The host's own zone, and UTC.
+  zones: (string | undefined)[] = [undefined, "UTC"],
+): Promise<string[]> {
+  // Calendar dates as each zone's own date of `from` through its date of `to`, counted as dates:
+  // stepping a local clock from midnight skipped the last day where midnight itself is skipped,
+  // as on the night clocks go forward in Beirut or Santiago.
+  const dates = new Map<string, [string, string, string]>();
+  for (const timeZone of zones) {
+    const day = (ms: number) => {
+      const parts = new Intl.DateTimeFormat("en-CA", {
+        timeZone,
+        year: "numeric",
+        month: "2-digit",
+        day: "2-digit",
+      }).formatToParts(ms);
+      const part = (type: string) => Number(parts.find((x) => x.type === type)!.value);
+      return Date.UTC(part("year"), part("month") - 1, part("day"));
+    };
+    for (let at = day(from), end = day(to); at <= end; at += 86_400_000) {
+      const [yyyy, mm, dd] = new Date(at).toISOString().slice(0, 10).split("-");
+      dates.set(`${yyyy}${mm}${dd}`, [yyyy, mm, dd]);
+    }
+  }
+  const files: string[] = [];
+  const seen = new Set<string>();
+  const ordered = [...dates.entries()].sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0);
+  for (const [, [yyyy, mm, dd]] of ordered) {
+    for (const candidate of [`${dir}/sa${yyyy}${mm}${dd}`, `${dir}/sa${dd}`]) {
+      if (!seen.has(candidate) && await exists(candidate)) {
+        seen.add(candidate);
+        files.push(candidate);
+      }
+    }
+  }
+  return files;
+}
+
 async function sysstat(flag: string, from: number, to: number): Promise<Record<string, number>[]> {
-  const rows: Record<string, number>[] = [];
-  for (let day = from - from % 86_400_000; day <= to; day += 86_400_000) {
+  const byTime = new Map<number, Record<string, number>>();
+  for (const file of await sysstatFiles(from, to)) {
     try {
       const out = await new Deno.Command("sadf", {
-        args: ["-d", `/var/log/sysstat/sa${new Date(day).toISOString().slice(8, 10)}`, "--", flag],
+        args: ["-d", file, "--", flag],
         cwd: "/",
         stderr: "null",
         signal: AbortSignal.timeout(2000),
       }).output();
       if (out.success) {
-        rows.push(
-          ...parseSadf(new TextDecoder().decode(out.stdout)).filter((r) =>
-            r.at >= from && r.at <= to
-          ),
-        );
+        for (const row of parseSadf(new TextDecoder().decode(out.stdout))) {
+          if (row.at >= from && row.at <= to) byTime.set(row.at, row);
+        }
       }
     } catch {
       // Missing or unreadable history stays missing, not zero usage.
     }
   }
-  return rows.sort((a, b) => a.at - b.at);
+  return [...byTime.values()].sort((a, b) => a.at - b.at);
 }
 
 async function meminfo(): Promise<Record<string, number>> {
@@ -138,7 +194,25 @@ export async function collectReport(
 
 export function creditLines(s: PublicState, clock: (ms: number) => string): string[] {
   const c = s.credits;
+  const cal = c.calibration;
   const { surplus, debit } = spending(s);
+  // Warnings carry the date: a fallback hold starts a day after the readings went stale, and a
+  // drift change or cooldown can be days old, which a time of day alone hid.
+  const dated = (ms: number) => new Date(ms).toISOString().slice(0, 16).replace("T", " ") + "Z";
+  const warnings = calibrationWarnings(s, dated).map((w) => w.statusLine);
+  const historyNote = c.anchor
+    ? `Hostinger history checked ${clock(c.anchor.checkedAt)}, ${
+      cal?.mode === "apply" ? "tighten only" : "diagnostic only"
+    }${
+      cal?.readingsInvalid
+        ? `, readings invalid${
+          cal.invalidReasons?.length ? ` (${cal.invalidReasons.join(", ")})` : ""
+        }`
+        : c.anchor.difference === null
+        ? ""
+        : `, CPU difference ${c.anchor.difference.toFixed(1)} points`
+    }`
+    : "Hostinger history not yet checked";
   return [
     `Estimated CPU credits ${c.percent}% · ${c.balance.toLocaleString("en-US")} of ${
       s.plan.capacity.toLocaleString("en-US")
@@ -157,18 +231,9 @@ export function creditLines(s: PublicState, clock: (ms: number) => string): stri
       : [
         `${c.rate >= 0 ? "Earning" : "Spending"} ${
           Math.abs(c.rate).toFixed(1)
-        } vCPU's worth now (baseline ${s.plan.baseline} of ${s.plan.vcpus}) · ${
-          c.anchor
-            ? `Hostinger history checked ${clock(c.anchor.checkedAt)}, ${
-              c.calibration?.mode === "apply" ? "tighten only" : "diagnostic only"
-            }${
-              c.anchor.difference === null
-                ? ""
-                : `, CPU difference ${c.anchor.difference.toFixed(1)} points`
-            }`
-            : "Hostinger history not yet checked"
-        } · margin ×${c.margin.mul} +${c.margin.add} vCPU`,
+        } vCPU's worth now (baseline ${s.plan.baseline} of ${s.plan.vcpus}) · ${historyNote} · margin ×${c.margin.mul} +${c.margin.add} vCPU`,
       ]),
+    ...warnings.map((w) => `Warning: ${w}.`),
   ];
 }
 

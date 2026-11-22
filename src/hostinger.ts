@@ -31,6 +31,11 @@ export const MAX_VM_ID = Number.MAX_SAFE_INTEGER;
 export const REQUEST_TIMEOUT_MS = 25_000;
 export const BROKER_COOLDOWN_SECONDS = 60;
 export const CHECK_WINDOW_MS = 12 * 3_600_000;
+// `check-hostinger` makes two broker requests inside one budget: two request deadlines, which
+// setup's connection check allows for plus a quick command's startup. That outlasts a live broker
+// worker's 18-second lock, so the check rides out an overlapping daemon poll.
+export const CHECK_BUDGET_MS = 2 * REQUEST_TIMEOUT_MS;
+export const CHECK_BUSY_STEP_MS = 2_000;
 export const BROKER_CAPABILITY = "request_command v1 supported";
 export const TEMPORARY_ERRORS = ["busy", "rate_limited"] as const;
 // The broker's code for metrics no CPU percentage can be, which the daemon treats as invalid
@@ -64,6 +69,38 @@ export class HostingerBrokerUnavailable extends Error {
   }
 }
 
+// Run one broker operation inside a budget shared with others, retrying a transient `busy` while
+// the budget lasts; `rate_limited` and every other error propagate at once. Each attempt gets only
+// what is left: a retry that began as the wait ran out used to take a fresh request deadline, and
+// the next operation another, 75 seconds in all against the 55 setup allows the whole check.
+export async function retryBrokerBusy<T>(
+  call: (timeoutMs: number) => Promise<T>,
+  deadline: number,
+  options: {
+    now?: () => number;
+    sleep?: (ms: number) => Promise<void>;
+    stepMs?: number;
+  } = {},
+): Promise<T> {
+  const now = options.now ?? (() => performance.now());
+  const sleep = options.sleep ?? ((ms) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
+  const stepMs = options.stepMs ?? CHECK_BUSY_STEP_MS;
+  let busy: HostingerBrokerUnavailable | undefined;
+  for (;;) {
+    const remaining = Math.floor(deadline - now());
+    if (remaining <= 0) throw busy ?? new Error("Hostinger request command timed out");
+    try {
+      return await call(Math.min(REQUEST_TIMEOUT_MS, remaining));
+    } catch (error) {
+      if (!(error instanceof HostingerBrokerUnavailable && error.code === "busy")) throw error;
+      busy = error;
+      // No time left for a pause and another attempt after it.
+      if (deadline - now() <= stepMs) throw error;
+      await sleep(stepMs);
+    }
+  }
+}
+
 export function validateSource(src: HostingerSource): void {
   for (const key of ["token_command", "request_command"] as const) {
     const command = src[key];
@@ -86,7 +123,11 @@ export function validateSource(src: HostingerSource): void {
   }
 }
 
-async function commandRequest(command: string[], request: HostingerRequest): Promise<unknown> {
+async function commandRequest(
+  command: string[],
+  request: HostingerRequest,
+  timeoutMs = REQUEST_TIMEOUT_MS,
+): Promise<unknown> {
   // The broker receives an operation, never a URL, header, or credential. Errors and stderr may
   // contain sensitive upstream text, so neither is included in the daemon's logs.
   const child = new Deno.Command(command[0], {
@@ -113,7 +154,7 @@ async function commandRequest(command: string[], request: HostingerRequest): Pro
   const timer = setTimeout(() => {
     expired = true;
     stop();
-  }, REQUEST_TIMEOUT_MS);
+  }, Math.min(timeoutMs, REQUEST_TIMEOUT_MS));
   try {
     const input = (async () => {
       await writer.write(new TextEncoder().encode(JSON.stringify(request) + "\n"));
@@ -253,14 +294,20 @@ async function get<T>(src: TokenSource, path: string): Promise<T> {
   return await res.json() as T;
 }
 
+// `timeoutMs` shortens a broker request's deadline; a direct API request keeps its own, shorter one.
 export async function vm(
   src: HostingerSource,
   id: number,
+  timeoutMs = REQUEST_TIMEOUT_MS,
 ): Promise<{ cpus?: number; ipv4: string[] | undefined }> {
   validateSource(src);
   validId(id);
   const body = src.request_command
-    ? await commandRequest(src.request_command, { version: 1, operation: "vm", vm_id: id })
+    ? await commandRequest(
+      src.request_command,
+      { version: 1, operation: "vm", vm_id: id },
+      timeoutMs,
+    )
     : await get<unknown>(src, `/${id}`);
   if (!body || typeof body !== "object" || Array.isArray(body)) {
     throw new Error("invalid Hostinger VM response");
@@ -333,6 +380,7 @@ export async function cpuReadings(
   from: number,
   now = Date.now(),
   includeNewest = false,
+  timeoutMs = REQUEST_TIMEOUT_MS,
 ): Promise<Reading[]> {
   validateSource(src);
   validId(id);
@@ -347,7 +395,7 @@ export async function cpuReadings(
       vm_id: id,
       from,
       to: now,
-    })
+    }, timeoutMs)
     : await get(
       src,
       `/${id}/metrics?date_from=${new Date(from).toISOString()}&date_to=${

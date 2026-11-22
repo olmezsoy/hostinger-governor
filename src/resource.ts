@@ -89,6 +89,117 @@ const peak = (points: Point[], fallback = 0) => Math.max(fallback, ...points.map
 const badge = (value: number, warning: number, danger: number) =>
   value >= danger ? "🔴" : value >= warning ? "🟡" : "🟢";
 
+// Whether the last quota update failed. Reads the explicit field when present and falls back to
+// the pre-v0.3.3 inference (`!limit && !accepting`) for older saved state files.
+export const isCapFailed = (state: PublicState) =>
+  state.capFailed ?? (!state.limit && !state.accepting);
+
+export type CalibrationWarning = {
+  condition: string;
+  severity: "danger" | "warning";
+  stateText: string;
+  statusLine: string;
+};
+
+// Shared, mode-aware calibration warnings for `governor status` and `governor report`.
+export function calibrationWarnings(
+  state: PublicState,
+  clock: (ms: number) => string,
+): CalibrationWarning[] {
+  const cal = state.credits.calibration;
+  if (!cal) return [];
+  const applying = cal.mode === "apply";
+  const warnings: CalibrationWarning[] = [];
+  if (cal.failing) {
+    const since = clock(cal.failing.since);
+    // Off and shadow apply nothing, but a failing evaluation there is what an operator needs to
+    // see before turning apply on.
+    const note = applying
+      ? "holding fallback margin"
+      : `estimates not updating in ${cal.mode} mode`;
+    warnings.push({
+      condition: "Calibration evaluation",
+      severity: "danger",
+      stateText: `Failing since ${since}; ${note}`,
+      statusLine: `Calibration failing since ${since}; ${note}`,
+    });
+  }
+  if (cal.rulesMismatch) {
+    const note = applying ? "holding fallback margin" : `not applied in ${cal.mode} mode`;
+    warnings.push({
+      condition: "Rules mismatch",
+      severity: "danger",
+      stateText: `Latched until calibration reset; ${note}`,
+      statusLine: `Rules mismatch latched until calibration reset; ${note}`,
+    });
+  }
+  if (cal.hold) {
+    const since = clock(cal.hold.since);
+    const kind = applying ? "Active" : "Recorded";
+    const modeNote = applying ? "" : `; not applied in ${cal.mode} mode`;
+    warnings.push({
+      condition: "Fallback hold",
+      severity: "warning",
+      stateText: `${kind} (${cal.hold.reason} readings since ${since}${modeNote})`,
+      statusLine:
+        `Fallback hold ${kind.toLowerCase()} (${cal.hold.reason} readings since ${since}${modeNote})`,
+    });
+  }
+  if (cal.ownHold) {
+    const gap = Math.round(cal.ownHold.gap * 1000) / 1000;
+    const kind = applying ? "Active" : "Recorded";
+    const modeNote = applying ? "" : `; not applied in ${cal.mode} mode`;
+    warnings.push({
+      condition: "Own-count hold",
+      severity: "warning",
+      stateText: `${kind} (${gap}-core gap${modeNote})`,
+      statusLine: `Own-count hold ${kind.toLowerCase()} (${gap}-core gap${modeNote})`,
+    });
+  }
+  if (cal.readingsInvalid) {
+    const why = cal.invalidReasons?.length ? ` (${cal.invalidReasons.join(", ")})` : "";
+    const since = cal.apiStaleSince !== null ? ` since ${clock(cal.apiStaleSince)}` : "";
+    const scope = applying ? "calibration and clamping" : "calibration";
+    warnings.push({
+      condition: "Hostinger readings",
+      severity: "danger",
+      stateText: `Invalid${why}${since}; excluded from ${scope}`,
+      statusLine: `Hostinger readings invalid${why}${since}; excluded from ${scope}`,
+    });
+  } else if (cal.apiStaleSince !== null) {
+    const since = clock(cal.apiStaleSince);
+    warnings.push({
+      condition: "Hostinger readings",
+      severity: "warning",
+      stateText: `Stale since ${since}`,
+      statusLine: `Hostinger readings stale since ${since}`,
+    });
+  }
+  if (cal.cusum.pending) {
+    const pend = cal.cusum.pending;
+    const since = clock(pend.at);
+    const detail = pend.verified
+      ? `Verified since ${since}, waiting for refit`
+      : `Pending verification since ${since} (${pend.readings} readings)`;
+    warnings.push({
+      condition: "Drift change",
+      severity: "warning",
+      stateText: detail,
+      statusLine: `Drift change ${detail[0].toLowerCase()}${detail.slice(1)}`,
+    });
+  }
+  if (cal.cooldownUntil !== null) {
+    const until = clock(cal.cooldownUntil);
+    warnings.push({
+      condition: "Sustained-use cooldown",
+      severity: "warning",
+      stateText: `Active until ${until}`,
+      statusLine: `Sustained-use cooldown until ${until}`,
+    });
+  }
+  return warnings;
+}
+
 // What the estimate can spend above the reserve, and how fast every vCPU spends it. State from
 // before v0.3 has no law: it always spent down to the legacy floor.
 export function spending(state: PublicState) {
@@ -142,7 +253,16 @@ export function buildReport(
     const filled = Math.max(0, Math.min(20, Math.round(percent / 5)));
     const rows = [
       ["Balance", `${number(c.balance, 0)} / ${number(p.capacity, 0)} core-seconds`],
-      ["Work admission", state.accepting ? "🟢 Accepting work" : "🔴 New work paused"],
+      [
+        "Work admission",
+        state.accepting
+          ? "🟢 Accepting work"
+          : state.limit && isCapFailed(state)
+          ? "🔴 New work paused (recovery ceiling not applied)"
+          : state.limit
+          ? "🔴 New work paused"
+          : "🔴 New work paused (ceiling not applied)",
+      ],
       ["Host CPU limit", state.limit ? "🔴 Detected" : "Not detected"],
       [
         rate === null ? "Bank trend" : rate >= 0 ? "Earning" : "Spending",
@@ -193,6 +313,16 @@ export function buildReport(
       chart: `${"█".repeat(filled)}${"░".repeat(20 - filled)}  ${percent.toFixed(1)}%`,
       table: { headers: ["Credit metric", "Current estimate"], rows },
     });
+    const warnRows = calibrationWarnings(state, (ms) => new Date(ms).toISOString()).map((w) => [
+      w.condition,
+      `${w.severity === "danger" ? "🔴" : "🟡"} ${w.stateText}`,
+    ]);
+    if (warnRows.length) {
+      sections.push({
+        title: "Calibration warnings",
+        table: { headers: ["Condition", "State"], rows: warnRows },
+      });
+    }
     if (c.rebuilding) {
       const reasons = {
         "first-start": "first startup",
@@ -311,17 +441,27 @@ export function buildReport(
   }
   if (state?.credits.anchor) {
     const a = state.credits.anchor;
+    const cal = state.credits.calibration;
+    const detail = cal?.readingsInvalid
+      ? `Readings are invalid${
+        cal.invalidReasons?.length ? ` (${cal.invalidReasons.join(", ")})` : ""
+      } and excluded from calibration`
+      : cal?.apiStaleSince !== null && cal?.apiStaleSince !== undefined
+      ? `Readings are stale since ${new Date(cal.apiStaleSince).toISOString()}`
+      : a.difference === null
+      ? "Guest/API samples are not comparable"
+      : `Guest/API difference ${number(a.difference)} percentage points`;
     sections.push({
       title: "API comparison",
-      note: `Last checked ${new Date(a.checkedAt).toISOString()}. ${
-        a.difference === null
-          ? "Guest/API samples are not comparable"
-          : `Guest/API difference ${number(a.difference)} percentage points`
-      }. API history never resets the bank.`,
+      note: `Last checked ${
+        new Date(a.checkedAt).toISOString()
+      }. ${detail}. API history never resets the bank.`,
     });
   }
   const { memory, swap, load, disk } = resources;
-  const lowest = Math.min(memory.free, ...memory.history.map((p) => p.v));
+  const lowest = memory.history.length
+    ? Math.min(memory.free, ...memory.history.map((p) => p.v))
+    : memory.free;
   const diskUsed = disk.total ? 100 * (1 - disk.free / disk.total) : 0;
   sections.push({
     title: "Memory, load and storage",
@@ -331,17 +471,21 @@ export function buildReport(
         [
           `${badge(memory.total ? 100 * (1 - lowest / memory.total) : 0, 80, 90)} Memory`,
           `${number(memory.free)} / ${number(memory.total)} GiB free`,
-          `Lowest free ${number(lowest)} GiB`,
+          memory.history.length ? `Lowest free ${number(lowest)} GiB` : "Not available",
         ],
         [
           `${badge(swap.used, 50, 90)} Swap`,
           `${number(swap.used)}% used / ${number(swap.total)} GiB`,
-          `Peak ${number(peak(swap.history, swap.used))}% used`,
+          swap.history.length
+            ? `Peak ${number(peak(swap.history, swap.used))}% used`
+            : "Not available",
         ],
         [
           `${badge(load.current[0], resources.vcpus, resources.vcpus * 2)} Load`,
           load.current.map((v) => number(v, 2)).join(" / "),
-          `Peak ${number(peak(load.history, load.current[0]), 2)} · ${resources.vcpus} vCPUs`,
+          load.history.length
+            ? `Peak ${number(peak(load.history, load.current[0]), 2)} · ${resources.vcpus} vCPUs`
+            : "Not available",
         ],
         [
           `${badge(diskUsed, 70, 85)} Disk /`,
