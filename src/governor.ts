@@ -4,7 +4,6 @@
 import {
   allowedCores,
   type Anchor,
-  atCapBand,
   canProbeSlice,
   charged,
   creditStep,
@@ -165,6 +164,9 @@ export type Sample = {
   // Core-seconds the estimate was charged for this sample's steal (apply). A limit that turns out
   // to have begun here gives them back: that steal was the cap's own (enterLimit).
   stealCharged?: number;
+  // Cores of its ceiling the slice left unconsumed. Absent where that is unknown: a test, a
+  // failed quota, no usage count, or a sample from before v0.3.3.
+  slack?: number;
 };
 export type Limit = {
   since: number;
@@ -202,14 +204,7 @@ export type Private = {
   anchor?: Anchor & { checkedAt: number };
   limit?: Limit;
   // quietUntil: uptime until which no credit limit can follow the last credit lift.
-  // `failedAtCap`: the VM already sat in the cap's band when the probe failed.
-  probe: {
-    cooldownUntil: number;
-    backoffMs: number;
-    failedSf?: number;
-    failedAtCap?: boolean;
-    quietUntil?: number;
-  };
+  probe: { cooldownUntil: number; backoffMs: number; failedSf?: number; quietUntil?: number };
   samples: Sample[];
   tested?: boolean;
   readings: Reading[];
@@ -296,10 +291,10 @@ const TEST_MAX_MS = 15 * 60_000;
 const TIGHTEN_AFTER_MS = 60_000;
 const BACKOFF_MS = 10 * 60_000;
 const BACKOFF_MAX_MS = 3_600_000;
-// A slice whose demand, averaged over the control window, is this share of its ceiling asks for all
-// the ceiling allows: lowering the ceiling lowers what it asks. The slack covers a ceiling that
-// moved within the window.
-const CEILING_BOUND = 0.9;
+// A cap takes delivery away at unchanged demand. At the floor the allowance asks for the baseline,
+// 60% of the vCPUs, and a cap delivers 30% of them, or 40% on a KVM 1: at most 73% of what ran.
+// Delivery a fifth below its share of demand at the failed probe is inside what any cap takes.
+const DROPPED = 0.8;
 const HOT_BUSY = 0.6;
 const HOT_STEAL = 0.05;
 const TOP_EVERY_MS = 5 * 60_000;
@@ -822,9 +817,27 @@ export class Governor {
     const settings = this.settings;
     return { ...settings, add: settings.add + this.stealCost(busyCores, stealCores) };
   }
-  // `margin` carries the steal charge of the control window: what is charged for steal is not
-  // there to spend on the slice, so the ceiling gives it up at once. Left to the bank alone, the
-  // estimate fell a whole floor's reserve before the law took half a core back.
+  // The margin the ceiling is set from: the steal charge of the control window in it, less what
+  // the slice left unspent of its ceiling over the same window. The allowance plans for a slice
+  // that consumes all its ceiling. Where it does, steal comes on top of that and its charge is
+  // not there to spend, so the ceiling gives it up at once: left to the bank alone, the estimate
+  // fell a whole floor's reserve before the law took half a core back. Where the stolen CPU is
+  // the slice's own, the slice consumed that much less than planned, and the room it left pays
+  // for the charge. Giving the ceiling up there as well bought nothing and cut what the slice
+  // asked for, and under a new cap that shrank the steal a limit is recognised by: one that began
+  // during a probe cooldown went unrecognised for the rest of it, up to an hour.
+  private givingUp(busyCores: number, stealCores: number): Settings {
+    const settings = this.settings;
+    const charge = this.stealCost(busyCores, stealCores);
+    if (!charge) return settings;
+    const slack = avg(this.controlSamples(STEAL_WINDOW_MS).map((x) => x.slack ?? 0));
+    return { ...settings, add: settings.add + Math.max(0, charge - settings.mul * slack) };
+  }
+  // The steal share a failed probe left to the neighbours, while its cooldown lasts.
+  private get failedShare(): number | undefined {
+    return (this.s.uptime ?? 0) < this.s.probe.cooldownUntil ? this.s.probe.failedSf : undefined;
+  }
+  // `margin` is the one the ceiling gives up for (givingUp), or the settings alone.
   private targetCeiling(outside: number, margin: Settings = this.settings) {
     const allowed = allowedCores(this.plan, this.actedBalance, margin, this.law);
     // After a sustained-use limit, stay at or below the baseline for the cooldown.
@@ -1473,8 +1486,11 @@ export class Governor {
     const s = this.s;
     let onset = now;
     let track = this.calibration.estimates.track;
-    // What the samples of the onset were charged for steal: it was the cap's own, not neighbours'.
+    // What the samples of the onset were charged for steal the cap caused. The walk back can cross
+    // neighbours' steal too, which was billed: of each sample's charge, the share of demand the
+    // last failed probe left to the neighbours stays charged.
     let capSteal = 0;
+    const neighbours = this.failedShare ?? 0;
     for (const sample of [...s.samples].reverse()) {
       if (sample.test || !limitOnsetSample(this.plan, sample.busy, sample.steal)) break;
       // Time the daemon didn't watch, or whose clock jumped, can't place an onset inside it.
@@ -1487,12 +1503,17 @@ export class Governor {
       if (!capShaped && now - sample.at > STEAL_WINDOW_MS) break;
       onset = sample.at - (sample.seconds ?? 0) * 1000;
       track = sample.track ?? null;
-      capSteal += sample.stealCharged ?? 0;
+      if (sample.stealCharged && sample.steal > 0) {
+        capSteal += sample.stealCharged *
+          Math.max(0, 1 - neighbours * (sample.busy + sample.steal) / sample.steal);
+      }
     }
+    // Given back once: a later entry over the same samples, as after `limit off`, starts clean.
+    for (const sample of s.samples) delete sample.stealCharged;
     // The estimate at entry measures the margin's optimism, and what follows a limit learns from
     // it. Charged for the cap's steal in the minutes before the limit was recognised, it read
     // lower than the margin had left it, and a limit taught less than it showed.
-    const acted = Math.min(this.plan.capacity, this.actedBalance + capSteal);
+    const acted = this.actedBalance + capSteal;
     const entry = {
       balance: Math.min(this.plan.capacity, s.balance + capSteal),
       used: s.used,
@@ -1650,6 +1671,9 @@ export class Governor {
   // The bank an operator's request states, which the clamp replays from until history holds a later
   // anchor.
   private operatorBase(balance: number, now: number) {
+    // The bank is the operator's from here: no steal charged before this is the estimate's to
+    // give back at a later limit.
+    for (const sample of this.s.samples) delete sample.stealCharged;
     const gap = this.calibration.gap;
     this.calibration.replayBase = { at: now, balance, exact: false, gap, origin: now };
   }
@@ -1894,6 +1918,12 @@ export class Governor {
       test: !!s.tested,
       limited: !!s.limit,
       track: this.calibration.estimates.track,
+      // `s.ceiling` is the quota the last pass left in force, which this sample ran under.
+      ...(s.ceiling !== undefined && !s.capFailed && !s.tested &&
+          usage?.total !== undefined && oldUsage?.total !== undefined &&
+          usage.total >= oldUsage.total
+        ? { slack: Math.max(0, s.ceiling / 100 - managed) }
+        : {}),
       // A pass that probed or tested the lift runs up to a minute longer, which the daemon watched.
       ...(seconds > 2 * (this.cfg.tick_seconds ?? DEFAULT_TICK_SECONDS) + (s.tested ? 60 : 0)
         ? { unobserved: true }
@@ -1968,34 +1998,32 @@ export class Governor {
     ) {
       s.probe.backoffMs = BACKOFF_MS;
       s.probe.failedSf = undefined;
-      s.probe.failedAtCap = undefined;
     }
     // During a cooldown, probe again only if steal is evident or well above what the failed probe
     // saw: neighbours that failed a probe should not hide a limit that starts behind them.
-    const failed = uptime < s.probe.cooldownUntil ? s.probe.failedSf : undefined;
+    const failed = this.failedShare;
     const jumped = failed !== undefined && sfNow >= Math.max(2 * failed, failed + 0.15);
+    // Without the steal charge, the estimate rises under a cap it has not recognised, the ceiling
+    // opens, and the steal share grows until it has jumped. Charged for the cap's steal, the
+    // estimate stays where it is and so does the share: a cap that began during a cooldown and
+    // took less than `jumped` asks for stayed unrecognised until the cooldown ended, up to an
+    // hour. So where steal is charged, delivery that has lost a fifth of its share of demand
+    // since the failed probe, in every sample of the control window, earns a test as well. Every
+    // sample, so that the test meets the steal as it now is and not an average still rising.
+    const dropped = this.applying && failed !== undefined &&
+      this.controlSamples(STEAL_WINDOW_MS).every((x) =>
+        1 - demandSteal(x.busy, x.steal) <= DROPPED * (1 - failed)
+      );
     // Right after a credit lift no credit limit can come yet: only evident steal is taken as one.
     const quiet = uptime < (s.probe.quietUntil ?? 0);
     const evident = sfNow >= LIMIT_EVIDENT && evidentSteal(p, steal);
     const pinned = !quiet && pinnedAtCap(p, busy, steal, avgOutside);
     const canProbe = !quiet && canProbeSlice(p, busy, steal, avgOutside);
-    // Delivery has settled into the cap's band with steal, it was not there when the last probe
-    // failed, steal is being charged and the slice asks for all its ceiling allows. The ceiling
-    // gives up what steal is charged, so under a new cap that demand shrinks toward the cap and
-    // the steal share stops short of `jumped` and `evident`: a limit that began during a
-    // 60-minute cooldown pressed on the cap for all of it. A cap pins delivery whatever the
-    // ceiling does, so the move into its band asks for one more test. Where no steal is charged,
-    // or the slice is below its ceiling, the steal shows undiminished, and each test costs the
-    // reading pair around it, which on a contended host is one the steal model needs.
-    const atCap = atCapBand(p, busy, steal);
-    const givenUp = this.controlSamples(STEAL_WINDOW_MS).some((x) => x.stealCharged) &&
-      sliceDemand(p, busy, steal, avgOutside) >= CEILING_BOUND * (current ?? 100 * p.vcpus) / 100;
-    const settled = atCap && givenUp && failed !== undefined && !s.probe.failedAtCap;
     if (
       !s.limit && count >= 3 && sfNow >= LIMIT_STEAL &&
       steal * p.vcpus >= 0.02 &&
       (evident || pinned || canProbe) &&
-      (uptime >= s.probe.cooldownUntil || evident || jumped || settled)
+      (uptime >= s.probe.cooldownUntil || evident || jumped || dropped)
     ) {
       const sf0 = sfNow;
       let pinnedConfirmed: { delivery?: { busy: number; demand: number }; finished: Clock } | null =
@@ -2023,7 +2051,6 @@ export class Governor {
         }
         s.probe.backoffMs = BACKOFF_MS;
         s.probe.failedSf = undefined;
-        s.probe.failedAtCap = undefined;
         log(
           confirmed === "pinned"
             ? `limit: start, the VM pinned at the cap with the slice idle (margin x${this.settings.mul} +${this.settings.add})`
@@ -2038,7 +2065,6 @@ export class Governor {
         s.probe.cooldownUntil = Math.max(uptime, finished.uptime) + backoff;
         s.probe.backoffMs = Math.min(backoff * 2, BACKOFF_MAX_MS);
         s.probe.failedSf = sf0;
-        s.probe.failedAtCap = atCap;
       }
     }
 
@@ -2278,8 +2304,21 @@ export class Governor {
     { busy, steal, outside }: ControlMeasurements,
   ) {
     const s = this.s;
-    const margin = this.charging(busy * this.plan.vcpus, steal * this.plan.vcpus);
-    const target = this.targetCeiling(outside, margin);
+    const margin = this.givingUp(busy * this.plan.vcpus, steal * this.plan.vcpus);
+    const target = margin === this.settings
+      ? this.targetCeiling(outside)
+      // Giving up stops above what a cap would leave the slice, under the neighbours the last
+      // failed probe saw. A slice held at or under that cannot press on a cap, so the cap's
+      // steal stops, the charge with it, and the ceiling comes back: on a KVM 1 that went round
+      // every few minutes and averaged the steal below anything a limit is recognised by.
+      : Math.max(
+        this.targetCeiling(outside, margin),
+        Math.min(
+          this.targetCeiling(outside),
+          Math.floor((this.plan.limit * (1 - (this.failedShare ?? 0)) - outside) * 10 + 1e-9) *
+              10 + 10,
+        ),
+      );
     // Outside a limit on 4+ vCPU plans, skip 10% jitter away from the 20% floor and full-plan
     // ceiling. While actively throttling below full vCPU capacity, never delay tightening so the
     // deadband cannot bias credit spend upward.

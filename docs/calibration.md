@@ -244,7 +244,7 @@ contention burst from a change in the meter, and does it in two steps:
   verified on the burst's own remaining pairs, and held the margin until a refit the alarm itself
   kept from running. Allowed to explain a residual up to all the steal there was, the expected steal
   included, 2% of the load stolen all the time hid S4's slope change from drift detection for the
-  twelve days the study had left (study S16).
+  four weeks the study had left (study S16).
 - `fitMeter` fits a detection-only steal model (`stealFit: host = a * own + b + c * steal`) by
   within-day fixed effects once at least 10 pairs on at least two UTC days carry 0.05 or more stolen
   cores with enough within-day variance. Within-day demeaning cancels day-level meter offsets, so a
@@ -287,23 +287,49 @@ contention window ever coming to bound it (study S16). A box without a fit has n
 every KVM 1 and KVM 2 at the default `fit.min_cores` of 3, and any box before its first fit: there
 each stolen core is charged whole.
 
+Line and charge together cover the reading for any sensitivity up to the bound, with two exceptions,
+both older than the charge. Where the line through the fit's steal runs below zero, as it does under
+load when the steal kept to idle hours, the fit's own line reads low by the sensitivity times that
+much: 0.03 to 0.06 cores at six busy cores in the case measured. And the margin covers the fit's
+line where the allowance binds, not near idle: a fit with a high offset sat 0.07 cores above the
+margin and the charge at 0.2 busy cores. `v0.3.2` charged nothing for steal in either place.
+
 The charge enters the live estimate, the clamp's tail and bridged reading gaps, the replay that sets
-the floor after a limit, and a sustained-use restore. The ceiling gives it up at once, since what is
-charged for steal is not there to spend on the slice: left to the bank alone, the estimate fell a
-whole floor's reserve before the law took half a core back. `off` and `shadow` do not charge their
-live estimate; the clamp they report is the one `apply` would hold, charge included. A limit is not
-charged either, since its steal is the cap's own, and what the cap's steal was charged between its
-onset and its detection goes back into the estimate the limit learns from.
+the floor after a limit, and a sustained-use restore. `off` and `shadow` do not charge their live
+estimate; the clamp they report is the one `apply` would hold, charge included. A limit is not
+charged either, since its steal is the cap's own. What the cap's steal was charged between its onset
+and its detection goes back into the estimate the limit learns from, once, less the share of demand
+the last failed probe left to the neighbours, who were billed for it.
 `credits.calibration.stealBound` reports the bound in every mode.
 
-Giving the ceiling up has one side effect the limit detector has to undo. A slice that asks for all
-its ceiling allows asks for less as the ceiling falls, so under a new cap its steal share shrinks
-before it looks like a limit, and a cap that began during a probe cooldown pressed on for the whole
-hour. A cap pins delivery whatever the ceiling does. So when delivery settles into the cap's band
-while steal is being charged and the slice is at its ceiling, and it was not in the band when the
-last probe failed, the cooldown allows one more test. A slice below its ceiling shows its steal
-undiminished, as does any slice in `off` and `shadow`, and gets no extra test: each test costs the
-reading pair around it, which on a contended host is a pair the steal model needs.
+The allowance plans for a slice that consumes all its ceiling. Steal that comes on top of that is
+not planned for, and the ceiling gives its charge up at once: left to the bank alone, the estimate
+fell a whole floor's reserve before the law took half a core back, and with heavy steal billed in
+full the bank emptied. Steal that displaced the slice's own CPU is another matter. The slice then
+consumed that much less than planned, and the room it left pays for the charge. So the ceiling gives
+up only the charge that the slice's unused allowance over the same five minutes does not cover.
+Giving up all of it bought nothing there and cut what the slice asked for. Under a new cap that
+shrank the steal a limit is recognised by: one that began during a probe cooldown went unrecognised
+for the rest of it, up to an hour, where `v0.3.2` took two to five minutes.
+
+Two more rules keep a cap in sight while steal is charged:
+
+- Giving up stops one 10-point step above what a cap would leave the slice, under the neighbours the
+  last failed probe saw. A slice held at or under that cannot press on a cap. The cap's steal then
+  stops, the charge with it, and the ceiling comes back: on a KVM 1 that went round every few
+  minutes, and the steal averaged below anything a limit is recognised by.
+- Uncharged, the estimate rises under a cap it has not recognised, the ceiling opens, and the steal
+  share grows until it has doubled, which bypasses a cooldown. Charged for the cap's steal, the
+  estimate stays where it is. So in `apply`, delivery that has lost a fifth of its share of demand
+  since the failed probe, in every sample of the five-minute window, bypasses the cooldown as well.
+  A cap at the floor takes at least 27% of delivery on every plan. It has to be every sample, so
+  that the test compares its cut with the steal as it now is and not with an average still rising.
+
+With these, a limit that begins a minute after a failed probe is entered within six minutes on every
+plan, whether the neighbours stay or leave, both in the simulators' world and in one where steal
+comes on top of consumed CPU. The exception measured is a KVM 1 whose neighbours leave as the cap
+arrives. The cap takes 7% of its delivery, and it is found when the cooldown ends, where `v0.3.2`
+found it after 46 minutes.
 
 A reading at the 100% cap only bounds the meter from below. It never counts as a normal residual and
 never reaches drift detection, so a jump clipped at the cap cannot pass for valid readings; one

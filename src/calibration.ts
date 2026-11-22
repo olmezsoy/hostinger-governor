@@ -672,7 +672,10 @@ export const expectedSteal = (fit: MeterFit | null, own: number): number =>
 // the expected steal at whatever the sensitivity is, so the two together cover the reading for
 // any sensitivity up to the bound. Charged whole, the steady steal of a contended host cost 1.1%
 // of CPU for good, on top of a margin that already paid for it. Without a fit nothing is known
-// to be carried, and every stolen core is charged.
+// to be carried, and every stolen core is charged. Two places fall short of that cover, as they
+// did before any steal was charged: where the line through the fit's steal runs below zero, the
+// fit's own line reads low by the sensitivity times that much; and near idle a fit with a high
+// offset sits above the margin, which covers it where the allowance binds.
 export function stealCharge(fit: MeterFit | null, own: number, steal: number): number {
   return stealBound(fit) * Math.max(0, steal - expectedSteal(fit, own));
 }
@@ -1813,7 +1816,7 @@ const detectSigmaAt = (fit: MeterFit, u: number) => {
 // core per stolen core. Without one the line already carries the steal expected at this load, so
 // only the steal beyond it, or short of it, can move a reading: a host whose steal is a steady
 // share of what runs explains nothing with it. Measured against all the steal instead, such a
-// host hid every rise smaller than its steal, and a slope change went unalarmed for twelve days.
+// host hid every rise smaller than its steal, and a slope change went unalarmed for four weeks.
 const stealRange = (fit: MeterFit, pair: Pair): [number, number] => {
   const steal = pair.steal ?? 0;
   if (detectModel(fit)) return [0, steal];

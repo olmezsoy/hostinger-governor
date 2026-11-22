@@ -732,7 +732,7 @@ export function assessStudy(
   if (sc.id === "S16") {
     // Steal that is a steady share of what runs is in the fit's line already, so it explains
     // nothing: allowed to explain a residual up to itself, it hid S4's slope change from drift
-    // detection for the twelve days left, and charged whole it cost 1.1% of CPU for good.
+    // detection for the four weeks left, and charged whole it cost 1.1% of CPU for good.
     exception(r.creditLimits === 0, "A credit limit occurred.");
     const alarm = r.decisions.find((d) => d.trigger === "cusum-alarm" && d.at >= 28 * DAY_S);
     exception(

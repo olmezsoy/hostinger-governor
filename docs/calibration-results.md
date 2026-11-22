@@ -49,8 +49,8 @@ top. Its comparison run is S4, the same change without the steal.
 | S12   | shadow against off                | pass   |             1 |     0.00651 | Identical ceilings through the same credit limit; 21 would-be changes logged.                                                                                                                                                                                                  |
 | S13   | readings 50% noisier              | pass   |             0 |           0 | No limit. The fit's noise at 3 cores is 1.49 times the regular run's, and the premium raises the addition from 0.046 to 0.063, at 0.27% of CPU.                                                                                                                                |
 | S14   | clamp on against clamp off        | pass   |             0 |           0 | No limit either way: the drift hold covers the change at the alarm. CPU with the clamp is within 0.01% of CPU without it.                                                                                                                                                      |
-| S15   | neighbours' steal billed at 0.5   | pass   |             0 |           0 | No limit, no drift alarm and no invalid readings on 19 contended days: steal is charged as it happens, a whole core per stolen core until drift detection learns a sensitivity of 0.51 on day 29.4. CPU is 0.68% above off's, which the same contention does not limit either. |
-| S16   | steady steal, S4's slope change   | pass   |             0 |           0 | The slope change is alarmed 9.0 hours after it and verified on day 29.4, with no alarm before it. Steal the fit expects is neither charged nor allowed to explain a residual: CPU is 1.55% below S4's, of which the neighbours take 2%.                                        |
+| S15   | neighbours' steal billed at 0.5   | pass   |             0 |           0 | No limit, no drift alarm and no invalid readings on 19 contended days: steal is charged as it happens, a whole core per stolen core until drift detection learns a sensitivity of 0.51 on day 29.4. CPU is 0.69% above off's, which the same contention does not limit either. |
+| S16   | steady steal, S4's slope change   | pass   |             0 |           0 | The slope change is alarmed 9.0 hours after it and verified on day 29.4, with no alarm before it. Steal the fit expects is neither charged nor allowed to explain a residual: CPU is 1.54% below S4's, of which the neighbours take 2%.                                        |
 
 Some passes are weaker evidence than their status suggests:
 
@@ -67,17 +67,17 @@ Some passes are weaker evidence than their status suggests:
 - S15 shows what charging steal costs as well as what it prevents. Uncharged, the first contended
   day that met a bank at its 5% floor emptied it, on day 16.6; that limit taught a gap of 0.028 and
   raised the floor to 10%. Charged, there is no limit, the gap stays 0 and the floor 5%, and the run
-  delivers 0.14% less CPU: until day 29.4 a stolen core is charged whole, twice what this meter
+  delivers 0.13% less CPU: until day 29.4 a stolen core is charged whole, twice what this meter
   adds. The governor's own limit probes blank most reading intervals during contention, which leaves
   one or two usable pairs a burst and the sensitivity unlearned that long. The study does not show
   that Hostinger bills steal, only what follows if it does. With a bank that is not charged for
-  steal the same run has no limit either way, and the charge costs it 0.58% of CPU.
+  steal the same run has no limit either way, and the charge costs it 0.57% of CPU.
 - S16 passes on two changes it was written to catch. With every stolen core charged whole, steady
-  steal the fit already carries was charged again, for good: CPU fell 2.69% below S4's, and the
+  steal the fit already carries was charged again, for good: CPU fell 2.66% below S4's, and the
   study's bound is 2.5%. With steal allowed to explain a residual up to all of itself, the slope
-  change raised no alarm in the twelve days left. Without the slope change the charge costs this
-  host 0.07% of CPU. No steal model is learned here, and none can be: steal that follows the load
-  cannot be told from the load.
+  change raised no alarm in the four weeks left. Without the slope change the charge costs this host
+  0.07% of CPU. No steal model is learned here, and none can be: steal that follows the load cannot
+  be told from the load.
 - S11 passes its own criteria, but the clamp is available on only 12% of passes: a rebuilt history
   has no anchor to replay from. On this workload the bank's lower bound certifies full only on day
   0, before the first job, and later anchors come only from a credit limit's lift. Without the

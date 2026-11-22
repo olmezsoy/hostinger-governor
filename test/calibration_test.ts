@@ -55,6 +55,7 @@ import {
   type History,
   type LimitRecord,
   SLOT_MS,
+  validFit,
 } from "../src/history.ts";
 import { widen } from "../src/credits.ts";
 import { plan } from "../src/plans.ts";
@@ -3694,4 +3695,32 @@ Deno.test("the replays that follow the live estimate charge steal: the settled b
   const plain = sustainedRestore(p, h, sustained, s, now, c.start)!;
   const charged = sustainedRestore(p, h, sustained, s, now, c.start, (x) => 0.4 * x.steal)!;
   assertAlmostEquals(plain - charged, 0.4 * 3600, 1e-6);
+});
+
+Deno.test("the steal a fit expects never goes below none, the extreme test reads the same range as drift, and a saved line is checked", () => {
+  // Steal that kept to idle hours puts a line through it that runs below zero under load.
+  const idle: MeterFit = { ...fit, stealAt: [0.3, -0.1] };
+  // No steal is the least there is. Nothing is charged where nothing is stolen, and a burst is
+  // charged whole, not for more than itself.
+  assertEquals(stealCharge(idle, 6, 0), 0);
+  assertEquals(stealCharge(idle, 6, 0.5), 0.5);
+  // And a reading at the line is not below what the fit expects, so a rise there is drift.
+  const risen = { at: at + DAY, own: 6, steal: 0, host: fit.a * 6 + fit.b + 0.2 };
+  assert(cusumStep(emptyCusum(), risen, idle, CALIBRATION.cusum).s > 0);
+  // The extreme test reads the range drift detection reads. A fit that expects a core stolen at
+  // four cores carries it in its line: a reading far above that line with just that core stolen
+  // is extreme and stays out of a refit. Left to any steal there is, the expected core passed
+  // for an explanation of half a core.
+  const busy: MeterFit = { ...fit, stealAt: [0, 0.25] };
+  const s: CalibrationState = { ...initialCalibration(CALIBRATION, at), fit: busy };
+  const far = { at: at + DAY, own: 4, steal: 1, host: fit.a * 4 + fit.b + 0.5 };
+  assert(0.5 > 6 * sigmaAt(busy, 4));
+  assertEquals(eligiblePairs([far], s), []);
+  // A burst beyond the expected core does explain it.
+  assertEquals(eligiblePairs([{ ...far, steal: 1.6 }], s).length, 1);
+  // What persist.json and the decisions record is checked like the rest of a fit.
+  assert(validFit(busy));
+  for (const stealAt of [[NaN, 0], [0], [0, 0.1, 0.2], "0,0.1", [0, Infinity]]) {
+    assert(!validFit({ ...fit, stealAt } as never), JSON.stringify(stealAt));
+  }
 });

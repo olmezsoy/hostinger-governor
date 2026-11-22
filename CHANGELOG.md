@@ -30,16 +30,23 @@
     until a window has enough contention to say. Only steal beyond what the fit expects at that load
     is charged, so calm hours and a busy host's steady steal are not charged twice; a box without a
     fit, which is every KVM 1 and KVM 2 at the default `fit.min_cores`, is charged a whole core per
-    stolen core. The ceiling gives the charge up at once. The live estimate, the clamp's tail,
-    bridged reading gaps, the floor's replay and a sustained-use restore charge it. `off` and
-    `shadow` leave their live estimate uncharged and report the clamp `apply` would hold, charge
-    included. A limit is not charged, and what its cap's steal was charged before it was detected
-    goes back into the estimate it learns from. S15 has no limit with it.
-  - Let delivery that settles into the cap's band bypass a probe cooldown once, when steal is being
-    charged, the slice asks for all its ceiling allows and the VM was not in the band when the last
-    probe failed. The ceiling gives up what steal is charged, so such a slice's steal share shrinks
-    under a new cap: without the bypass a limit that began during a 60-minute cooldown pressed on
-    the cap for all of it, and with it the limit is entered within six minutes. `off` and `shadow`
+    stolen core. The live estimate, the clamp's tail, bridged reading gaps, the floor's replay and a
+    sustained-use restore charge it. `off` and `shadow` leave their live estimate uncharged and
+    report the clamp `apply` would hold, charge included. A limit is not charged. What its cap's
+    steal was charged before it was detected goes back into the estimate it learns from, once, less
+    the share of demand the last failed probe left to the neighbours. S15 has no limit with it.
+  - Give the ceiling up for the steal charge that the slice's unused allowance does not cover. Steal
+    that comes on top of what the slice consumes is not in the allowance: its charge is given up at
+    once, or the estimate falls a whole floor's reserve before the law takes half a core back. Steal
+    that displaced the slice's own CPU left that much allowance unspent, which pays for the charge:
+    giving the ceiling up there too cut what the slice asked for, and under a new cap that shrank
+    the steal a limit is recognised by.
+  - Keep a cap in sight while steal is charged. Giving up stops one step above what a cap would
+    leave the slice, so the slice keeps pressing on a cap. And delivery that has lost a fifth of its
+    share of demand since a failed probe, in every sample of the five-minute window, bypasses that
+    probe's cooldown: charged for a cap's steal, the estimate no longer rises and opens the ceiling
+    until the steal has doubled. A limit that begins a minute into an hour's cooldown is entered
+    within six minutes on every plan, with the neighbours still there or gone. `off` and `shadow`
     charge no steal and probe as before.
   - Persist explicit `steal: 0` on exact interval pairs (`pairSamples`) so measured zero-steal
     intervals never fall back to 10-minute slot averages; compare post-change fits at both ends of
@@ -121,6 +128,10 @@ estimates, legacy margins and learned calibration carry over. `governor calibrat
 again once the upgraded daemon has made its first evaluation, within ten minutes of its start. Going
 back to `v0.3.2` keeps `persist.json` and history readable; that version recovers from the recorded
 decisions until its own first evaluation, and reads a lift's lower-bound bank as the full 20%.
+
+On a host that steals a little CPU all the time, `v0.3.2` never certified a full bank. A box
+upgraded there starts without a base for the clamp and gets one when its bank is next certified full
+or a limit lifts. Until then `apply` acts on its own estimate, with the steal charge in it.
 
 ## v0.3.2
 
