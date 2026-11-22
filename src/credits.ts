@@ -89,15 +89,17 @@ export const evidentSteal = (p: Plan, steal: number) =>
 // host cap — cannot be probed; when busy sits near the cap with steal at LIFT_STEAL or more, the
 // governor confirms with burners before entering so noisy neighbours near the cap never trigger a
 // false one.
+// What a cap does to the whole VM, whatever asks for the CPU: delivery near the cap (allowing up to
+// 15% neighbour steal below it) with steal at LIFT_STEAL or more.
+export const atCapBand = (p: Plan, busy: number, steal: number) =>
+  busy * p.vcpus >= 0.85 * p.limit && busy * p.vcpus <= p.limit + 0.1 &&
+  demandSteal(busy, steal) >= LIFT_STEAL;
 export const pinnedAtCap = (p: Plan, busy: number, steal: number, outside: number) => {
-  const busyCores = busy * p.vcpus;
-  const sliceBusy = Math.max(0, busyCores - outside);
+  const sliceBusy = Math.max(0, busy * p.vcpus - outside);
   const unprobable = sliceDemand(p, busy, steal, outside) < probeMinDemand(p) ||
     sliceBusy <= PROBE_CEILING / 100 ||
     outside >= 0.85 * p.limit;
-  return unprobable &&
-    busyCores >= 0.85 * p.limit && busyCores <= p.limit + 0.1 &&
-    demandSteal(busy, steal) >= LIFT_STEAL;
+  return unprobable && atCapBand(p, busy, steal);
 };
 // Probing cuts cgroup CPUQuota to PROBE_CEILING (20% of one core), which only meters consumed CPU
 // (`sliceBusy`), not steal. Requiring `sliceBusy > PROBE_CEILING / 100` on every plan ensures the

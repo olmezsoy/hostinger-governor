@@ -40,7 +40,9 @@ export type Study = {
   // `cores` of what the guest runs, at most a quarter of it. Hostinger's reading adds `meter`
   // cores per stolen core, as the audited KVM 8's did, and its billing adds `bill`: the reading's
   // unless given, since what the API shows and what the bank is charged are separate facts.
-  contention?: { cores: number; meter: number; bill?: number };
+  // With `share`, the contention is steady instead: that share of what runs is stolen all the
+  // time, redrawn every 10 seconds within `jitter` of it, as on a host that is always busy.
+  contention?: { cores: number; meter: number; bill?: number; share?: number; jitter?: number };
   // The workload and meter noise seed; the recorded studies use 13.
   seed?: number;
   // Calibration settings over the study's own.
@@ -64,6 +66,7 @@ export const STUDIES: Study[] = [
   { id: "S13", noise: 1.5 },
   { id: "S14", drift: true },
   { id: "S15", contention: { cores: 1, meter: 0.5 } },
+  { id: "S16", drift: true, contention: { cores: 0, meter: 0.5, share: 0.02, jitter: 0.25 } },
 ];
 // The study clock counts seconds; history.ts's DAY is in milliseconds.
 const DAY_S = 86400;
@@ -110,7 +113,7 @@ export async function study(sc: Study) {
   // Every study starts with 8 idle hours, which give it a certified-full bank on day 0.
   let nextJob = 8 * 3600, jobDemand = 0.6, jobBusy = false;
   const meter: Reading[] = [{ at: start, v: 0 }];
-  let intervalZ = normal();
+  let intervalZ = normal(), shareZ = 0;
   let meterSum = 0,
     meterSeconds = 0,
     nextReading = 1500 + Math.floor(random() * 600),
@@ -180,7 +183,16 @@ export async function study(sc: Study) {
       if (sc.neighbours && day === 7 && hour >= 8 && hour < 8.1) busy *= 0.3;
       // A limit's cap is Hostinger's, not the neighbours': contention shows only outside one.
       let stolen = 0;
-      if (sc.contention && !limited && !down && day % 3 === 1 && hour >= 10 && hour < 13) {
+      if (sc.contention?.share !== undefined) {
+        if (t % 10 === 0) shareZ = normal();
+        if (!limited && !down) {
+          stolen = Math.max(
+            0,
+            sc.contention.share * busy * (1 + (sc.contention.jitter ?? 0) * shareZ),
+          );
+          busy -= stolen;
+        }
+      } else if (sc.contention && !limited && !down && day % 3 === 1 && hour >= 10 && hour < 13) {
         stolen = Math.min(sc.contention.cores, 0.25 * busy);
         busy -= stolen;
       }
@@ -717,6 +729,31 @@ export function assessStudy(
       "Drift detection did not alarm on the slope change.",
     );
   }
+  if (sc.id === "S16") {
+    // Steal that is a steady share of what runs is in the fit's line already, so it explains
+    // nothing: allowed to explain a residual up to itself, it hid S4's slope change from drift
+    // detection for the twelve days left, and charged whole it cost 1.1% of CPU for good.
+    exception(r.creditLimits === 0, "A credit limit occurred.");
+    const alarm = r.decisions.find((d) => d.trigger === "cusum-alarm" && d.at >= 28 * DAY_S);
+    exception(
+      !!alarm && alarm.at <= 29 * DAY_S,
+      "Drift detection did not alarm within 24 hours of the slope change.",
+    );
+    exception(
+      !!alarm && r.decisions.some((d) => d.trigger === "cusum-keep" && d.at > alarm.at),
+      "Verification never kept the drift change.",
+    );
+    exception(
+      !r.decisions.some((d) => d.trigger === "cusum-alarm" && d.at < 28 * DAY_S),
+      "Steady steal raised a drift alarm before the change.",
+    );
+    // The neighbours take their 2% either way; charging for it must not take more than another
+    // half a percent.
+    exception(
+      comparison !== null && r.cpuCoreHours >= 0.975 * comparison.cpuCoreHours,
+      "CPU is more than 2.5% below the same drift without steal.",
+    );
+  }
   if (sc.id === "S15") {
     // Neighbours' steal that the reading counts is neither drift nor a broken feed: scored as
     // either, each burst raised an alarm or marked the readings invalid, and held the margin.
@@ -772,6 +809,8 @@ export async function runStudies(only?: string) {
         S13: { noise: 1 },
         S14: { clamp: false },
         S15: { mode: "off" as const },
+        // The same drift on a host without the steady steal: S4.
+        S16: { contention: undefined },
       }[sc.id];
       if (against) comparison = await study({ ...sc, id: `${sc.id}-comparison`, ...against });
       const result = { ...r, comparison, assessment: assessStudy(sc, r, comparison) };

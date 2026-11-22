@@ -4,6 +4,7 @@
 import {
   allowedCores,
   type Anchor,
+  atCapBand,
   canProbeSlice,
   charged,
   creditStep,
@@ -161,6 +162,9 @@ export type Sample = {
   track?: number | null;
   // Longer than two passes: the daemon was stopped, so the sample only knows the average.
   unobserved?: boolean;
+  // Core-seconds the estimate was charged for this sample's steal (apply). A limit that turns out
+  // to have begun here gives them back: that steal was the cap's own (enterLimit).
+  stealCharged?: number;
 };
 export type Limit = {
   since: number;
@@ -198,7 +202,14 @@ export type Private = {
   anchor?: Anchor & { checkedAt: number };
   limit?: Limit;
   // quietUntil: uptime until which no credit limit can follow the last credit lift.
-  probe: { cooldownUntil: number; backoffMs: number; failedSf?: number; quietUntil?: number };
+  // `failedAtCap`: the VM already sat in the cap's band when the probe failed.
+  probe: {
+    cooldownUntil: number;
+    backoffMs: number;
+    failedSf?: number;
+    failedAtCap?: boolean;
+    quietUntil?: number;
+  };
   samples: Sample[];
   tested?: boolean;
   readings: Reading[];
@@ -285,6 +296,10 @@ const TEST_MAX_MS = 15 * 60_000;
 const TIGHTEN_AFTER_MS = 60_000;
 const BACKOFF_MS = 10 * 60_000;
 const BACKOFF_MAX_MS = 3_600_000;
+// A slice whose demand, averaged over the control window, is this share of its ceiling asks for all
+// the ceiling allows: lowering the ceiling lowers what it asks. The slack covers a ceiling that
+// moved within the window.
+const CEILING_BOUND = 0.9;
 const HOT_BUSY = 0.6;
 const HOT_STEAL = 0.05;
 const TOP_EVERY_MS = 5 * 60_000;
@@ -1456,9 +1471,10 @@ export class Governor {
 
   enterLimit(now: number, learn: boolean, path: LimitRecord["path"] = "operator") {
     const s = this.s;
-    const entry = { balance: s.balance, used: s.used, learn };
     let onset = now;
     let track = this.calibration.estimates.track;
+    // What the samples of the onset were charged for steal: it was the cap's own, not neighbours'.
+    let capSteal = 0;
     for (const sample of [...s.samples].reverse()) {
       if (sample.test || !limitOnsetSample(this.plan, sample.busy, sample.steal)) break;
       // Time the daemon didn't watch, or whose clock jumped, can't place an onset inside it.
@@ -1471,7 +1487,17 @@ export class Governor {
       if (!capShaped && now - sample.at > STEAL_WINDOW_MS) break;
       onset = sample.at - (sample.seconds ?? 0) * 1000;
       track = sample.track ?? null;
+      capSteal += sample.stealCharged ?? 0;
     }
+    // The estimate at entry measures the margin's optimism, and what follows a limit learns from
+    // it. Charged for the cap's steal in the minutes before the limit was recognised, it read
+    // lower than the margin had left it, and a limit taught less than it showed.
+    const acted = Math.min(this.plan.capacity, this.actedBalance + capSteal);
+    const entry = {
+      balance: Math.min(this.plan.capacity, s.balance + capSteal),
+      used: s.used,
+      learn,
+    };
     // Records are keyed by onset. An entry over the same run of steal as the previous record, such
     // as `limit on` right after a lift, starts after that record instead of sharing its onset.
     const previous = this.history.limits.at(-1);
@@ -1492,7 +1518,7 @@ export class Governor {
       settings: { ...this.settings },
       gap: this.calibration.gap,
       ...(this.calibration.ownHold ? { heldGap: this.calibration.ownHold.gap } : {}),
-      ...(this.actedBalance < entry.balance ? { acted: this.actedBalance } : {}),
+      ...(acted < entry.balance ? { acted } : {}),
       mode: this.calibrationCfg.mode,
       track,
       caps: [{
@@ -1895,6 +1921,8 @@ export class Governor {
     const beforeActed = this.actedBalance;
     // The margin on the guest's own count, plus what the neighbours' steal of this sample adds.
     const margin = this.charging(busyCores, stealCores);
+    const stealCharged = (margin.add - this.settings.add) * seconds;
+    if (stealCharged > 0) sample.stealCharged = stealCharged;
     s.balance = creditStep(p, s.balance, busyCores, seconds, margin, earning);
     if (s.balance >= this.law.floor * p.capacity) s.rebuilding = null;
     const slotResult = accumulateSlot(s.openSlot, {
@@ -1940,6 +1968,7 @@ export class Governor {
     ) {
       s.probe.backoffMs = BACKOFF_MS;
       s.probe.failedSf = undefined;
+      s.probe.failedAtCap = undefined;
     }
     // During a cooldown, probe again only if steal is evident or well above what the failed probe
     // saw: neighbours that failed a probe should not hide a limit that starts behind them.
@@ -1950,11 +1979,23 @@ export class Governor {
     const evident = sfNow >= LIMIT_EVIDENT && evidentSteal(p, steal);
     const pinned = !quiet && pinnedAtCap(p, busy, steal, avgOutside);
     const canProbe = !quiet && canProbeSlice(p, busy, steal, avgOutside);
+    // Delivery has settled into the cap's band with steal, it was not there when the last probe
+    // failed, steal is being charged and the slice asks for all its ceiling allows. The ceiling
+    // gives up what steal is charged, so under a new cap that demand shrinks toward the cap and
+    // the steal share stops short of `jumped` and `evident`: a limit that began during a
+    // 60-minute cooldown pressed on the cap for all of it. A cap pins delivery whatever the
+    // ceiling does, so the move into its band asks for one more test. Where no steal is charged,
+    // or the slice is below its ceiling, the steal shows undiminished, and each test costs the
+    // reading pair around it, which on a contended host is one the steal model needs.
+    const atCap = atCapBand(p, busy, steal);
+    const givenUp = this.controlSamples(STEAL_WINDOW_MS).some((x) => x.stealCharged) &&
+      sliceDemand(p, busy, steal, avgOutside) >= CEILING_BOUND * (current ?? 100 * p.vcpus) / 100;
+    const settled = atCap && givenUp && failed !== undefined && !s.probe.failedAtCap;
     if (
       !s.limit && count >= 3 && sfNow >= LIMIT_STEAL &&
       steal * p.vcpus >= 0.02 &&
       (evident || pinned || canProbe) &&
-      (uptime >= s.probe.cooldownUntil || evident || jumped)
+      (uptime >= s.probe.cooldownUntil || evident || jumped || settled)
     ) {
       const sf0 = sfNow;
       let pinnedConfirmed: { delivery?: { busy: number; demand: number }; finished: Clock } | null =
@@ -1982,6 +2023,7 @@ export class Governor {
         }
         s.probe.backoffMs = BACKOFF_MS;
         s.probe.failedSf = undefined;
+        s.probe.failedAtCap = undefined;
         log(
           confirmed === "pinned"
             ? `limit: start, the VM pinned at the cap with the slice idle (margin x${this.settings.mul} +${this.settings.add})`
@@ -1996,6 +2038,7 @@ export class Governor {
         s.probe.cooldownUntil = Math.max(uptime, finished.uptime) + backoff;
         s.probe.backoffMs = Math.min(backoff * 2, BACKOFF_MAX_MS);
         s.probe.failedSf = sf0;
+        s.probe.failedAtCap = atCap;
       }
     }
 

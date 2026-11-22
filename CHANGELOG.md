@@ -2,11 +2,14 @@
 
 ## v0.3.3
 
-- Keep neighbours' steal out of drift detection without cutting usable CPU. Hostinger's reading
-  rises with hypervisor steal, by about half a core per stolen core on the audited KVM 8:
-  - Until a steal model is fitted, drift detection, its verification and the extreme-residual test
-    count only what lies outside the range steal can explain, from nothing to a core per stolen
-    core. A contention burst raises no alarm, marks no reading invalid and still reaches the fit.
+- Keep neighbours' steal out of drift detection, and charge it in `apply` where it drains the bank.
+  Hostinger's reading rises with hypervisor steal, by about half a core per stolen core on the
+  audited KVM 8:
+  - A fit records the steal its pairs showed at each load (`stealAt`), which its line already
+    carries. Until a steal model is fitted, drift detection, its verification and the
+    extreme-residual test count only what lies outside the range the steal beyond that can explain,
+    from nothing to a core per stolen core. A contention burst raises no alarm, marks no reading
+    invalid and still reaches the fit, and steady steal on a busy host hides no drift (study S16).
     Scored at its full residual, the first burst after an upgrade raised an alarm, was verified on
     the burst's own remaining pairs, and held the margin until a refit the alarm kept from running.
   - `fitMeter()` keeps the 1D margin fit (`a`, `b`, `aHi`, `sigma`) unchanged and separately fits a
@@ -24,10 +27,20 @@
     count sees nothing: in study S15 the first burst that met a bank at its floor ended in a limit.
     Each stolen core is charged at the most the readings let the meter's sensitivity be: the steal
     model's upper bound, a contention window's bound where no model is established, and a whole core
-    until a window has enough contention to say. Only steal beyond what the margin's own fit already
-    carries at that load is charged, so calm hours are not charged twice, and the ceiling gives the
-    charge up at once. The live estimate, the clamp's tail, bridged reading gaps and the floor's
-    replay charge it; `off`, `shadow` and a limit do not. S15 has no limit with it.
+    until a window has enough contention to say. Only steal beyond what the fit expects at that load
+    is charged, so calm hours and a busy host's steady steal are not charged twice; a box without a
+    fit, which is every KVM 1 and KVM 2 at the default `fit.min_cores`, is charged a whole core per
+    stolen core. The ceiling gives the charge up at once. The live estimate, the clamp's tail,
+    bridged reading gaps, the floor's replay and a sustained-use restore charge it. `off` and
+    `shadow` leave their live estimate uncharged and report the clamp `apply` would hold, charge
+    included. A limit is not charged, and what its cap's steal was charged before it was detected
+    goes back into the estimate it learns from. S15 has no limit with it.
+  - Let delivery that settles into the cap's band bypass a probe cooldown once, when steal is being
+    charged, the slice asks for all its ceiling allows and the VM was not in the band when the last
+    probe failed. The ceiling gives up what steal is charged, so such a slice's steal share shrinks
+    under a new cap: without the bypass a limit that began during a 60-minute cooldown pressed on
+    the cap for all of it, and with it the limit is entered within six minutes. `off` and `shadow`
+    charge no steal and probe as before.
   - Persist explicit `steal: 0` on exact interval pairs (`pairSamples`) so measured zero-steal
     intervals never fall back to 10-minute slot averages; compare post-change fits at both ends of
     the steal each load leaves room for in `carries()` before resetting a learned gap; preserve
@@ -37,7 +50,7 @@
     for a refit: 48 pairs verify it or withdraw it. A slope reading (`slopeFit`) stays in the
     residual band, so heavy pairs on a real slope change never turn the readings invalid; one
     withdrawn on idle pairs, which cannot show a slope, is raised again within a few pairs of the
-    load coming back.
+    load coming back, once the fit window qualifies for a fit again.
   - Measure a verified change instead of keeping the alarm's reading of it: the offset becomes the
     mean residual of the pairs since the change plus three standard errors at the noise of a full
     box. The alarm reads it from its clearly shifted pairs alone, and a box that stayed idle held

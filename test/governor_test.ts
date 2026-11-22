@@ -1560,6 +1560,8 @@ Deno.test("apply charges neighbours' steal as it happens and gives the ceiling u
     a: 1.03,
     b: 0.02,
     stealFit: { a: 1.01, b: 0.02, c: 0.5, hi: 0.6, sigma: [0.01, 0.01] as [number, number] },
+    // The fit's own pairs saw 2% of the load stolen.
+    stealAt: [0, 0.02] as [number, number],
     aHi: 1.04,
     sigma: [0.02, 0.01] as [number, number],
     pairs: 100,
@@ -1578,16 +1580,28 @@ Deno.test("apply charges neighbours' steal as it happens and gives the ceiling u
     assertAlmostEquals(f.g.s.openSlot!.charged, total * 30, 1e-6, mode);
     return total - own;
   };
-  // The steal model's bound, 0.6 a stolen core, less the 0.08 cores the margin's own fit already
-  // carries at four cores: its line sits that far above the model's.
-  assertAlmostEquals(await charged("apply", reference), 0.6 - (1.03 - 1.01) * 4, 1e-9);
-  // Until a contention window has bounded the meter's sensitivity, a stolen core is charged whole.
-  assertAlmostEquals(await charged("apply", null), 1, 1e-9);
+  // The steal model's bound, 0.6 a stolen core, on the steal beyond the 0.08 cores the fit
+  // expects at four cores, which its line already carries.
+  assertAlmostEquals(await charged("apply", reference), 0.6 * (1 - 0.02 * 4), 1e-9);
+  // Until a contention window has bounded the meter's sensitivity, a stolen core beyond the
+  // expected steal is charged whole, and without a fit every stolen core is.
   assertAlmostEquals(
     await charged("apply", { ...reference, stealFit: undefined } as never),
-    1,
+    1 - 0.02 * 4,
     1e-9,
   );
+  assertAlmostEquals(await charged("apply", null), 1, 1e-9);
+  // The charge reads the fit drift detection follows, the newest, not the one the margin kept.
+  {
+    const f = fixture({ hostinger, calibration: { mode: "apply" } });
+    await f.g.tick();
+    f.g.calibration.fit = { ...reference, stealFit: undefined } as never;
+    f.g.calibration.referenceFit = { ...reference, stealFit: undefined, stealHi: 0.25 } as never;
+    f.g.s.balance = 20_000;
+    await f.advance(30, 4.0 / 8, 1.0 / 8, 0.2);
+    const own = f.g.settings.mul * 4.0 + f.g.settings.add;
+    assertAlmostEquals(p.baseline - (f.g.s.balance - 20_000) / 30 - own, 0.25 * 0.92, 1e-9);
+  }
   // Off and shadow act on the legacy margin alone.
   assertAlmostEquals(await charged("off", reference), 0, 1e-9);
   assertAlmostEquals(await charged("shadow", reference), 0, 1e-9);
@@ -1771,4 +1785,234 @@ Deno.test("status shows a failing evaluation in off and shadow, where nothing is
     const failing = f.g.publicState(start).credits.calibration!.failing;
     assertEquals(failing, { since: start, behind: mode === "apply" ? 1_000 : 0 }, mode);
   }
+});
+
+Deno.test("a limit that begins during a probe cooldown in apply is still entered within minutes, and learns from the estimate before the cap's steal was charged", async () => {
+  // The slice runs batch work at whatever its ceiling allows, with 0.2 cores outside it. Under the
+  // cap the VM delivers 2.4 cores and the rest of what is asked is stolen.
+  const scenario = async (failedSf: number, above: number) => {
+    const f = fixture({
+      hostinger: { vm_id: 1, token_file: "/etc/governor/hostinger-token" },
+      calibration: { mode: "apply" },
+    });
+    let limited = false;
+    const world = () => {
+      const want = Math.min(8, f.cap / 100 + 0.2), busy = limited ? Math.min(want, p.limit) : want;
+      return { want, busy, steal: want - busy };
+    };
+    f.g.io.steal = () => {
+      const w = world();
+      return Promise.resolve(w.want ? w.steal / w.want : 0);
+    };
+    const step = () => {
+      const w = world();
+      return f.advance(30, w.busy / 8, w.steal / 8, Math.max(0, w.busy - 0.2));
+    };
+    await f.g.tick();
+    const reserve = f.g.law.floor * p.capacity + above;
+    for (let i = 0; i < 12; i++) {
+      f.g.s.balance = reserve;
+      await step();
+    }
+    // Neighbours failed a probe a moment ago: an hour's cooldown, the longest there is.
+    f.g.s.probe = { cooldownUntil: f.g.s.uptime! + 3_600_000, backoffMs: 3_600_000, failedSf };
+    limited = true;
+    // What the estimate reads at entry if the cap's own steal is never charged: the bank as it
+    // stood, plus what each pass under the cap earns on its own count.
+    let unchargedForSteal = f.g.s.balance, passes = 0, chargedForSteal = 0;
+    while (!f.g.s.limit && passes < 130) {
+      const own = f.g.settings.mul * world().busy + f.g.settings.add;
+      await step();
+      passes++;
+      unchargedForSteal += (p.baseline - own) * 30;
+      chargedForSteal += f.g.s.samples.at(-1)!.stealCharged ?? 0;
+    }
+    return { f, seconds: passes * 30, unchargedForSteal, chargedForSteal };
+  };
+  // The ceiling gives up what steal is charged, so demand shrinks toward the cap and the steal
+  // share stops short of what bypasses a cooldown: these limits pressed on the cap for the whole
+  // hour. Delivery pinned in the cap's band, where it was not when the probe failed, bypasses it.
+  for (const [failedSf, above] of [[0.22, 60], [0.30, 4500], [0.35, 4500]]) {
+    const { f, seconds, unchargedForSteal, chargedForSteal } = await scenario(failedSf, above);
+    assert(f.g.s.limit && seconds <= 360, `failed probe at ${failedSf}: ${seconds} s`);
+    // What the cap's own steal was charged before the limit was recognised comes back in the
+    // estimate the limit learns from.
+    const record = f.g.history.limits.at(-1)!;
+    assert(chargedForSteal > 100, `${chargedForSteal}`);
+    assertAlmostEquals(record.balance, unchargedForSteal, 1, `failed probe at ${failedSf}`);
+  }
+});
+
+Deno.test("neighbours in the cap's band get one extra probe in a cooldown, and only when the slice asks for all its ceiling allows", async () => {
+  const apply = {
+    hostinger: { vm_id: 1, token_file: "/etc/governor/hostinger-token" },
+    calibration: { mode: "apply" as const },
+  };
+  const failing = (f: ReturnType<typeof fixture>) => {
+    const seen = { probes: 0 };
+    f.g.probe = () => {
+      seen.probes++;
+      return Promise.resolve(false);
+    };
+    return seen;
+  };
+  // A slice far below its ceiling shows all the steal there is: the charge hides none of it, so
+  // moving into the band earns no test. Each one would cost the reading pair around it, which on
+  // a contended host is a pair the steal model needs.
+  {
+    const f = fixture(apply);
+    await f.g.tick();
+    const seen = failing(f);
+    for (let i = 0; i < 4; i++) {
+      f.g.s.balance = p.capacity;
+      await f.advance(30, 4.0 / 8, 1.0 / 8, 3.8);
+    }
+    assertEquals([seen.probes, f.g.s.probe.failedAtCap], [1, false]);
+    // The rest of the ten-minute cooldown at 2.2 busy cores, a fifth of the demand stolen.
+    for (let i = 0; i < 15; i++) {
+      f.g.s.balance = p.capacity;
+      await f.advance(30, 2.2 / 8, 0.55 / 8, 2.0);
+    }
+    assert(f.cap >= 700, `${f.cap}%`);
+    assertEquals(seen.probes, 1);
+  }
+  // Batch work that runs at whatever its ceiling allows, with neighbours taking a share of it.
+  const batch = async (mode: "apply" | "shadow", share: number) => {
+    const f = fixture({ ...apply, calibration: { mode } });
+    await f.g.tick();
+    const seen = failing(f);
+    const step = (balance: number) => {
+      const want = Math.min(8, f.cap / 100 + 0.2), steal = share * want;
+      f.g.s.balance = balance;
+      return f.advance(30, (want - steal) / 8, steal / 8, want - steal - 0.2);
+    };
+    // A full bank: every core asked for, and delivery well above the band.
+    for (let i = 0; i < 4; i++) await step(p.capacity);
+    assertEquals([seen.probes, f.g.s.probe.failedAtCap], [1, false], mode);
+    return { f, seen, step, reserve: f.g.law.floor * p.capacity + 60 };
+  };
+  // The bank at its reserve: the ceiling gives up what steal is charged, and delivery settles
+  // into the band. That is what a new cap would look like, so it earns one test.
+  const { f, seen, step, reserve } = await batch("apply", 0.35);
+  let passes = 0;
+  while (seen.probes < 2 && passes++ < 15) await step(reserve);
+  assertEquals([seen.probes, f.g.s.probe.failedAtCap], [2, true]);
+  // It failed with the VM in the band: sitting there says nothing new until the cooldown ends.
+  const until = f.g.s.probe.cooldownUntil;
+  while (f.g.s.uptime! + 30_000 < until) await step(reserve);
+  assertEquals(seen.probes, 2);
+  // Shadow charges no steal, so its ceiling gives none up and hides nothing: the same slice in
+  // the band, half its demand stolen, waits out its cooldown as it always did.
+  const shadow = await batch("shadow", 0.5);
+  let inBand = 0;
+  for (let i = 0; i < 15; i++) {
+    await shadow.step(shadow.reserve);
+    const busy = (1 - 0.5) * (shadow.f.cap / 100 + 0.2);
+    if (busy >= 0.85 * p.limit && busy <= p.limit + 0.1) inBand++;
+  }
+  assert(inBand >= 10, `${inBand} passes in the band at ${shadow.f.cap}%`);
+  assertEquals(shadow.seen.probes, 1);
+});
+
+Deno.test("the ceiling's cooldown cap and deadband use the margin with the steal charge in it", async () => {
+  const apply = {
+    hostinger: { vm_id: 1, token_file: "/etc/governor/hostinger-token" },
+    calibration: { mode: "apply" as const },
+  };
+  // After a sustained-use limit the slice stays at or under the baseline for the cooldown. What
+  // steal is charged comes out of that too.
+  const cooled = async (steal: number) => {
+    const f = fixture(apply);
+    await f.g.tick();
+    f.g.s.probe.cooldownUntil = 1e15;
+    f.g.calibration.cooldownUntil = f.g.s.at + 86_400_000;
+    for (let i = 0; i < 4; i++) {
+      f.g.s.balance = p.capacity;
+      await f.advance(30, 4.0 / 8, steal / 8, 3.8);
+    }
+    return f.cap;
+  };
+  const calm = await cooled(0), contended = await cooled(1);
+  assert(calm - contended >= 80, `${calm}% and ${contended}%`);
+  // Just above a full allowance on the own count, just below it once 0.1 stolen cores are
+  // charged: the ceiling is throttling, so a 10-point tightening is not jitter to skip.
+  const f = fixture(apply);
+  await f.g.tick();
+  f.g.s.probe.cooldownUntil = 1e15;
+  const balance = f.g.law.floor * p.capacity +
+    (8.05 * f.g.settings.mul + f.g.settings.add - p.baseline) * 1800;
+  const ceilings: number[] = [];
+  for (let i = 0; i < 5; i++) {
+    f.g.s.balance = balance;
+    await f.advance(30, 4.0 / 8, 0.1 / 8, 3.8);
+    ceilings.push(f.cap);
+  }
+  // Two samples carry no steal average yet; from the third the charge is in the ceiling.
+  assertEquals(ceilings.slice(0, 2), [780, 780]);
+  assertEquals(ceilings.at(-1), 770);
+});
+
+Deno.test("time no sample covers since the last failed lift test counts at the most the VM can spend", async () => {
+  const { f } = await liftAfter(async (f) => {
+    for (let i = 0; i < 10; i++) await f.advance(30, 0.2 / 8, 0, 0);
+    // Five of those minutes are gone from the sample buffer, as after a restart that lost them.
+    f.g.s.samples = f.g.s.samples.slice(0, -10);
+  });
+  await f.advance(30, 0.2 / 8, 0, 0);
+  const rec = f.g.history.limits.at(-1)!;
+  assertEquals(rec.class, "credit");
+  // The idle pass that found the lift earns nothing back above the recovery level it starts
+  // from; the uncovered five minutes come off at every core.
+  assertAlmostEquals(rec.liftBalance!, p.recovered - drain * 300, 1);
+});
+
+Deno.test("a sustained-use restore in apply charges the steal the live estimate would have", () => {
+  // The estimate a sustained-use limit hid comes back as the live estimate would stand now:
+  // advanced from the lift at the settings in force, which in apply charge steal.
+  const restored = (mode: "apply" | "shadow", steal: number) => {
+    const f = fixture({
+      hostinger: { vm_id: 1, token_file: "/etc/governor/hostinger-token" },
+      calibration: { mode },
+    });
+    const entry = start, lift = start + 6 * 600_000, now = start + 12 * 600_000;
+    const record = {
+      onset: entry,
+      entry,
+      path: "evident" as const,
+      // Low enough that two hours at two cores do not fill the bank, which would hide the charge.
+      balance: 5_000,
+      used: 0,
+      settings: { mul: 1.05, add: 0.04, floor: 0.05 },
+      gap: 0,
+      mode,
+      track: null,
+      caps: [],
+      confirmed: true,
+      learn: true,
+      class: "sustained-use" as const,
+      lift,
+    };
+    f.g.history.limits = [record];
+    const history = {
+      ...f.g.history,
+      slots: Array.from({ length: 12 }, (_, i) => ({
+        at: start + i * 600_000,
+        seconds: 600,
+        busy: 2 * 600,
+        steal: i >= 6 ? steal * 600 : 0,
+        managed: 2 * 600,
+        outside: 0,
+        charged: (1.05 * 2 + 0.04) * 600,
+        flags: i < 6 ? 1 : 0,
+      })),
+    };
+    f.g.s.balance = 0;
+    (f.g as unknown as { restoreSustained(r: unknown, h: unknown, now: number): void })
+      .restoreSustained(record, history, now);
+    return f.g.s.balance;
+  };
+  // An hour after the lift at one stolen core: without a fit, apply charges it whole.
+  assertAlmostEquals(restored("apply", 0) - restored("apply", 1), 3600, 1e-6);
+  // Shadow's live estimate charges no steal, so neither does its restore.
+  assertEquals(restored("shadow", 1), restored("shadow", 0));
 });

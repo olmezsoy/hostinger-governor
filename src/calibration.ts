@@ -170,6 +170,10 @@ export type MeterFit = {
   // Without a steal model, the most a contention window still let the sensitivity be. Absent until
   // one has enough contention to say: a stolen core is then charged whole.
   stealHi?: number;
+  // The steal that went with each load in the fit's own pairs, as a line: cores at no load, and
+  // per busy core. The fit's line was made on readings that include what that steal added, so it
+  // already carries it; only steal beyond it is unaccounted for (expectedSteal).
+  stealAt?: [number, number];
   aHi: number;
   sigma: [number, number];
   // The least noise at any load: what the light-load pairs show, when there are enough of them.
@@ -625,9 +629,14 @@ export function fitMeter(
   // light-load pairs show; above them the line rises past it, so the premium doesn't change.
   const light = absolute.filter((_, i) => xs[i] < config.min_cores);
   const steal = fitStealModel(selected, config, seed, now, options.stickyC, options.stickyHi);
+  // Least squares is linear: the line through readings that include c cores per stolen core is
+  // the steal-free line plus c times the line through the steal itself, over the same pairs.
+  const zs = selected.map((r) => r.steal ?? 0);
+  const typical = zs.some((z) => z > 0) ? regression(xs, zs) : null;
   return {
     a,
     b,
+    ...(typical ? { stealAt: [typical[1], typical[0]] as [number, number] } : {}),
     ...(steal.model
       ? { stealFit: steal.model }
       : steal.hi !== undefined
@@ -649,18 +658,20 @@ export const sigmaAt = (fit: MeterFit, u: number) =>
 // model's upper bound, or a contention window's, and a whole core until one has spoken.
 export const stealBound = (fit: MeterFit | null): number =>
   !fit ? 1 : fit.stealFit ? fit.stealFit.hi ?? 1 : fit.stealHi ?? 1;
+// The steal the fit's own pairs showed at this load, in cores: what its line already carries.
+export const expectedSteal = (fit: MeterFit | null, own: number): number =>
+  fit?.stealAt ? Math.max(0, fit.stealAt[0] + fit.stealAt[1] * own) : 0;
 // What neighbours' steal adds to the charge as it happens, in cores (#13 §4 charges the guest's own
 // count alone). Where Hostinger bills what its reading shows, a burst drains the bank by up to a
 // core per stolen core while the own count sees nothing: in study S15 the first burst that met a
-// bank at its floor ended in a limit. Each stolen core is charged at the bound above. The margin's
-// fit was made on readings that already include what steal added, so its line carries the average
-// of that at each load, the part above the steal model's own line; only steal beyond it is
-// charged, and calm hours are not charged twice.
+// bank at its floor ended in a limit. Only steal beyond what the fit expects at this load is
+// charged, each core of it at the bound above: the margin covers the fit's line, which carries
+// the expected steal at whatever the sensitivity is, so the two together cover the reading for
+// any sensitivity up to the bound. Charged whole, the steady steal of a contended host cost 1.2%
+// of CPU for good, on top of a margin that already paid for it. Without a fit nothing is known
+// to be carried, and every stolen core is charged.
 export function stealCharge(fit: MeterFit | null, own: number, steal: number): number {
-  if (!(steal > 0)) return 0;
-  const model = fit?.stealFit;
-  const carried = model ? Math.max(0, fit.a * own + fit.b - (model.a * own + model.b)) : 0;
-  return Math.max(0, stealBound(fit) * steal - carried);
+  return stealBound(fit) * Math.max(0, steal - expectedSteal(fit, own));
 }
 // A slot's steal charge in core-seconds, for replays at the settings in force. A limited slot's
 // steal is the cap's own, not the neighbours', and is not charged.
@@ -1794,15 +1805,29 @@ const detectSigmaAt = (fit: MeterFit, u: number) => {
   const m = detectModel(fit);
   return m ? Math.max(1e-6, m.sigmaFloor ?? 0, m.sigma[0] + m.sigma[1] * u) : sigmaAt(fit, u);
 };
-// A reading's residual for drift detection, in cores. Until a steal model is fitted, neighbour
-// steal may have added anything from nothing to a core per stolen core, so only what lies outside
-// that range counts: a contention burst is neither drift nor evidence against it. Scored at its
-// full residual, the first burst after an upgrade raised an alarm, verified it on the burst's own
-// remaining pairs, and held the margin until a refit that the alarm itself kept from running.
+// How far a reading may sit from a fit's line on account of steal alone, in cores below and above
+// it. Under a steal model the line is the steal-free one, and steal adds between nothing and a
+// core per stolen core. Without one the line already carries the steal expected at this load, so
+// only the steal beyond it, or short of it, can move a reading: a host whose steal is a steady
+// share of what runs explains nothing with it. Measured against all the steal instead, such a
+// host hid every rise smaller than its steal, and a slope change went unalarmed for twelve days.
+const stealRange = (fit: MeterFit, pair: Pair): [number, number] => {
+  const steal = pair.steal ?? 0;
+  if (detectModel(fit)) return [0, steal];
+  const beyond = steal - expectedSteal(fit, pair.own);
+  return [Math.min(0, beyond), Math.max(0, beyond)];
+};
+// A reading's residual for drift detection, in cores. Until a steal model is fitted, the steal
+// beyond what the fit expects may have added anything from nothing to a core per stolen core, so
+// only what lies outside that range counts: a contention burst is neither drift nor evidence
+// against it. Scored at its full residual, the first burst after an upgrade raised an alarm,
+// verified it on the burst's own remaining pairs, and held the margin until a refit that the
+// alarm itself kept from running.
 const driftResidual = (fit: MeterFit, pair: Pair) => {
-  const steal = pair.steal ?? 0, residual = pair.host - detectPredicts(fit, pair.own, steal);
-  if (detectModel(fit) || steal <= 0 || residual <= 0) return residual;
-  return Math.max(0, residual - steal);
+  const residual = pair.host - detectPredicts(fit, pair.own, pair.steal ?? 0);
+  if (detectModel(fit)) return residual;
+  const [below, above] = stealRange(fit, pair);
+  return residual > above ? residual - above : residual < below ? residual - below : 0;
 };
 const residualZ = (pair: Pair, fit: MeterFit) =>
   driftResidual(fit, pair) / detectSigmaAt(fit, pair.own);
@@ -1830,19 +1855,21 @@ export const driftReference = (s: CalibrationState): MeterFit | null => s.refere
 // A residual's z for the extreme test and the fit's 6-sigma filter. While a change is pending, the
 // meter may be at the reference, the offset hypothesis (`pending.fit`) or the slope hypothesis
 // (`pending.slopeFit`), so a reading is judged against the full band spanning them. Each line is
-// itself a range under neighbour steal: whatever sensitivity was fitted, or none yet, the meter
-// adds between nothing and a core per stolen core. A reading some sensitivity in that range
-// explains is never extreme, so the contention pairs a steal model is learned from, or refuted
-// by, always reach the fit; judged against a fitted coefficient alone, one that had gone wrong
-// marked every large burst invalid and kept those pairs from the refit that would have dropped it.
+// itself a range under neighbour steal (`stealRange`): whatever sensitivity was fitted, the meter
+// adds between nothing and a core per stolen core to a steal model's steal-free line, and without
+// a model as much per core of steal beyond what the fit's own line carries. A reading some
+// sensitivity in that range explains is never extreme, so the contention pairs a steal model is
+// learned from, or refuted by, always reach the fit; judged against a fitted coefficient alone,
+// one that had gone wrong marked every large burst invalid and kept those pairs from the refit
+// that would have dropped it.
 const residualBandZ = (s: CalibrationState, reference: MeterFit, pair: Pair): number => {
-  const steal = pair.steal ?? 0;
   let lo = Infinity, loSigma = 0, hi = -Infinity, hiSigma = 0;
   for (const fit of [reference, s.pending?.fit, s.pending?.slopeFit]) {
     if (!fit) continue;
     const base = detectPredicts(fit, pair.own, 0), sigma = detectSigmaAt(fit, pair.own);
-    if (base < lo) [lo, loSigma] = [base, sigma];
-    if (base + steal > hi) [hi, hiSigma] = [base + steal, sigma];
+    const [below, above] = stealRange(fit, pair);
+    if (base + below < lo) [lo, loSigma] = [base + below, sigma];
+    if (base + above > hi) [hi, hiSigma] = [base + above, sigma];
   }
   if (pair.host > hi) return (pair.host - hi) / hiSigma;
   if (pair.host < lo) return (pair.host - lo) / loSigma;

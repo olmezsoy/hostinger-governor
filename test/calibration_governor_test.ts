@@ -808,6 +808,24 @@ Deno.test("explain shows the fallback a failing evaluation holds, as status does
     assertEquals(explained.applied.add, MARGIN.add);
     assert(explainText(explained).includes("Calibration failing since"));
   });
+  // Shadow holds nothing for a failing evaluation: status and explain both say so, with no
+  // margin below the open estimate.
+  await withFiles(async (paths) => {
+    const shadow = { ...APPLY, calibration: { mode: "shadow" as const } };
+    const f = fixture(shadow, paths);
+    await f.g.loadHistory(start);
+    await f.g.tick();
+    await f.advance(600, 0.3);
+    f.g.calibration.estimates = { ...f.g.calibration.estimates, acted: f.g.s.balance - 500 };
+    (f.g.calibration as { invalidSpans: unknown }).invalidSpans = [null];
+    await f.advance(600, 0.3);
+    await f.g.save(start + 1_230_000);
+    await f.g.closeHistory();
+    const explained = await explainCalibration({ ...shadow, vcpus: 8 }, paths.lib);
+    const status = f.g.calibrationStatus();
+    assertEquals(status.failing?.behind, 0);
+    assertEquals(explained.failing, status.failing);
+  });
 });
 
 Deno.test("hooks see the quota the pass applied, and credit limits do not alert", async () => {

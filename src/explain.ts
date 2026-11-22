@@ -151,7 +151,10 @@ export async function explainCalibration(
   }
   return {
     ...calibrationSummary(c, calibration, history, inForce),
-    failing: failed ? { since: failed.since, behind: failed.behind } : null,
+    // Only apply holds anything for a failing evaluation, as in the daemon's own status.
+    failing: failed
+      ? { since: failed.since, behind: c.mode === "apply" ? failed.behind : 0 }
+      : null,
     evidence: {
       at: checkpoint.at,
       digest: checkpoint.digest,
@@ -211,7 +214,7 @@ function candidateFit(p: Plan, checkpoint: NonNullable<History["checkpoint"]>): 
     c.fit,
     FIT_SEED,
     checkpoint.at,
-    { stickyC: inputs.stickyC },
+    { stickyC: inputs.stickyC, stickyHi: inputs.stickyHi },
   );
 }
 

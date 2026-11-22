@@ -63,6 +63,8 @@ export const validFit = (f: MeterFit) =>
   f.sigma.length === 2 && finite(...f.sigma) &&
   (f.sigmaFloor === undefined || finite(f.sigmaFloor) && f.sigmaFloor >= 0) &&
   (f.stealHi === undefined || finite(f.stealHi) && f.stealHi >= 0 && f.stealHi <= 1) &&
+  (f.stealAt === undefined ||
+    Array.isArray(f.stealAt) && f.stealAt.length === 2 && finite(...f.stealAt)) &&
   (f.stealFit === undefined ||
     !!f.stealFit && finite(f.stealFit.a, f.stealFit.b, f.stealFit.c) &&
       f.stealFit.a > 0 && f.stealFit.c >= 0 && f.stealFit.c <= 1 &&

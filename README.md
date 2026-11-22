@@ -73,9 +73,10 @@ The governor measures the whole machine and caps workloads placed under `user.sl
   above the host limit. Tests start at the estimated recovery point, or after the earliest possible
   idle recovery time. Failed tests back off for 2, 4, 8, then 15 minutes from completion. Probe and
   test intervals still count toward billed CPU, but cannot tighten the quota or masquerade as
-  outside demand. Obvious or sharply increased steal can bypass a neighbour-probe cooldown. These
-  remain heuristics, so detection can be delayed and neighbours can cause false alarms. A limit
-  teaches only when a lift test during it fails with limited evidence and, at the lift, its
+  outside demand. Obvious or sharply increased steal can bypass a neighbour-probe cooldown, and in
+  `apply` so can delivery that settles at the limit while the slice asks for all its ceiling allows.
+  These remain heuristics, so detection can be delayed and neighbours can cause false alarms. A
+  limit teaches only when a lift test during it fails with limited evidence and, at the lift, its
   delivered CPU stayed flat within 0.3 cores of the plan's limit, or flat below it: a credit limit.
   A cap that starts high or falls marks sustained-use throttling, which teaches nothing and keeps
   the allowance at or below the baseline for three hours after the lift. Its entry reset the

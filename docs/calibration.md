@@ -234,12 +234,17 @@ audited KVM 8, at the same guest load. The margin's fit stays one-dimensional: w
 average is in its slope and offset like any other load-dependent cost. Drift detection has to tell a
 contention burst from a change in the meter, and does it in two steps:
 
-- Whatever is known about the sensitivity, the meter adds between nothing and a core per stolen
-  core. A reading that some sensitivity in that range explains is never extreme, never invalid and
-  always reaches the fit. Until a steal model is fitted, CUSUM and a pending change's verification
-  count only the part of a residual outside that range. Scored in full, the first burst after an
-  upgrade raised an alarm, was verified on the burst's own remaining pairs, and held the margin
-  until a refit the alarm itself kept from running.
+- A fit records the steal its pairs showed at each load, as a line through them (`stealAt`). What
+  the meter adds for that expected steal is already in the fit's slope and offset, so only steal
+  beyond it can explain a residual. Whatever the sensitivity, a stolen core beyond it adds between
+  nothing and a core to the reading, and one short of it takes as much away. A reading that some
+  sensitivity in that range explains is never extreme, never invalid and always reaches the fit.
+  Until a steal model is fitted, CUSUM and a pending change's verification count only the part of a
+  residual outside that range. Scored in full, the first burst after an upgrade raised an alarm, was
+  verified on the burst's own remaining pairs, and held the margin until a refit the alarm itself
+  kept from running. Allowed to explain a residual up to all the steal there was, the expected steal
+  included, 2% of the load stolen all the time hid S4's slope change from drift detection for the
+  twelve days the study had left (study S16).
 - `fitMeter` fits a detection-only steal model (`stealFit: host = a * own + b + c * steal`) by
   within-day fixed effects once at least 10 pairs on at least two UTC days carry 0.05 or more stolen
   cores with enough within-day variance. Within-day demeaning cancels day-level meter offsets, so a
@@ -274,14 +279,31 @@ sensitivity be:
   meter that ignores steal is soon charged a fraction of a core for each;
 - a whole core until a window has spoken. A quiet window carries the last bound on.
 
-The margin's fit was made on readings that already include what steal added, so its line carries the
-average of that at each load: the part above the steal model's own line. Only steal beyond it is
-charged, and calm hours are not charged twice. The charge enters the live estimate, the clamp's tail
-and bridged reading gaps, and the replay that sets the floor after a limit. The ceiling gives it up
-at once, since what is charged for steal is not there to spend on the slice: left to the bank alone,
-the estimate fell a whole floor's reserve before the law took half a core back. `off` and `shadow`
-do not charge it, and neither does a limit, whose steal is the cap's own.
+The margin's fit was made on readings that already include what steal added, so its line carries
+what the expected steal at each load costs, whatever the sensitivity is. Only steal beyond `stealAt`
+is charged. Calm hours are not charged twice, and neither is the steady steal of a host that is
+always busy: charged whole, 2% of the load stolen all the time cost 1.1% of CPU for good, with no
+contention window ever coming to bound it (study S16). A box without a fit has no such line. That is
+every KVM 1 and KVM 2 at the default `fit.min_cores` of 3, and any box before its first fit: there
+each stolen core is charged whole.
+
+The charge enters the live estimate, the clamp's tail and bridged reading gaps, the replay that sets
+the floor after a limit, and a sustained-use restore. The ceiling gives it up at once, since what is
+charged for steal is not there to spend on the slice: left to the bank alone, the estimate fell a
+whole floor's reserve before the law took half a core back. `off` and `shadow` do not charge their
+live estimate; the clamp they report is the one `apply` would hold, charge included. A limit is not
+charged either, since its steal is the cap's own, and what the cap's steal was charged between its
+onset and its detection goes back into the estimate the limit learns from.
 `credits.calibration.stealBound` reports the bound in every mode.
+
+Giving the ceiling up has one side effect the limit detector has to undo. A slice that asks for all
+its ceiling allows asks for less as the ceiling falls, so under a new cap its steal share shrinks
+before it looks like a limit, and a cap that began during a probe cooldown pressed on for the whole
+hour. A cap pins delivery whatever the ceiling does. So when delivery settles into the cap's band
+while steal is being charged and the slice is at its ceiling, and it was not in the band when the
+last probe failed, the cooldown allows one more test. A slice below its ceiling shows its steal
+undiminished, as does any slice in `off` and `shadow`, and gets no extra test: each test costs the
+reading pair around it, which on a contended host is a pair the steal model needs.
 
 A reading at the 100% cap only bounds the meter from below. It never counts as a normal residual and
 never reaches drift detection, so a jump clipped at the cap cannot pass for valid readings; one
@@ -488,9 +510,10 @@ verified (`cusum-keep`) if their mean residual is at least 0.5 σ against the ol
 is withdrawn (`cusum-revert`) and, having changed nothing learned, leaves nothing behind. An idle
 pair cannot tell a slope change from no change, so a real slope change can be withdrawn on a box
 that went idle. It is not lost: drift detection is armed again and raises it within a few pairs of
-the load coming back, and in `apply` the clamp follows the readings meanwhile. Counting only loaded
-pairs instead kept a false alarm for eleven days on a box with two loaded hours a day, and for good
-on an idle one.
+the load coming back, once the fit window holds enough loaded pairs to qualify for a fit, which a
+new alarm needs. In `apply` the clamp follows the readings meanwhile. Counting only loaded pairs
+instead kept a false alarm for eleven days on a box with two loaded hours a day, and for good on an
+idle one.
 
 Verified, the change is measured rather than kept at the alarm's reading. The alarm reads the offset
 from its clearly shifted pairs alone, which overstates a small change several times over: a meter

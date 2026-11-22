@@ -3374,32 +3374,87 @@ Deno.test("a fit after a drift change keeps a limit's gap unless it reads higher
   assertEquals(r.state.gap, 0.15);
 });
 
-Deno.test("steal is charged at the bound the readings give, less what the margin's fit already carries", () => {
+Deno.test("only steal beyond what the fit expects at a load is charged, at the bound the readings give", () => {
   // Nothing known yet: a stolen core adds at most a core to the reading, so that is the charge.
   assertEquals(stealCharge(null, 4, 1), 1);
   assertEquals(stealCharge(fit, 4, 1), 1);
   assertEquals(stealCharge(fit, 4, 0), 0);
-  // A contention window that showed no sensitivity still bounds it.
-  assertAlmostEquals(stealCharge({ ...fit, stealHi: 0.2 }, 4, 1.5), 0.3, 1e-12);
-  // With a steal model, its upper bound, and only beyond what the margin's fit carries: that fit
-  // was made on readings that include steal, so its line sits above the model's by the average.
-  const model: MeterFit = {
-    ...fit,
-    stealFit: { a: fit.a - 0.02, b: fit.b, c: 0.5, hi: 0.6, sigma: fit.sigma },
-  };
-  assertAlmostEquals(stealCharge(model, 4, 1), 0.6 - 0.02 * 4, 1e-12);
-  assertEquals(stealCharge(model, 4, 0.1), 0);
-  // The charge with the margin's line never falls below what the model says the reading is.
-  for (const own of [0.3, 3, 8]) {
-    for (const steal of [0.05, 0.5, 2]) {
-      const charged = fit.a * own + fit.b + stealCharge(model, own, steal);
-      const reading = model.stealFit!.a * own + model.stealFit!.b + 0.5 * steal;
-      assert(charged >= reading - 1e-12, `${own} busy, ${steal} stolen`);
+  // A fit whose pairs saw 2% of the load stolen, steadily, carries that in its line: the steady
+  // steal of a contended host is not charged again, and a burst is charged for what it adds.
+  const steady: MeterFit = { ...fit, stealAt: [0, 0.02] };
+  assertEquals(stealCharge(steady, 4, 0.08), 0);
+  assertEquals(stealCharge(steady, 4, 0.05), 0);
+  assertAlmostEquals(stealCharge(steady, 4, 1.08), 1, 1e-12);
+  // A contention window that showed no sensitivity still bounds it, and a steal model's bound is
+  // its own.
+  assertAlmostEquals(stealCharge({ ...steady, stealHi: 0.2 }, 4, 1.58), 0.3, 1e-12);
+  const model = { a: fit.a, b: fit.b, c: 0.5, hi: 0.6, sigma: fit.sigma };
+  assertAlmostEquals(stealCharge({ ...steady, stealFit: model }, 4, 1.08), 0.6, 1e-12);
+  // The margin covers the fit's line. Whatever the meter's sensitivity c, up to the bound, that
+  // line is the steal-free one plus c times the expected steal, so line and charge together
+  // never fall below the reading.
+  for (const c of [0, 0.3, 0.6]) {
+    const line: MeterFit = { ...fit, a: fit.a + c * 0.02, stealAt: [0, 0.02], stealHi: 0.6 };
+    for (const own of [0.3, 3, 8]) {
+      for (const steal of [0, 0.05, 0.5, 2]) {
+        const charged = line.a * own + line.b + stealCharge(line, own, steal);
+        const reading = fit.a * own + fit.b + c * steal;
+        assert(charged >= reading - 1e-12, `c ${c}, ${own} busy, ${steal} stolen`);
+      }
     }
   }
   // A model saved without a bound charges whole.
-  const { hi: _, ...unbounded } = model.stealFit!;
+  const { hi: _, ...unbounded } = model;
   assertEquals(stealBound({ ...fit, stealFit: unbounded }), 1);
+});
+
+Deno.test("a fit records the steal its pairs showed at each load, and steady steal neither hides drift nor is charged", () => {
+  const normal = noise(41);
+  const rng = seeded(41);
+  const pairs: Pair[] = [];
+  // A contended host: 2% of whatever runs is stolen, and the meter adds half of it.
+  for (let d = 0; d < 14; d++) {
+    for (let k = 0; k < 48; k++) {
+      const hour = k / 2;
+      const own = d % 7 < 5 && hour >= 8 && hour < 16 ? 3.2 + 1.6 * rng() : 0.2 + 0.3 * rng();
+      const steal = 0.02 * own;
+      pairs.push({
+        at: at + d * DAY + k * 1_800_000 + 900_000,
+        own,
+        steal,
+        host: 1.0463 * own + 0.0193 + 0.5 * steal + (0.0214 + 0.0119 * own) * normal(),
+      });
+    }
+  }
+  const fitted = fitMeter(pairs, CALIBRATION.fit, FIT_SEED, at + 14 * DAY)!;
+  // Steal that follows the load cannot be told from the load: no model, no bound, but the line
+  // through it is recorded, and the fit's slope carries its half a core per stolen core.
+  assertEquals([fitted.stealFit, fitted.stealHi], [undefined, undefined]);
+  assertAlmostEquals(fitted.stealAt![1], 0.02, 1e-9);
+  assertAlmostEquals(fitted.stealAt![0], 0, 1e-9);
+  assertAlmostEquals(fitted.a, 1.0463 + 0.5 * 0.02, 0.005);
+  // Charged whole, this steal cost study S16 1.1% of CPU for good.
+  assertAlmostEquals(stealCharge(fitted, 4, 0.08), 0, 1e-9);
+  // A rise of a tenth of a core at four cores, where 0.08 cores are stolen as ever. Allowed to
+  // explain anything up to itself, that steal hid the rise, and a slope change went unalarmed.
+  const risen = { at: at + 15 * DAY, own: 4, steal: 0.08, host: fitted.a * 4 + fitted.b + 0.1 };
+  let seen = emptyCusum(), hidden = emptyCusum();
+  const { stealAt: _, ...blind } = fitted;
+  for (let i = 0; i < 12; i++) {
+    seen = cusumStep(seen, risen, fitted, CALIBRATION.cusum);
+    hidden = cusumStep(hidden, risen, blind, CALIBRATION.cusum);
+  }
+  assert(seen.alarm);
+  assert(!hidden.alarm && hidden.s < seen.s / 3, `${hidden.s} against ${seen.s}`);
+  // A burst on top of the steady steal is still not drift: only the steal beyond the expected
+  // 0.08 can explain a residual, and here it does.
+  const burst = { ...risen, steal: 1.08, host: fitted.a * 4 + fitted.b + 0.5 };
+  assertEquals(cusumStep(emptyCusum(), burst, fitted, CALIBRATION.cusum).s, 0);
+  // Less steal than expected lets a reading sit below the line by as much, and no further.
+  const calm = { ...risen, steal: 0, host: fitted.a * 4 + fitted.b - 0.08 };
+  assertEquals(cusumStep(emptyCusum(), calm, fitted, CALIBRATION.cusum).down, 0);
+  const low = { ...calm, host: calm.host - 0.2 };
+  assert(cusumStep(emptyCusum(), low, fitted, CALIBRATION.cusum).down > 0);
 });
 
 Deno.test("a contention window bounds the meter's steal sensitivity whether or not it establishes one", () => {
@@ -3491,4 +3546,152 @@ Deno.test("the clamp's tail and bridged gaps charge steal as the live estimate d
   assert(gap(0).bridged > 0);
   // Bridged from 01:00 to 03:00, under steal throughout.
   assertAlmostEquals(gap(0).balance - gap(1).balance, 0.4 * 7200, 1e-6);
+});
+
+Deno.test("one day of contention establishes no steal model, whatever fit.min_days says", () => {
+  const rng = seeded(61), normal = noise(62);
+  const pairs: Pair[] = [];
+  for (let d = 0; d < 6; d++) {
+    for (let k = 0; k < 48; k++) {
+      const hour = k / 2;
+      const own = hour >= 8 && hour < 16 ? 3.2 + 1.6 * rng() : 0.2 + 0.3 * rng();
+      // Eight contended hours on one day: 16 pairs, more than the ten a model needs.
+      const steal = d === 3 && hour >= 8 && hour < 16 ? 0.3 + 0.9 * rng() : 0.004;
+      pairs.push({
+        at: at + d * DAY + k * 1_800_000 + 900_000,
+        own,
+        steal,
+        host: 1.0463 * own + 0.0193 + 0.5 * steal + (0.0214 + 0.0119 * own) * normal(),
+      });
+    }
+  }
+  // One day's contention resampled is the same day each time: the bootstrap says nothing, and a
+  // meter that happened to read high that day would pass for a steal term.
+  for (const min_days of [1, 3]) {
+    const fitted = fitMeter(pairs, { ...CALIBRATION.fit, min_days }, FIT_SEED, at + 6 * DAY)!;
+    assertEquals([fitted.stealFit, fitted.stealHi], [undefined, undefined], `min_days ${min_days}`);
+  }
+});
+
+Deno.test("a daily refit carries the steal bound, and a pending change is not refined by a burst", () => {
+  const c = calibrationConfig({ mode: "apply" });
+  // A quiet week on a box whose last contention window bounded the sensitivity at 0.3.
+  {
+    const h = emptyHistory("test", 1, at);
+    h.readings = [{ at, v: 0 }];
+    for (let i = 0; i < 5 * 48; i++) {
+      const start = at + i * 1_800_000, own = i % 3 ? 4 + 0.3 * Math.sin(i) : 0.4;
+      for (let j = 0; j < 3; j++) h.slots.push(slot(start + j * SLOT_MS, own));
+      h.readings.push({
+        at: start + 1_800_000,
+        v: (fit.a * own + fit.b + 0.004 * Math.sin(i * 1.7)) / p.vcpus * 100,
+      });
+    }
+    const bounded: MeterFit = { ...fit, stealHi: 0.3 };
+    const s: CalibrationState = {
+      ...initialCalibration(c, at),
+      fit: bounded,
+      referenceFit: bounded,
+      fitAt: at,
+      lastPaired: at,
+    };
+    const r = updateCalibration(p, h, s, c, h.readings.at(-1)!.at + 60_000, p.capacity);
+    assert(r.state.fitAt! > at, "no refit ran");
+    assertEquals(r.state.referenceFit!.stealHi, 0.3);
+    assertEquals(stealBound(driftReference(r.state)), 0.3);
+  }
+  // A pending drift change measures its size from the pairs since it. A contention burst among
+  // them is not that change: summed at its full residual, it raised the hold.
+  {
+    const h = emptyHistory("test", 1, at);
+    h.readings = [{ at, v: 0 }];
+    for (let i = 0; i < 12; i++) {
+      const start = at + i * 1_800_000;
+      for (let j = 0; j < 3; j++) h.slots.push({ ...slot(start + j * SLOT_MS, 4), steal: 600 });
+      h.readings.push({
+        at: start + 1_800_000,
+        v: (fit.a * 4 + fit.b + 0.5) / p.vcpus * 100,
+      });
+    }
+    const s: CalibrationState = {
+      ...initialCalibration(c, at),
+      fit,
+      referenceFit: fit,
+      fitAt: at + 30 * DAY,
+      lastPaired: at,
+      pending: {
+        at,
+        from: { ...c.start },
+        gapFrom: 0,
+        oldFit: fit,
+        fit: { ...fit, b: fit.b + 0.05 },
+        hold: { mul: 1.05, add: 0.1, floor: 0.05 },
+        readings: 0,
+        z: 0,
+        verified: false,
+        residual: 0,
+        n: 0,
+      },
+    };
+    const { state, events } = stepwise(h, c, s, 1);
+    assertEquals(events.filter((e) => e.trigger === "drift-hold"), []);
+    assertEquals(state.pending!.residual, 0);
+    assertAlmostEquals(state.pending!.fit.b, fit.b + 0.05, 1e-12);
+    assertEquals(state.invalid, false);
+  }
+});
+
+Deno.test("the replays that follow the live estimate charge steal: the settled base across a gap, the floor after a limit, and a sustained-use restore", () => {
+  const c = calibrationConfig({ mode: "apply" });
+  // The clamp's settled base, bridged across a two-hour reading gap at the settings in force.
+  const base = (steal: number) => {
+    const h = emptyHistory("test", 1, at);
+    h.slots = Array.from({ length: 24 }, (_, i) => ({
+      ...slot(at + i * SLOT_MS, 4),
+      steal: i >= 6 && i < 18 ? steal * 600 : 0,
+    }));
+    h.readings = [0, 1, 2, 6, 7, 8].map((i) => ({
+      at: at + i * 1_800_000,
+      v: (fit.a * 4 + fit.b) / p.vcpus * 100,
+    }));
+    const s: CalibrationState = {
+      ...initialCalibration(c, at),
+      replayBase: { at, balance: 20_000, exact: true, gap: 0 },
+    };
+    return updateCalibration(p, h, s, c, at + 24 * SLOT_MS, 30_000).state.replayBase!.balance;
+  };
+  // Without a fit a stolen core is charged whole, for the two bridged hours.
+  assertAlmostEquals(base(0) - base(1), 7200, 1e-6);
+  // The floor a limit raises is what the margin in force leaves at the onset. That margin now
+  // charges steal, so its replay must too, or the limit teaches more than the estimate missed.
+  const floor = (steal: number) => {
+    const h = emptyHistory("test", 1, at);
+    h.slots = Array.from({ length: 60 }, (_, i) => ({
+      ...slot(at + i * SLOT_MS, 4.7),
+      steal: steal * 600,
+    }));
+    const onset = at + 30_300_000, lift = onset + 3_600_000;
+    h.limits = [
+      { ...record("apply"), onset: at - 8 * DAY, entry: at - 8 * DAY + 90_000, lift: at },
+      { ...record("apply"), onset, entry: onset + 90_000, lift },
+    ].map((l) => ({ ...l, class: "credit" as const }));
+    const s = initialCalibration(c, at - 30 * DAY);
+    s.pendingLimits = [onset];
+    return updateCalibration(p, h, s, c, lift + 7_200_000, 10000).state.applied.floor;
+  };
+  assert(floor(0) > c.start.floor + 0.01, `${floor(0)}`);
+  assert(floor(0.05) < floor(0) - 0.005, `${floor(0.05)} against ${floor(0)}`);
+  // A sustained-use restore advances the estimate from the lift at the settings the live
+  // estimate uses, steal charge included when apply makes one.
+  const h = emptyHistory("test", 1, at);
+  h.slots = Array.from({ length: 12 }, (_, i) => ({
+    ...slot(at + i * SLOT_MS, 2),
+    steal: i >= 6 ? 600 : 0,
+  }));
+  const sustained = { ...record("apply"), onset: at, entry: at, lift: at + 6 * SLOT_MS };
+  const s = initialCalibration(c, at);
+  const now = at + 12 * SLOT_MS;
+  const plain = sustainedRestore(p, h, sustained, s, now, c.start)!;
+  const charged = sustainedRestore(p, h, sustained, s, now, c.start, (x) => 0.4 * x.steal)!;
+  assertAlmostEquals(plain - charged, 0.4 * 3600, 1e-6);
 });

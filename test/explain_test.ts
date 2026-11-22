@@ -544,6 +544,14 @@ Deno.test("explain's candidate fit is the fit the daemon makes: same pairs, chan
     (await quiet.out()).evidence.candidateFit,
     quiet.evaluated.state.referenceFit,
   );
+  // The bound a contention window left carries the same way, model or not. Dropped from the
+  // candidate, explain showed a whole core per stolen core beside a daemon charging 0.3.
+  const bounded = await explainWeek({ ...looseOldFit, stealHi: 0.3 });
+  assertEquals(bounded.evaluated.state.referenceFit?.stealHi, 0.3);
+  assertEquals(
+    (await bounded.out()).evidence.candidateFit,
+    bounded.evaluated.state.referenceFit,
+  );
   // A verified drift change refits on the readings after it alone. The candidate mixed in the
   // four days before it: here they sit 0.3 cores lower. The steal sensitivity established before
   // the change carries into that fit too: an offset moving says nothing about contention.
