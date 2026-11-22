@@ -356,6 +356,12 @@ export function explainText(r: Explained) {
       : []),
     ...(r.cooldownUntil !== null ? [`Sustained-use cooldown until ${time(r.cooldownUntil)}`] : []),
     `Meter ${r.fit ? fitText(r.fit) : "not qualified"}`,
+    // What a stolen core costs as it happens, which only apply charges.
+    `Neighbours' steal ${r.mode === "apply" ? "charged" : "would be charged in apply"} at ${
+      r.stealBound === 1
+        ? "a whole core per stolen core: no contention window has bounded the meter's sensitivity yet"
+        : `up to ${cores(r.stealBound)} cores per stolen core`
+    }`,
     // Shown when drift detection follows a fit the margin discarded (#19), or when decision-only
     // recovery restored the reference before a margin fit qualified again.
     ...(r.referenceFit && (!r.fit || fitText(r.referenceFit) !== fitText(r.fit))

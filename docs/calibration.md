@@ -230,10 +230,9 @@ again (see Drift detection). After a drift change, refits never reach back past 
 no window mixes the meter from before a change with the meter after it.
 
 Hostinger's reading also rises with hypervisor steal: by about half a core per stolen core on the
-audited KVM 8, at the same guest load. The margin's fit stays one-dimensional, and steal is not
-charged as it happens, so calm-hour and burst CPU budgets are never double-charged; what steal adds
-on average is in the fit's slope and offset like any other load-dependent cost. Drift detection has
-to tell a contention burst from a change in the meter, and does it in two steps:
+audited KVM 8, at the same guest load. The margin's fit stays one-dimensional: what steal adds on
+average is in its slope and offset like any other load-dependent cost. Drift detection has to tell a
+contention burst from a change in the meter, and does it in two steps:
 
 - Whatever is known about the sensitivity, the meter adds between nothing and a core per stolen
   core. A reading that some sensitivity in that range explains is never extreme, never invalid and
@@ -261,6 +260,28 @@ meter one window in four learns a `c` near 0.1, which costs drift detection a te
 sensitivity per stolen core and nothing else. The governor's own limit probes blank most reading
 intervals during contention, so a model can take weeks to learn (day 29 in study S15); until then
 the range above is what keeps bursts out of drift detection.
+
+In `apply`, steal is also charged as it happens. Where Hostinger bills what its reading shows, a
+burst drains the bank by up to a core per stolen core while the guest's own count, which is all the
+margin charges, sees nothing. The clamp catches up only when the readings settle, 30 to 90 minutes
+later, and with the bank at its 5% floor that is too late: uncharged, the first such burst in study
+S15 ended in a limit. So each stolen core is charged at the most the readings let the meter's
+sensitivity be:
+
+- the steal model's upper bound, `stealFit.hi`: three standard errors above `c` and no less than the
+  bootstrap's 97.5th percentile, as for `aHi`;
+- without a model, the same bound from any window with enough contention to fit one (`stealHi`): a
+  meter that ignores steal is soon charged a fraction of a core for each;
+- a whole core until a window has spoken. A quiet window carries the last bound on.
+
+The margin's fit was made on readings that already include what steal added, so its line carries the
+average of that at each load: the part above the steal model's own line. Only steal beyond it is
+charged, and calm hours are not charged twice. The charge enters the live estimate, the clamp's tail
+and bridged reading gaps, and the replay that sets the floor after a limit. The ceiling gives it up
+at once, since what is charged for steal is not there to spend on the slice: left to the bank alone,
+the estimate fell a whole floor's reserve before the law took half a core back. `off` and `shadow`
+do not charge it, and neither does a limit, whose steal is the cap's own.
+`credits.calibration.stealBound` reports the bound in every mode.
 
 A reading at the 100% cap only bounds the meter from below. It never counts as a normal residual and
 never reaches drift detection, so a jump clipped at the cap cannot pass for valid readings; one
@@ -652,13 +673,13 @@ settings, and mode.
 (`applied`: in `off` and `shadow`, the legacy margin and 20% floor) and the learned ones
 (`learned`), any stale or invalid `hold`, the gap and its upper bound, the fit (including optional
 detection-only `stealFit`) and the newer `referenceFit` drift detection and operational replays
-follow, the CUSUM state, `apiStaleSince`, `readingsInvalid`, `invalidReasons` (when invalid),
-`newestFinal`, `longIntervals`, the estimates, `rulesMismatch`, `mismatches`, `invalidSpans`,
-`ownHold`, any sustained-use cooldown, the last limit's class and diagnosis, and `failing`, the time
-a failing evaluation began and the margin below the open estimate it holds, or null. `failing` shows
-in every mode; in `off` and `shadow` nothing is held, so its margin is 0. In `apply`,
-`credits.balance`, `percent` and `minutesAtFull` report the acted estimate; the open estimate is in
-`credits.calibration.estimates.open`.
+follow, `stealBound`, the CUSUM state, `apiStaleSince`, `readingsInvalid`, `invalidReasons` (when
+invalid), `newestFinal`, `longIntervals`, the estimates, `rulesMismatch`, `mismatches`,
+`invalidSpans`, `ownHold`, any sustained-use cooldown, the last limit's class and diagnosis, and
+`failing`, the time a failing evaluation began and the margin below the open estimate it holds, or
+null. `failing` shows in every mode; in `off` and `shadow` nothing is held, so its margin is 0. In
+`apply`, `credits.balance`, `percent` and `minutesAtFull` report the acted estimate; the open
+estimate is in `credits.calibration.estimates.open`.
 
 ## Explain and reset
 

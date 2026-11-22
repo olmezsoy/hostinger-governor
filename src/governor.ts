@@ -94,6 +94,8 @@ import {
   pruneDiagnosisEvidence,
   replayCheckpoint,
   resetCalibration,
+  slotStealCharge,
+  stealCharge,
   sustainedCooldown,
   sustainedRestore,
   tailSlots,
@@ -792,14 +794,30 @@ export class Governor {
   get law() {
     return { ...LAW, floor: this.settings.floor };
   }
-  private targetCeiling(outside: number) {
-    const allowed = allowedCores(this.plan, this.actedBalance, this.settings, this.law);
+  // What neighbours' steal adds to the charge now, in cores (stealCharge in calibration.ts). Only
+  // apply charges it, as only apply acts on calibration, and never during a limit, where the
+  // steal is the cap's own and the bank is empty either way.
+  private stealCost(busyCores: number, stealCores: number): number {
+    return this.applying && !this.s.limit
+      ? stealCharge(driftReference(this.calibration), busyCores, stealCores)
+      : 0;
+  }
+  // The margin with that charge in it, for one stretch at this busy and stolen CPU.
+  private charging(busyCores: number, stealCores: number): Settings {
+    const settings = this.settings;
+    return { ...settings, add: settings.add + this.stealCost(busyCores, stealCores) };
+  }
+  // `margin` carries the steal charge of the control window: what is charged for steal is not
+  // there to spend on the slice, so the ceiling gives it up at once. Left to the bank alone, the
+  // estimate fell a whole floor's reserve before the law took half a core back.
+  private targetCeiling(outside: number, margin: Settings = this.settings) {
+    const allowed = allowedCores(this.plan, this.actedBalance, margin, this.law);
     // After a sustained-use limit, stay at or below the baseline for the cooldown.
     return this.s.limit?.ceiling ??
       sliceCeiling(
         this.plan,
         this.s.at < this.cooldownUntil
-          ? Math.min(allowed, (this.plan.baseline - this.settings.add) / this.settings.mul)
+          ? Math.min(allowed, (this.plan.baseline - margin.add) / margin.mul)
           : allowed,
         outside,
       );
@@ -1320,7 +1338,15 @@ export class Governor {
       now - record.lift > RESTORE_WINDOW_MS ||
       this.history.limits.some((r) => r.onset > record.onset)
     ) return;
-    const balance = sustainedRestore(this.plan, h, record, this.calibration, now, this.settings);
+    const balance = sustainedRestore(
+      this.plan,
+      h,
+      record,
+      this.calibration,
+      now,
+      this.settings,
+      this.applying ? slotStealCharge(driftReference(this.calibration)) : undefined,
+    );
     if (balance === null) return;
     log(
       `limit: sustained-use estimate restored to ${Math.round(Math.max(this.s.balance, balance))}`,
@@ -1344,7 +1370,8 @@ export class Governor {
     }
     const busy5 = avg(recent.map((x) => x.busy));
     const steal5 = avg(recent.map((x) => x.steal));
-    const delta = p.baseline - charged(busy5 * p.vcpus, this.settings);
+    const margin = this.charging(busy5 * p.vcpus, steal5 * p.vcpus);
+    const delta = p.baseline - charged(busy5 * p.vcpus, margin);
     const pressing = s.limit &&
       limitPressing(p, avg(control.map((x) => x.busy)), avg(control.map((x) => x.steal)));
     return {
@@ -1361,7 +1388,7 @@ export class Governor {
         minutesAtFull: Math.round(this.actedBalance / (p.vcpus - p.baseline) / 60),
         rate: Math.round(
           (pressing || s.noEarn || s.earning === false
-            ? -charged(busy5 * p.vcpus, this.settings)
+            ? -charged(busy5 * p.vcpus, margin)
             : delta) * 10,
         ) / 10,
         margin: { mul: this.settings.mul, add: this.settings.add },
@@ -1866,7 +1893,9 @@ export class Governor {
     s.earning = earning;
     const beforeBalance = s.balance;
     const beforeActed = this.actedBalance;
-    s.balance = creditStep(p, s.balance, busyCores, seconds, this.settings, earning);
+    // The margin on the guest's own count, plus what the neighbours' steal of this sample adds.
+    const margin = this.charging(busyCores, stealCores);
+    s.balance = creditStep(p, s.balance, busyCores, seconds, margin, earning);
     if (s.balance >= this.law.floor * p.capacity) s.rebuilding = null;
     const slotResult = accumulateSlot(s.openSlot, {
       from: beforeAt,
@@ -1876,7 +1905,7 @@ export class Governor {
       steal: stealCores * seconds,
       managed: managed * seconds,
       outside: (sample.outside ?? 0) * seconds,
-      charged: charged(busyCores, this.settings) * seconds,
+      charged: charged(busyCores, margin) * seconds,
       flags: (s.limit ? FLAGS.limited : 0) | (sample.test ? FLAGS.test : 0) |
         (pressing ? FLAGS.pressing : 0) |
         (sample.clockValid ? 0 : FLAGS.clockInvalid) | (earning ? 0 : FLAGS.noEarn) |
@@ -1890,12 +1919,12 @@ export class Governor {
     addSlots(this.history, slotResult.closed);
     s.noEarn = false;
     s.rebootPending = undefined;
-    s.used += charged(busyCores, this.settings) * seconds;
+    s.used += charged(busyCores, margin) * seconds;
     if (s.limit) {
       const recovery = s.limit.recovery ??= { seconds: 0, earningSeconds: 0, charged: 0 };
       recovery.seconds += seconds;
       recovery.earningSeconds += earning ? seconds : 0;
-      recovery.charged += charged(busyCores, this.settings) * seconds;
+      recovery.charged += charged(busyCores, margin) * seconds;
     }
     const control = this.controlMeasurements();
     const { count, busy, steal, outside, avgOutside, maxOutside } = control;
@@ -2206,7 +2235,8 @@ export class Governor {
     { busy, steal, outside }: ControlMeasurements,
   ) {
     const s = this.s;
-    const target = this.targetCeiling(outside);
+    const margin = this.charging(busy * this.plan.vcpus, steal * this.plan.vcpus);
+    const target = this.targetCeiling(outside, margin);
     // Outside a limit on 4+ vCPU plans, skip 10% jitter away from the 20% floor and full-plan
     // ceiling. While actively throttling below full vCPU capacity, never delay tightening so the
     // deadband cannot bias credit spend upward.
@@ -2214,12 +2244,7 @@ export class Governor {
       !s.limit && !s.capFailed && current !== null && this.wantedPeriod() === undefined &&
       this.plan.vcpus >= 4 && current > 20 && target > 20 && target < this.plan.vcpus * 100
     ) {
-      const allowed = allowedCores(
-        this.plan,
-        this.actedBalance,
-        this.settings,
-        this.law,
-      );
+      const allowed = allowedCores(this.plan, this.actedBalance, margin, this.law);
       const fullAllowed = s.at >= this.cooldownUntil && allowed >= this.plan.vcpus;
       const skip = fullAllowed
         ? Math.abs(target - current) < CEILING_DEADBAND

@@ -38,6 +38,8 @@ import {
   resetCalibration,
   seeded,
   sigmaAt,
+  stealBound,
+  stealCharge,
   sustainedRestore,
   tailSlots,
   updateCalibration,
@@ -3370,4 +3372,123 @@ Deno.test("a fit after a drift change keeps a limit's gap unless it reads higher
   const r = updateCalibration(p, h, s, c, last + 60_000, p.capacity);
   assertAlmostEquals(r.state.fit!.stealFit!.c, 0.1, 0.02);
   assertEquals(r.state.gap, 0.15);
+});
+
+Deno.test("steal is charged at the bound the readings give, less what the margin's fit already carries", () => {
+  // Nothing known yet: a stolen core adds at most a core to the reading, so that is the charge.
+  assertEquals(stealCharge(null, 4, 1), 1);
+  assertEquals(stealCharge(fit, 4, 1), 1);
+  assertEquals(stealCharge(fit, 4, 0), 0);
+  // A contention window that showed no sensitivity still bounds it.
+  assertAlmostEquals(stealCharge({ ...fit, stealHi: 0.2 }, 4, 1.5), 0.3, 1e-12);
+  // With a steal model, its upper bound, and only beyond what the margin's fit carries: that fit
+  // was made on readings that include steal, so its line sits above the model's by the average.
+  const model: MeterFit = {
+    ...fit,
+    stealFit: { a: fit.a - 0.02, b: fit.b, c: 0.5, hi: 0.6, sigma: fit.sigma },
+  };
+  assertAlmostEquals(stealCharge(model, 4, 1), 0.6 - 0.02 * 4, 1e-12);
+  assertEquals(stealCharge(model, 4, 0.1), 0);
+  // The charge with the margin's line never falls below what the model says the reading is.
+  for (const own of [0.3, 3, 8]) {
+    for (const steal of [0.05, 0.5, 2]) {
+      const charged = fit.a * own + fit.b + stealCharge(model, own, steal);
+      const reading = model.stealFit!.a * own + model.stealFit!.b + 0.5 * steal;
+      assert(charged >= reading - 1e-12, `${own} busy, ${steal} stolen`);
+    }
+  }
+  // A model saved without a bound charges whole.
+  const { hi: _, ...unbounded } = model.stealFit!;
+  assertEquals(stealBound({ ...fit, stealFit: unbounded }), 1);
+});
+
+Deno.test("a contention window bounds the meter's steal sensitivity whether or not it establishes one", () => {
+  const window = (c: number, bursts: boolean, seed: number) => {
+    const rng = seeded(seed), n = noise(seed + 77);
+    const pairs: Pair[] = [];
+    for (let d = 0; d < 14; d++) {
+      for (let k = 0; k < 48; k++) {
+        const hour = k / 2;
+        const own = d % 7 < 5 && hour >= 8 && hour < 16 ? 3.2 + 1.6 * rng() : 0.2 + 0.3 * rng();
+        const steal = bursts && (d === 2 || d === 9) && hour >= 10 && hour < 13
+          ? 0.3 + 0.9 * rng()
+          : 0.004;
+        pairs.push({
+          at: at + d * DAY + k * 1_800_000 + 900_000,
+          own,
+          steal,
+          host: 1.0463 * own + 0.0193 + c * steal + (0.0214 + 0.0119 * own) * n(),
+        });
+      }
+    }
+    return pairs;
+  };
+  const last = at + 14 * DAY;
+  // A meter that adds half a core: a model, and a bound a little above its coefficient.
+  const half = fitMeter(window(0.5, true, 21), CALIBRATION.fit, FIT_SEED, last)!;
+  assertAlmostEquals(half.stealFit!.c, 0.5, 0.06);
+  assert(
+    half.stealFit!.hi! >= half.stealFit!.c && half.stealFit!.hi! <= 0.8,
+    `${half.stealFit!.hi}`,
+  );
+  assertEquals(stealBound(half), half.stealFit!.hi);
+  // A meter that adds nothing: no model, but the same contention says a stolen core adds little,
+  // so a box whose readings ignore steal stops paying a whole core for each one.
+  const none = fitMeter(window(0, true, 22), CALIBRATION.fit, FIT_SEED, last)!;
+  assertEquals(none.stealFit, undefined);
+  assert(none.stealHi !== undefined && none.stealHi < 0.25, `${none.stealHi}`);
+  // A quiet window says nothing, and keeps what an earlier one said.
+  const quiet = window(0.5, false, 23);
+  assertEquals(stealBound(fitMeter(quiet, CALIBRATION.fit, FIT_SEED, last)!), 1);
+  assertEquals(fitMeter(quiet, CALIBRATION.fit, FIT_SEED, last, { stickyHi: 0.3 })!.stealHi, 0.3);
+  const kept = fitMeter(quiet, CALIBRATION.fit, FIT_SEED, last, { stickyC: 0.5, stickyHi: 0.62 })!;
+  assertEquals([kept.stealFit!.c, kept.stealFit!.hi], [0.5, 0.62]);
+});
+
+Deno.test("the clamp's tail and bridged gaps charge steal as the live estimate does", () => {
+  const c = calibrationConfig({ mode: "apply" });
+  const reading = (own: number) => (fit.a * own + fit.b) / p.vcpus * 100;
+  const history = (steal: number) => {
+    const h = emptyHistory("test", 1, at);
+    // Two hours of readings at 4 cores, then two more hours of slots the readings do not reach.
+    h.slots = Array.from({ length: 24 }, (_, i) => ({
+      ...slot(at + i * SLOT_MS, 4),
+      steal: i >= 12 ? steal * 600 : 0,
+    }));
+    h.readings = [0, 1, 2, 3, 4].map((i) => ({ at: at + i * 1_800_000, v: reading(4) }));
+    return h;
+  };
+  const s: CalibrationState = {
+    ...initialCalibration(c, at),
+    fit,
+    referenceFit: { ...fit, stealHi: 0.4 },
+    replayBase: { at: at + 4 * 1_800_000, balance: 20_000, exact: true, gap: 0 },
+  };
+  const now = at + 24 * SLOT_MS;
+  const calm = calculateEstimates(p, history(0), s, c, now, 30_000).clamp!;
+  const contended = calculateEstimates(p, history(1), s, c, now, 30_000).clamp!;
+  // Two hours at one stolen core, charged at the 0.4 the readings bound it by.
+  assertAlmostEquals(calm - contended, 0.4 * 7200, 1e-6);
+  // A limited slot's steal is the cap's own: not charged.
+  const limited = history(1);
+  limited.slots = limited.slots.map((x, i) => i >= 12 ? { ...x, flags: FLAGS.limited } : x);
+  const calmLimited = history(0);
+  calmLimited.slots = calmLimited.slots.map((x, i) => i >= 12 ? { ...x, flags: FLAGS.limited } : x);
+  assertAlmostEquals(
+    calculateEstimates(p, limited, s, c, now, 30_000).clamp!,
+    calculateEstimates(p, calmLimited, s, c, now, 30_000).clamp!,
+    1e-6,
+  );
+  // A reading gap is bridged at the settings in force, steal included.
+  const gap = (steal: number) => {
+    const h = history(0);
+    h.slots = h.slots.map((x, i) => i >= 6 && i < 18 ? { ...x, steal: steal * 600 } : x);
+    h.readings = [0, 1, 2, 6, 7, 8].map((i) => ({ at: at + i * 1_800_000, v: reading(4) }));
+    return replaySettled(p, h.readings, h.slots, { at, balance: 20_000, exact: true }, {
+      bridge: { margin: c.start, steal: (x) => 0.4 * x.steal },
+    });
+  };
+  assert(gap(0).bridged > 0);
+  // Bridged from 01:00 to 03:00, under steal throughout.
+  assertAlmostEquals(gap(0).balance - gap(1).balance, 0.4 * 7200, 1e-6);
 });

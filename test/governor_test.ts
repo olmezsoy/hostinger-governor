@@ -1554,26 +1554,70 @@ Deno.test("failed probe cooldown starts after probe completes and decays back to
   assertEquals(f.g.s.probe.failedSf, undefined);
 });
 
-Deno.test("detection-only stealFit does not add live steal billing to creditStep or cut allowed CPU", async () => {
-  const f = fixture({
-    hostinger: { vm_id: 1, token_file: "/etc/governor/hostinger-token" },
-    calibration: { mode: "apply" },
-  });
-  await f.g.tick();
-  f.g.calibration.referenceFit = {
+Deno.test("apply charges neighbours' steal as it happens and gives the ceiling up for it; off, shadow and a limit do not", async () => {
+  const hostinger = { vm_id: 1, token_file: "/etc/governor/hostinger-token" };
+  const reference = {
     a: 1.03,
     b: 0.02,
-    stealFit: { a: 1.01, b: 0.02, c: 0.5, sigma: [0.01, 0.01] },
+    stealFit: { a: 1.01, b: 0.02, c: 0.5, hi: 0.6, sigma: [0.01, 0.01] as [number, number] },
     aHi: 1.04,
-    sigma: [0.02, 0.01],
+    sigma: [0.02, 0.01] as [number, number],
     pairs: 100,
     days: 5,
   };
-  f.g.s.balance = 20_000;
-  // Unlimited tick with 4.0 busy cores and 1.0 steal core bills the 1D margin only (no extra c * steal).
-  await f.advance(30, 4.0 / 8, 1.0 / 8, 0.2);
-  const expected = 20_000 + (p.baseline - (f.g.settings.mul * 4.0 + f.g.settings.add)) * 30;
-  assertAlmostEquals(f.g.s.balance, expected, 1e-6);
+  // One pass at 4 busy and 1 stolen core from a bank of 20,000: what was charged, in cores.
+  const charged = async (mode: "off" | "shadow" | "apply", fit: typeof reference | null) => {
+    const f = fixture({ hostinger, calibration: { mode } });
+    await f.g.tick();
+    if (fit) f.g.calibration.referenceFit = f.g.calibration.fit = fit;
+    f.g.s.balance = 20_000;
+    await f.advance(30, 4.0 / 8, 1.0 / 8, 0.2);
+    const own = f.g.settings.mul * 4.0 + f.g.settings.add;
+    const total = p.baseline - (f.g.s.balance - 20_000) / 30;
+    // The slot records the same charge, which gap learning's own-count replay reads back.
+    assertAlmostEquals(f.g.s.openSlot!.charged, total * 30, 1e-6, mode);
+    return total - own;
+  };
+  // The steal model's bound, 0.6 a stolen core, less the 0.08 cores the margin's own fit already
+  // carries at four cores: its line sits that far above the model's.
+  assertAlmostEquals(await charged("apply", reference), 0.6 - (1.03 - 1.01) * 4, 1e-9);
+  // Until a contention window has bounded the meter's sensitivity, a stolen core is charged whole.
+  assertAlmostEquals(await charged("apply", null), 1, 1e-9);
+  assertAlmostEquals(
+    await charged("apply", { ...reference, stealFit: undefined } as never),
+    1,
+    1e-9,
+  );
+  // Off and shadow act on the legacy margin alone.
+  assertAlmostEquals(await charged("off", reference), 0, 1e-9);
+  assertAlmostEquals(await charged("shadow", reference), 0, 1e-9);
+  // During a limit the steal is the cap's own.
+  {
+    const f = fixture({ hostinger, calibration: { mode: "apply" } });
+    await f.g.tick();
+    f.g.enterLimit(start, false);
+    f.g.s.limit!.testAt = 1e15;
+    f.g.s.balance = 1_000;
+    await f.advance(30, 0.1 / 8, 1.0 / 8, 0.05);
+    // Pressing on the limit earns nothing, and the pass pays for its own tenth of a core alone.
+    const own = (f.g.settings.mul * 0.1 + f.g.settings.add) * 30;
+    assertAlmostEquals(f.g.s.balance, 1_000 - own, 1e-6);
+  }
+  // What is charged for steal is not there to spend on the slice: at the floor, where the law
+  // allows what the baseline pays for, the ceiling gives up a core's charge at once. Left to the
+  // bank alone, the estimate fell a whole floor's reserve before the law took half a core back.
+  const ceiling = async (steal: number) => {
+    const f = fixture({ hostinger, calibration: { mode: "apply" } });
+    await f.g.tick();
+    f.g.s.probe.cooldownUntil = 1e15;
+    for (let i = 0; i < 4; i++) {
+      f.g.s.balance = f.g.law.floor * p.capacity;
+      await f.advance(30, 4.0 / 8, steal / 8, 3.8);
+    }
+    return f.cap;
+  };
+  const calm = await ceiling(0), contended = await ceiling(1);
+  assert(calm - contended >= 80 && calm - contended <= 110, `${calm}% and ${contended}%`);
 });
 
 // A confirmed credit limit whose last failed lift test is now, ready for the pass that finds the

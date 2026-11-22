@@ -19,10 +19,15 @@
     a window's own estimate lies three standard errors from it. Whatever `c` is, a reading that some
     sensitivity from 0 to 1 explains is never extreme, so a model that has gone wrong is refuted by
     the pairs it misreads instead of marking them invalid.
-  - Live billing stays on the 1D margin, so calm-hour and burst CPU budgets are never
-    double-charged. Steal is therefore not charged as it happens: where Hostinger does bill it, the
-    first burst that meets a bank at its floor can end in a limit, which teaches the gap (study S15:
-    one limit in eight weeks, none after it, and none when steal is not billed).
+  - In `apply`, charge neighbours' steal as it happens (`stealCharge`). Where Hostinger bills what
+    its reading shows, a burst drains the bank by up to a core per stolen core while the guest's own
+    count sees nothing: in study S15 the first burst that met a bank at its floor ended in a limit.
+    Each stolen core is charged at the most the readings let the meter's sensitivity be: the steal
+    model's upper bound, a contention window's bound where no model is established, and a whole core
+    until a window has enough contention to say. Only steal beyond what the margin's own fit already
+    carries at that load is charged, so calm hours are not charged twice, and the ceiling gives the
+    charge up at once. The live estimate, the clamp's tail, bridged reading gaps and the floor's
+    replay charge it; `off`, `shadow` and a limit do not. S15 has no limit with it.
   - Persist explicit `steal: 0` on exact interval pairs (`pairSamples`) so measured zero-steal
     intervals never fall back to 10-minute slot averages; compare post-change fits at both ends of
     the steal each load leaves room for in `carries()` before resetting a learned gap; preserve

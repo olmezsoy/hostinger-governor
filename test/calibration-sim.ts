@@ -732,16 +732,15 @@ export function assessStudy(
       r.stealModel !== null && Math.abs(r.stealModel - sc.contention!.meter) <= 0.15,
       "Drift detection did not learn the meter's steal sensitivity.",
     );
-    // Steal is not charged as it happens, so the first burst that meets a bank at its floor can
-    // empty it. That limit teaches the gap; a second would mean it taught nothing.
-    exception(r.creditLimits <= 1, "More than one credit limit occurred.");
+    // Apply charges steal as it happens, at the most the readings let a stolen core cost, so a
+    // burst that meets a bank at its 5% floor cannot empty it: uncharged, the first one did, on
+    // day 16.6. The charge must not cost more than apply gains over off's fixed margin and 20%
+    // floor, which the same contention never limits either.
+    exception(r.creditLimits === 0, "A credit limit occurred.");
+    exception(comparison?.creditLimits === 0, "A credit limit occurred in off.");
     exception(
-      comparison?.creditLimits === 0,
-      "A limit occurred though the bank was not charged for steal.",
-    );
-    exception(
-      comparison !== null && Math.abs(r.cpuCoreHours / comparison.cpuCoreHours - 1) <= 0.01,
-      "CPU differs by more than 1% from a bank that isn't charged for steal.",
+      comparison !== null && r.cpuCoreHours >= comparison.cpuCoreHours,
+      "Apply delivered less CPU than off.",
     );
   }
   return {
@@ -772,8 +771,7 @@ export async function runStudies(only?: string) {
         S12: { mode: "off" as const },
         S13: { noise: 1 },
         S14: { clamp: false },
-        // The same contention in the readings, but with a bank that isn't charged for it.
-        S15: { contention: { ...sc.contention!, bill: 0 } },
+        S15: { mode: "off" as const },
       }[sc.id];
       if (against) comparison = await study({ ...sc, id: `${sc.id}-comparison`, ...against });
       const result = { ...r, comparison, assessment: assessStudy(sc, r, comparison) };
