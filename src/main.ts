@@ -4,8 +4,7 @@
 //   governor tick                   run one pass now and wait for its state writes (root only)
 //   governor status [--json]        the state every consumer reads; exit 3 if the daemon is not running
 //   governor report [hours] [--format text|html|json]  read-only vitals (default 12 hours)
-//   governor calibrate --explain [--json]  replay the recorded calibration decision (read-only)
-//   governor calibrate --reset      return calibration to its configured start (root only)
+//   governor calibrate --reset      forget what credit limits and readings taught (root only)
 //   governor limit on|off           tell it what hPanel or Hostinger support says (root only)
 //   governor seed <core-seconds>    set the credit balance, for example when moving from another tool
 //   governor exec [--wait <s>] -- <command>  run a command in user.slice once it accepts work
@@ -26,7 +25,6 @@ import {
 } from "./governor.ts";
 import { requestTick, TickError } from "./control.ts";
 import { creditLines, report } from "./report.ts";
-import { explainCalibration, explainText } from "./explain.ts";
 import { isCapFailed, reportOptions } from "./resource.ts";
 import { configureDocker, enrollService } from "./workloads.ts";
 import { readClock } from "./sample.ts";
@@ -40,7 +38,7 @@ import {
   vm,
 } from "./hostinger.ts";
 
-export const VERSION = "0.3.3";
+export const VERSION = "1.0.0";
 const STALE_MS = 5 * 60_000;
 class UnsupportedStateSchema extends Error {
   constructor() {
@@ -79,7 +77,7 @@ async function ask(body: Record<string, unknown>) {
 
 const usage = (): never => {
   console.error(
-    "usage: governor run | tick | status [--json] | report [hours] [--format text|html|json] | check-hostinger | calibrate --explain [--json] | calibrate --reset | limit on|off | seed <core-seconds> | exec [--wait <seconds>] -- <command> | enroll-service <unit> | configure-docker | version",
+    "usage: governor run | tick | status [--json] | report [hours] [--format text|html|json] | check-hostinger | calibrate --reset | limit on|off | seed <core-seconds> | exec [--wait <seconds>] -- <command> | enroll-service <unit> | configure-docker | version",
   );
   Deno.exit(2);
 };
@@ -98,12 +96,10 @@ try {
       break;
     case "calibrate":
       if (args.length === 1 && args[0] === "--reset") await ask({ action: "calibration-reset" });
-      else if (
-        args.includes("--explain") && new Set(args).size === args.length &&
-        args.every((a) => a === "--explain" || a === "--json")
-      ) {
-        const result = await explainCalibration(await loadConfig());
-        console.log(args.includes("--json") ? JSON.stringify(result) : explainText(result));
+      else if (args.includes("--explain")) {
+        // v1.0.0 keeps no calibration record to replay. The estimate and its margin are in status.
+        console.error("governor calibrate --explain was removed in v1.0.0; see governor status");
+        Deno.exit(2);
       } else usage();
       break;
     case "validate-config":
@@ -245,11 +241,10 @@ try {
     console.error(error.message);
     Deno.exit(1);
   }
-  // A command run without access to the daemon's private files, such as calibrate --explain by an
-  // ordinary user, says so instead of printing a stack trace. The daemon keeps its trace.
+  // A command run without access to the daemon's private files says so instead of printing a
+  // stack trace. The daemon keeps its trace.
   if (cmd !== "run" && error instanceof Deno.errors.PermissionDenied) {
-    const canRunAsGovernor = cmd === "calibrate" && args.includes("--explain") ||
-      cmd === "check-hostinger" ||
+    const canRunAsGovernor = cmd === "check-hostinger" ||
       cmd === "validate-config" ||
       cmd === "fallback" && args[0] === "--print";
     const hint = error.message.includes("sudo")

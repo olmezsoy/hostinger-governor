@@ -1,0 +1,309 @@
+// The credit estimate's arithmetic: what a reading does to the anchor, what the own count does to
+// the tail, and what a credit limit teaches.
+import { assert, assertAlmostEquals, assertEquals } from "@std/assert";
+import {
+  billedSteal,
+  billingGap,
+  ESTIMATE,
+  type Estimate,
+  learnedPad,
+  margin,
+  maxDrain,
+  mostAdded,
+  ownCharge,
+  type Sample,
+  settle,
+  stale,
+  tail,
+} from "../src/estimate.ts";
+import { plan } from "../src/plans.ts";
+
+const p = plan(8);
+const T0 = Date.parse("2026-11-01T00:00:00Z");
+const HALF = 1_800_000;
+const fresh = (balance?: number, at = T0): Estimate => ({
+  ...(balance === undefined ? {} : { anchor: { at, balance } }),
+  pad: ESTIMATE.pad,
+  excess: [],
+  known: { at: T0, slack: 0 },
+});
+// Readings every half hour from T0, in cores.
+const readings = (...cores: number[]) =>
+  [0, ...cores].map((c, i) => ({ at: T0 + i * HALF, v: c / p.vcpus * 100 }));
+// 30-second samples covering [from, to) at `cores` busy.
+const samples = (from: number, to: number, cores: number, steal = 0): Sample[] =>
+  Array.from({ length: (to - from) / 30_000 }, (_, i) => ({
+    at: from + (i + 1) * 30_000,
+    seconds: 30,
+    busy: cores / p.vcpus,
+    steal: steal / p.vcpus,
+    outside: 0,
+    earning: true,
+  }));
+
+Deno.test("the own count charges 1.05 times busy CPU plus 0.04, and what readings showed above that", () => {
+  assertEquals(margin(p, fresh()), { mul: 1.05, add: 0.04 });
+  // Seven readings are too few to move the addition.
+  assertEquals(margin(p, { pad: ESTIMATE.pad, excess: Array(7).fill(0.3) }).add, 0.04);
+  // Eight: their mean plus two deviations.
+  assertAlmostEquals(margin(p, { pad: ESTIMATE.pad, excess: Array(8).fill(0.3) }).add, 0.3);
+  const spread = [0.1, 0.3, 0.1, 0.3, 0.1, 0.3, 0.1, 0.3];
+  assertAlmostEquals(margin(p, { pad: ESTIMATE.pad, excess: spread }).add, 0.2 + 2 * 0.1);
+  // Readings under the own count never take the addition below the fixed one.
+  assertEquals(margin(p, { pad: ESTIMATE.pad, excess: Array(8).fill(-0.5) }).add, 0.04);
+  // A pad a limit raised is billed by the own count too.
+  assertAlmostEquals(margin(p, { pad: ESTIMATE.pad + 0.1, excess: [] }).add, 0.14);
+  // The addition stops where the allowance at the floor would fall under what the VM is left
+  // while a limit recovers, 0.2 cores under the plan's limit: 4.8 - 1.05 x 2.2 cores on KVM 8,
+  // 0.6 - 1.05 x 0.2 on KVM 1.
+  assertAlmostEquals(mostAdded(p), 2.49);
+  assertAlmostEquals(margin(p, { pad: 9, excess: [] }).add, 2.49);
+  assertAlmostEquals(margin(p, { pad: ESTIMATE.pad, excess: Array(8).fill(5) }).add, 2.49);
+  assertAlmostEquals(mostAdded(plan(1)), 0.39);
+  assertAlmostEquals(margin(plan(1), { pad: 1, excess: [] }).add, 0.39);
+});
+
+Deno.test("stolen CPU is charged whole while the VM delivers more than a limit could, and not at or under it", () => {
+  const steal = 1 / p.vcpus;
+  // 3 cores delivered: more than the 2.4-core limit allows, so the steal is the neighbours'.
+  assertAlmostEquals(billedSteal(p, { busy: 3 / p.vcpus, steal }), 1);
+  assertAlmostEquals(
+    ownCharge(p, { busy: 3 / p.vcpus, steal }, margin(p, fresh())),
+    3.15 + 1 + 0.04,
+  );
+  // At the limit, and a tenth of a core over it, the steal may be a limit's own.
+  assertEquals(billedSteal(p, { busy: 2.4 / p.vcpus, steal }), 0);
+  assertEquals(billedSteal(p, { busy: 2.5 / p.vcpus, steal }), 0);
+  assert(billedSteal(p, { busy: 2.51 / p.vcpus, steal }) > 0);
+  // Inside a recognised limit no steal is billed.
+  assertEquals(billedSteal(p, { busy: 3 / p.vcpus, steal, limited: true }), 0);
+});
+
+Deno.test("readings move the anchor both ways through Hostinger's rules", () => {
+  const e = fresh(10_000);
+  // Half an hour at 2 cores earns (4.8 - 2.02) a second; half an hour at 7 cores spends.
+  const rs = readings(2, 7);
+  assert(settle(p, e, rs, []));
+  const up = 10_000 + (p.baseline - 2 - ESTIMATE.pad) * 1800;
+  assertAlmostEquals(e.anchor!.balance, up + (p.baseline - 7 - ESTIMATE.pad) * 1800);
+  assertEquals(e.anchor!.at, rs[2].at);
+  assert(up > 10_000 && e.anchor!.balance < up);
+  // Nothing new settled: the anchor stays.
+  assertEquals(settle(p, e, rs, []), false);
+});
+
+Deno.test("without an anchor the replay starts from an empty bank at the oldest reading", () => {
+  const e = fresh();
+  assert(settle(p, e, readings(2), []));
+  assertAlmostEquals(e.anchor!.balance, (p.baseline - 2 - ESTIMATE.pad) * 1800);
+  // An anchor older than every reading kept starts over the same way.
+  const old = fresh(30_000, T0 - 10 * HALF);
+  assert(settle(p, old, readings(2), []));
+  assertAlmostEquals(old.anchor!.balance, (p.baseline - 2 - ESTIMATE.pad) * 1800);
+});
+
+Deno.test("a reading under the guest's own count is a broken feed, and one far over it is held", () => {
+  const own = samples(T0, T0 + HALF, 4);
+  // The guest itself counted 4 cores. No bill for them can be 1: the own count stands in, and
+  // nothing is remembered of the reading.
+  const low = fresh(10_000);
+  settle(p, low, readings(1), own);
+  assertAlmostEquals(low.anchor!.balance, 10_000 + (p.baseline - 4.2 - 0.04) * 1800);
+  assertEquals(low.excess, []);
+  // A feed that reads eight times too high cannot starve the box.
+  const high = fresh(20_000);
+  settle(p, high, readings(8), own);
+  assertAlmostEquals(
+    high.anchor!.balance,
+    20_000 + (p.baseline - (1.3 * 4 + 0.3) - ESTIMATE.pad) * 1800,
+  );
+  // The ceiling leaves room for what the neighbours stole, which the readings count.
+  const stolen = fresh(20_000);
+  settle(p, stolen, readings(8), samples(T0, T0 + HALF, 4, 1));
+  assertAlmostEquals(
+    stolen.anchor!.balance,
+    20_000 + (p.baseline - (1.3 * 4 + 1 + 0.3) - ESTIMATE.pad) * 1800,
+  );
+  // That steal was charged by the own count already, so it is no part of what the reading
+  // showed above it.
+  assertAlmostEquals(stolen.excess[0], 1.3 * 4 + 1 + 0.3 - 1.05 * 4 - 1);
+  // In between, the reading stands, and its distance from the own count is remembered.
+  const mid = fresh(10_000);
+  settle(p, mid, readings(4.3), own);
+  assertAlmostEquals(mid.anchor!.balance, 10_000 + (p.baseline - 4.3 - ESTIMATE.pad) * 1800);
+  assertAlmostEquals(mid.excess[0], 4.3 - 1.05 * 4);
+  // A reading that equals the own count is a bill, if a low one.
+  const even = fresh(10_000);
+  settle(p, even, readings(4), own);
+  assertAlmostEquals(even.anchor!.balance, 10_000 + (p.baseline - 4 - ESTIMATE.pad) * 1800);
+});
+
+Deno.test("samples must cover nine tenths of a reading's interval to stand beside it", () => {
+  // 27 of 30 minutes: covered, so the feed that reads low is caught.
+  const most = fresh(10_000);
+  settle(p, most, readings(1), samples(T0, T0 + 1_620_000, 4));
+  // The three minutes without samples are billed like the rest.
+  assertAlmostEquals(most.anchor!.balance, 10_000 + (p.baseline - 4.2 - 0.04) * 1800);
+  // 26 minutes: not covered. The reading is all there is, and stands unguarded.
+  const less = fresh(10_000);
+  settle(p, less, readings(1), samples(T0, T0 + 1_560_000, 4));
+  assertAlmostEquals(less.anchor!.balance, 10_000 + (p.baseline - 1 - ESTIMATE.pad) * 1800);
+  assertEquals(less.excess, []);
+});
+
+Deno.test("the readings remembered for the addition are the last 48", () => {
+  const e = fresh(10_000);
+  const n = 60;
+  settle(p, e, readings(...Array(n).fill(4.3)), samples(T0, T0 + n * HALF, 4));
+  assertEquals(e.excess.length, ESTIMATE.excessKept);
+  assertEquals(ESTIMATE.excessKept, 48);
+});
+
+Deno.test("a bank that fills inside a reading's interval forgets what it earned there", () => {
+  // Twenty idle minutes, then ten at every core: 2.67 cores on average.
+  const own = [
+    ...samples(T0, T0 + 1_200_000, 0),
+    ...samples(T0 + 1_200_000, T0 + HALF, 8),
+  ];
+  const mean = 8 / 3, reading = 2.8;
+  const e = fresh(p.capacity - 1000);
+  settle(p, e, readings(reading), own);
+  // The bank was full within four minutes, earned nothing more, and then spent for ten.
+  const bill = reading + ESTIMATE.pad;
+  const spent = (bill * 8 / mean - p.baseline) * 600;
+  assertAlmostEquals(e.anchor!.balance, p.capacity - spent, 1);
+  // Averaged over the interval, the same reading would have left the bank full.
+  assert(p.capacity - 1000 + (p.baseline - bill) * 1800 > p.capacity);
+});
+
+Deno.test("a reading no sample covers counts its CPU in the worst order", () => {
+  // The same reading without samples: the VM could have idled first with the bank full.
+  const e = fresh(p.capacity - 1000);
+  const mean = 8 / 3, bill = mean + ESTIMATE.pad;
+  settle(p, e, readings(mean), []);
+  const idle = 1800 * (1 - bill / p.vcpus);
+  const forgotten = p.capacity - 1000 + p.baseline * idle - p.capacity;
+  assertAlmostEquals(
+    e.anchor!.balance,
+    p.capacity - 1000 + (p.baseline - bill) * 1800 - forgotten,
+    1e-6,
+  );
+  assert(e.anchor!.balance < p.capacity - 1000);
+  // Far from full there is nothing to forget, and the mean stands.
+  const low = fresh(5000);
+  settle(p, low, readings(mean), []);
+  assertAlmostEquals(low.anchor!.balance, 5000 + (p.baseline - bill) * 1800);
+});
+
+Deno.test("a full bank is known, and a replay never leaves the bank's bounds", () => {
+  const e = fresh(p.capacity - 100);
+  const rs = readings(0.2);
+  settle(p, e, rs, samples(T0, T0 + HALF, 0.2));
+  assertEquals(e.anchor!.balance, p.capacity);
+  assertEquals(e.known, { at: rs[1].at, slack: 0 });
+  const empty = fresh(100);
+  settle(p, empty, readings(8), samples(T0, T0 + HALF, 8));
+  assertEquals(empty.anchor!.balance, 0);
+});
+
+Deno.test("an interval too long to trust runs on the own count, or counts at the most the VM could spend", () => {
+  const long = [{ at: T0, v: 0 }, { at: T0 + 2 * HALF, v: 100 }];
+  const covered = fresh(10_000);
+  settle(p, covered, long, samples(T0, T0 + 2 * HALF, 3));
+  assertAlmostEquals(covered.anchor!.balance, 10_000 + (p.baseline - 3.15 - 0.04) * 3600);
+  // The own count charges the neighbours' steal there too.
+  const stolen = fresh(20_000);
+  settle(p, stolen, long, samples(T0, T0 + 2 * HALF, 3, 1));
+  assertAlmostEquals(stolen.anchor!.balance, 20_000 + (p.baseline - 3.15 - 1 - 0.04) * 3600);
+  // With no sample either, nobody watched that hour: every vCPU may have been busy.
+  const bare = fresh(30_000);
+  settle(p, bare, long, []);
+  assertAlmostEquals(bare.anchor!.balance, 30_000 - maxDrain(p, margin(p, bare)) * 3600);
+  const low = fresh(10_000);
+  settle(p, low, long, []);
+  assertEquals(low.anchor!.balance, 0);
+});
+
+Deno.test("a reading that began before the anchor counts only the time after it", () => {
+  // A lift or a seed put the anchor ten minutes into the interval.
+  const at = T0 + 600_000;
+  const e = fresh(7000, at);
+  settle(p, e, readings(6), samples(T0, T0 + HALF, 3));
+  // The reading averages time the anchor already settled, so the own count stands in.
+  assertAlmostEquals(e.anchor!.balance, 7000 + (p.baseline - 3.15 - 0.04) * 1200);
+  // Without samples the reading is all there is, over the time after the anchor.
+  const bare = fresh(7000, at);
+  settle(p, bare, readings(6), []);
+  assertAlmostEquals(bare.anchor!.balance, 7000 + (p.baseline - 6 - ESTIMATE.pad) * 1200);
+});
+
+Deno.test("a sample whose place in time is unknown covers no reading", () => {
+  const own = samples(T0, T0 + HALF, 4).map((x) => ({ ...x, clockValid: false }));
+  const e = fresh(10_000);
+  settle(p, e, readings(1), own);
+  // Uncovered, so the reading stands unguarded.
+  assertAlmostEquals(e.anchor!.balance, 10_000 + (p.baseline - 1 - ESTIMATE.pad) * 1800);
+  assertEquals(e.excess, []);
+});
+
+Deno.test("the estimate is the anchor plus the own count since", () => {
+  const m = margin(p, fresh());
+  const own = samples(T0 - 600_000, T0 + 600_000, 6);
+  // Only the ten minutes after the anchor count.
+  assertAlmostEquals(
+    tail(p, { at: T0, balance: 10_000 }, own, m, T0 + 600_000),
+    10_000 + (p.baseline - 6.3 - 0.04) * 600,
+  );
+  // A sample that earned nothing, as while pressing on a limit, only spends.
+  const paused = samples(T0, T0 + 600_000, 2).map((x) => ({ ...x, earning: false }));
+  assertAlmostEquals(
+    tail(p, { at: T0, balance: 10_000 }, paused, m, T0 + 600_000),
+    10_000 - (2.1 + 0.04) * 600,
+  );
+});
+
+Deno.test("time since the anchor that no sample covers counts at the most the VM could spend", () => {
+  const m = margin(p, fresh());
+  const drain = maxDrain(p, m);
+  assertAlmostEquals(drain, 8.4 + 0.04 - p.baseline);
+  // Twenty minutes of samples, then forty the daemon did not see.
+  const own = samples(T0, T0 + 1_200_000, 0);
+  const counted = 10_000 + (p.baseline - 0.04) * 1200;
+  assertAlmostEquals(
+    tail(p, { at: T0, balance: 10_000 }, own, m, T0 + 3_600_000),
+    Math.max(0, counted - drain * 2400),
+  );
+  // A minute of drift between wall clock and uptime is not a hole.
+  assertAlmostEquals(tail(p, { at: T0, balance: 10_000 }, own, m, T0 + 1_260_000), counted);
+  // Samples from before a clock step have no place after the anchor: their time is a hole.
+  const misplaced = own.map((x) => ({ ...x, clockValid: false }));
+  assertAlmostEquals(
+    tail(p, { at: T0, balance: 30_000 }, misplaced, m, T0 + 1_200_000),
+    30_000 - drain * 1200,
+  );
+  assertEquals(tail(p, { at: T0, balance: 100 }, [], m, T0 + 3_600_000), 0);
+});
+
+Deno.test("readings are stale after two hours without a settled one", () => {
+  const rs = readings(1);
+  assertEquals(stale(rs, rs[1].at + ESTIMATE.staleMs), false);
+  assertEquals(stale(rs, rs[1].at + ESTIMATE.staleMs + 1), true);
+  assertEquals(stale([], T0), true);
+});
+
+Deno.test("a credit limit teaches the billing its readings missed, with a quarter extra", () => {
+  // The bank emptied while the estimate showed 3,600 core-seconds, ten hours after it was full.
+  const gap = billingGap(3600, 0, 36_000);
+  assertAlmostEquals(gap, 0.1);
+  assertAlmostEquals(learnedPad(p, ESTIMATE.pad, gap), ESTIMATE.pad + 0.125);
+  // What the estimate held back at a lift counts as well.
+  assertAlmostEquals(billingGap(3600, 1800, 36_000), 0.15);
+  // Under an hour the rate is mostly noise: an hour counts at least.
+  assertAlmostEquals(billingGap(360, 0, 60), 0.1);
+  // No gap teaches nothing, no limit teaches more than a core at once, and the pad stops where
+  // the own count's addition does.
+  assertEquals(learnedPad(p, ESTIMATE.pad, 0), ESTIMATE.pad);
+  assertAlmostEquals(learnedPad(p, ESTIMATE.pad, 5), ESTIMATE.pad + 1);
+  assertAlmostEquals(learnedPad(p, 2, 5), 2.49);
+  assertAlmostEquals(learnedPad(plan(1), ESTIMATE.pad, 5), 0.39);
+});

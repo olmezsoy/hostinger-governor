@@ -1,0 +1,674 @@
+{
+  "seed": 13,
+  "days": 56,
+  "start": "2026-10-12T00:00:00Z",
+  "workload": "Seeded CI jobs at twice a single stream: 6-8 requested cores. Weekdays from 06:00 to 22:00 UTC run 0.5-6 hour jobs separated by 5-30 minute lulls at 0.4-1.4 cores; nights and weekends run 10-60 minute jobs separated by 30-120 minute lulls. Day-level meter wobble 0.01 cores. No production traces were available.",
+  "runtime": "Deno 2.9.7",
+  "results": [
+    {
+      "id": "S1",
+      "creditLimits": 0,
+      "hostLimits": [],
+      "limitedHours": 0,
+      "cpuCoreHours": 5217.49108932186,
+      "entries": 0,
+      "falseEntries": 0,
+      "minBank": 3261.0701083783124,
+      "maxOver": 995.8690648711354,
+      "pad": 0.02,
+      "margin": {
+        "mul": 1.05,
+        "add": 0.15482783967101027
+      },
+      "gapBilledCoreSeconds": 0,
+      "sustainedTriggered": false,
+      "reboot": null,
+      "corruptionRecovered": false,
+      "ticksAfterCorruption": 0,
+      "slowestTickMs": 0,
+      "readingGaps": 1,
+      "comparison": {
+        "id": "S1-comparison",
+        "creditLimits": 0,
+        "hostLimits": [],
+        "limitedHours": 0,
+        "cpuCoreHours": 5211.733109788043,
+        "entries": 0,
+        "falseEntries": 0,
+        "minBank": 3129.4415110072996,
+        "maxOver": 591.2881142636252,
+        "pad": 0.02,
+        "margin": {
+          "mul": 1.05,
+          "add": 0.04
+        },
+        "gapBilledCoreSeconds": 0,
+        "sustainedTriggered": false,
+        "reboot": null,
+        "corruptionRecovered": false,
+        "ticksAfterCorruption": 0,
+        "slowestTickMs": 0,
+        "readingGaps": 0
+      },
+      "assessment": {
+        "status": "pass",
+        "notes": [],
+        "cpuCostPercent": -0.11048108973583166,
+        "limitsPrevented": 0
+      }
+    },
+    {
+      "id": "S2",
+      "creditLimits": 0,
+      "hostLimits": [],
+      "limitedHours": 0,
+      "cpuCoreHours": 5217.49108932186,
+      "entries": 0,
+      "falseEntries": 0,
+      "minBank": 2266.0363472392,
+      "maxOver": 1821.381661036754,
+      "pad": 0.02,
+      "margin": {
+        "mul": 1.05,
+        "add": 0.15482783967101027
+      },
+      "gapBilledCoreSeconds": 145151.99999515925,
+      "sustainedTriggered": false,
+      "reboot": null,
+      "corruptionRecovered": false,
+      "ticksAfterCorruption": 0,
+      "slowestTickMs": 0,
+      "readingGaps": 1,
+      "comparison": null,
+      "assessment": {
+        "status": "pass",
+        "notes": []
+      }
+    },
+    {
+      "id": "S3",
+      "creditLimits": 1,
+      "hostLimits": [
+        {
+          "at": 1792002483000,
+          "lift": 1792005711000
+        }
+      ],
+      "limitedHours": 0.8969444444444444,
+      "cpuCoreHours": 5140.043622842772,
+      "entries": 1,
+      "falseEntries": 0,
+      "minBank": 0,
+      "maxOver": 4877.995432123553,
+      "pad": 0.13850647862345133,
+      "margin": {
+        "mul": 1.05,
+        "add": 0.2732890553450241
+      },
+      "gapBilledCoreSeconds": 483840.999959153,
+      "sustainedTriggered": false,
+      "reboot": null,
+      "corruptionRecovered": false,
+      "ticksAfterCorruption": 0,
+      "slowestTickMs": 0,
+      "readingGaps": 1,
+      "comparison": null,
+      "assessment": {
+        "status": "pass",
+        "notes": []
+      }
+    },
+    {
+      "id": "S4",
+      "creditLimits": 0,
+      "hostLimits": [],
+      "limitedHours": 0,
+      "cpuCoreHours": 5178.877539690204,
+      "entries": 0,
+      "falseEntries": 0,
+      "minBank": 1928.9771644966306,
+      "maxOver": 2176.4527781254264,
+      "pad": 0.02,
+      "margin": {
+        "mul": 1.05,
+        "add": 0.2703135985224261
+      },
+      "gapBilledCoreSeconds": 0,
+      "sustainedTriggered": false,
+      "reboot": null,
+      "corruptionRecovered": false,
+      "ticksAfterCorruption": 0,
+      "slowestTickMs": 0,
+      "readingGaps": 1,
+      "comparison": null,
+      "assessment": {
+        "status": "pass",
+        "notes": []
+      }
+    },
+    {
+      "id": "S5",
+      "creditLimits": 0,
+      "hostLimits": [],
+      "limitedHours": 0,
+      "cpuCoreHours": 5211.950864002037,
+      "entries": 1,
+      "falseEntries": 1,
+      "minBank": 3285.6385489212025,
+      "maxOver": 969.1200386511182,
+      "pad": 0.02,
+      "margin": {
+        "mul": 1.05,
+        "add": 0.1547825767215728
+      },
+      "gapBilledCoreSeconds": 0,
+      "sustainedTriggered": true,
+      "reboot": null,
+      "corruptionRecovered": false,
+      "ticksAfterCorruption": 0,
+      "slowestTickMs": 0,
+      "readingGaps": 1,
+      "comparison": null,
+      "assessment": {
+        "status": "pass",
+        "notes": []
+      }
+    },
+    {
+      "id": "S6",
+      "creditLimits": 0,
+      "hostLimits": [],
+      "limitedHours": 0,
+      "cpuCoreHours": 5211.588849981164,
+      "entries": 1,
+      "falseEntries": 1,
+      "minBank": 3295.9356566902698,
+      "maxOver": 962.0624618316469,
+      "pad": 0.02,
+      "margin": {
+        "mul": 1.05,
+        "add": 0.15484597102584322
+      },
+      "gapBilledCoreSeconds": 0,
+      "sustainedTriggered": false,
+      "reboot": null,
+      "corruptionRecovered": false,
+      "ticksAfterCorruption": 0,
+      "slowestTickMs": 0,
+      "readingGaps": 1,
+      "comparison": null,
+      "assessment": {
+        "status": "pass",
+        "notes": []
+      }
+    },
+    {
+      "id": "S7",
+      "creditLimits": 0,
+      "hostLimits": [],
+      "limitedHours": 0,
+      "cpuCoreHours": 5211.625565026687,
+      "entries": 0,
+      "falseEntries": 0,
+      "minBank": 3269.324525515046,
+      "maxOver": 884.4290127343393,
+      "pad": 0.02,
+      "margin": {
+        "mul": 1.05,
+        "add": 0.15482783967101027
+      },
+      "gapBilledCoreSeconds": 0,
+      "sustainedTriggered": false,
+      "reboot": null,
+      "corruptionRecovered": false,
+      "ticksAfterCorruption": 0,
+      "slowestTickMs": 0,
+      "readingGaps": 1,
+      "comparison": null,
+      "assessment": {
+        "status": "pass",
+        "notes": []
+      }
+    },
+    {
+      "id": "S8",
+      "creditLimits": 0,
+      "hostLimits": [],
+      "limitedHours": 0,
+      "cpuCoreHours": 5217.1990034891,
+      "entries": 0,
+      "falseEntries": 0,
+      "minBank": 3237.6796495469007,
+      "maxOver": 995.0221187739303,
+      "pad": 0.02,
+      "margin": {
+        "mul": 1.05,
+        "add": 0.15482783967101027
+      },
+      "gapBilledCoreSeconds": 0,
+      "sustainedTriggered": false,
+      "reboot": {
+        "bank": 34560,
+        "before": 34560,
+        "after": 31113.799218994256
+      },
+      "corruptionRecovered": false,
+      "ticksAfterCorruption": 0,
+      "slowestTickMs": 0,
+      "readingGaps": 1,
+      "comparison": null,
+      "assessment": {
+        "status": "pass",
+        "notes": []
+      }
+    },
+    {
+      "id": "S9",
+      "creditLimits": 0,
+      "hostLimits": [],
+      "limitedHours": 0,
+      "cpuCoreHours": 5210.815635774826,
+      "entries": 0,
+      "falseEntries": 0,
+      "minBank": 2917.362018143101,
+      "maxOver": 1118.4825161895733,
+      "pad": 0.02,
+      "margin": {
+        "mul": 1.05,
+        "add": 0.11690000527137787
+      },
+      "gapBilledCoreSeconds": 0,
+      "sustainedTriggered": false,
+      "reboot": null,
+      "corruptionRecovered": false,
+      "ticksAfterCorruption": 0,
+      "slowestTickMs": 0,
+      "readingGaps": 4,
+      "comparison": null,
+      "assessment": {
+        "status": "pass",
+        "notes": []
+      }
+    },
+    {
+      "id": "S10",
+      "creditLimits": 0,
+      "hostLimits": [],
+      "limitedHours": 0,
+      "cpuCoreHours": 5217.493679263417,
+      "entries": 0,
+      "falseEntries": 0,
+      "minBank": 3261.0701083783124,
+      "maxOver": 995.8690648711354,
+      "pad": 0.02,
+      "margin": {
+        "mul": 1.05,
+        "add": 0.15482783967101027
+      },
+      "gapBilledCoreSeconds": 0,
+      "sustainedTriggered": false,
+      "reboot": null,
+      "corruptionRecovered": false,
+      "ticksAfterCorruption": 0,
+      "slowestTickMs": 0,
+      "readingGaps": 1,
+      "comparison": null,
+      "assessment": {
+        "status": "pass",
+        "notes": []
+      }
+    },
+    {
+      "id": "S11",
+      "creditLimits": 0,
+      "hostLimits": [],
+      "limitedHours": 0,
+      "cpuCoreHours": 5217.307704685029,
+      "entries": 0,
+      "falseEntries": 0,
+      "minBank": 3291.9122780630814,
+      "maxOver": 996.1300495899586,
+      "pad": 0.02,
+      "margin": {
+        "mul": 1.05,
+        "add": 0.15482783967101027
+      },
+      "gapBilledCoreSeconds": 0,
+      "sustainedTriggered": false,
+      "reboot": null,
+      "corruptionRecovered": true,
+      "ticksAfterCorruption": 141120,
+      "slowestTickMs": 52.75729200000205,
+      "readingGaps": 1,
+      "comparison": null,
+      "assessment": {
+        "status": "pass",
+        "notes": []
+      }
+    },
+    {
+      "id": "S13",
+      "creditLimits": 0,
+      "hostLimits": [],
+      "limitedHours": 0,
+      "cpuCoreHours": 5206.319412936269,
+      "entries": 0,
+      "falseEntries": 0,
+      "minBank": 3584.483193452459,
+      "maxOver": 1062.4661068221608,
+      "pad": 0.02,
+      "margin": {
+        "mul": 1.05,
+        "add": 0.23550845949038152
+      },
+      "gapBilledCoreSeconds": 0,
+      "sustainedTriggered": false,
+      "reboot": null,
+      "corruptionRecovered": false,
+      "ticksAfterCorruption": 0,
+      "slowestTickMs": 0,
+      "readingGaps": 1,
+      "comparison": null,
+      "assessment": {
+        "status": "pass",
+        "notes": []
+      }
+    },
+    {
+      "id": "S15",
+      "creditLimits": 0,
+      "hostLimits": [],
+      "limitedHours": 0,
+      "cpuCoreHours": 5189.821851139564,
+      "entries": 0,
+      "falseEntries": 0,
+      "minBank": 3764.9298481956266,
+      "maxOver": 966.978151472832,
+      "pad": 0.02,
+      "margin": {
+        "mul": 1.05,
+        "add": 0.23258659326124312
+      },
+      "gapBilledCoreSeconds": 0,
+      "sustainedTriggered": false,
+      "reboot": null,
+      "corruptionRecovered": false,
+      "ticksAfterCorruption": 0,
+      "slowestTickMs": 0,
+      "readingGaps": 1,
+      "comparison": null,
+      "assessment": {
+        "status": "pass",
+        "notes": []
+      }
+    },
+    {
+      "id": "S16",
+      "creditLimits": 0,
+      "hostLimits": [],
+      "limitedHours": 0,
+      "cpuCoreHours": 5108.153139575892,
+      "entries": 0,
+      "falseEntries": 0,
+      "minBank": 2607.032382883811,
+      "maxOver": 1645.035016054862,
+      "pad": 0.02,
+      "margin": {
+        "mul": 1.05,
+        "add": 0.1908253211356159
+      },
+      "gapBilledCoreSeconds": 0,
+      "sustainedTriggered": false,
+      "reboot": null,
+      "corruptionRecovered": false,
+      "ticksAfterCorruption": 0,
+      "slowestTickMs": 0,
+      "readingGaps": 0,
+      "comparison": {
+        "id": "S16-comparison",
+        "creditLimits": 0,
+        "hostLimits": [],
+        "limitedHours": 0,
+        "cpuCoreHours": 5178.877539690204,
+        "entries": 0,
+        "falseEntries": 0,
+        "minBank": 1928.9771644966306,
+        "maxOver": 2176.4527781254264,
+        "pad": 0.02,
+        "margin": {
+          "mul": 1.05,
+          "add": 0.2703135985224261
+        },
+        "gapBilledCoreSeconds": 0,
+        "sustainedTriggered": false,
+        "reboot": null,
+        "corruptionRecovered": false,
+        "ticksAfterCorruption": 0,
+        "slowestTickMs": 0,
+        "readingGaps": 1
+      },
+      "assessment": {
+        "status": "pass",
+        "notes": [],
+        "cpuCostPercent": 1.3656318299146808,
+        "limitsPrevented": 0
+      }
+    },
+    {
+      "id": "S17",
+      "creditLimits": 0,
+      "hostLimits": [],
+      "limitedHours": 0,
+      "cpuCoreHours": 4918.846035756788,
+      "entries": 0,
+      "falseEntries": 0,
+      "minBank": 2090.9473003416388,
+      "maxOver": 2546.7869122814905,
+      "pad": 0.02,
+      "margin": {
+        "mul": 1.05,
+        "add": 0.6659584400176335
+      },
+      "gapBilledCoreSeconds": 0,
+      "sustainedTriggered": false,
+      "reboot": null,
+      "corruptionRecovered": false,
+      "ticksAfterCorruption": 0,
+      "slowestTickMs": 0,
+      "readingGaps": 1,
+      "comparison": null,
+      "assessment": {
+        "status": "pass",
+        "notes": []
+      }
+    },
+    {
+      "id": "S18",
+      "creditLimits": 0,
+      "hostLimits": [],
+      "limitedHours": 0,
+      "cpuCoreHours": 4494.061720415884,
+      "entries": 0,
+      "falseEntries": 0,
+      "minBank": 3305.517650137275,
+      "maxOver": 544.3811933919151,
+      "pad": 0.02,
+      "margin": {
+        "mul": 1.05,
+        "add": 1.86505803228741
+      },
+      "gapBilledCoreSeconds": 0,
+      "sustainedTriggered": false,
+      "reboot": null,
+      "corruptionRecovered": false,
+      "ticksAfterCorruption": 0,
+      "slowestTickMs": 0,
+      "readingGaps": 1,
+      "comparison": {
+        "id": "S18-comparison",
+        "creditLimits": 0,
+        "hostLimits": [],
+        "limitedHours": 0,
+        "cpuCoreHours": 5217.49108932186,
+        "entries": 0,
+        "falseEntries": 0,
+        "minBank": 3261.0701083783124,
+        "maxOver": 995.8690648711354,
+        "pad": 0.02,
+        "margin": {
+          "mul": 1.05,
+          "add": 0.15482783967101027
+        },
+        "gapBilledCoreSeconds": 0,
+        "sustainedTriggered": false,
+        "reboot": null,
+        "corruptionRecovered": false,
+        "ticksAfterCorruption": 0,
+        "slowestTickMs": 0,
+        "readingGaps": 1
+      },
+      "assessment": {
+        "status": "pass",
+        "notes": [],
+        "cpuCostPercent": 13.865464387405463,
+        "limitsPrevented": 0
+      }
+    },
+    {
+      "id": "S19",
+      "creditLimits": 0,
+      "hostLimits": [],
+      "limitedHours": 0,
+      "cpuCoreHours": 5211.733109788043,
+      "entries": 0,
+      "falseEntries": 0,
+      "minBank": 3129.4415110072996,
+      "maxOver": 591.2881142636252,
+      "pad": 0.02,
+      "margin": {
+        "mul": 1.05,
+        "add": 0.04
+      },
+      "gapBilledCoreSeconds": 0,
+      "sustainedTriggered": false,
+      "reboot": null,
+      "corruptionRecovered": false,
+      "ticksAfterCorruption": 0,
+      "slowestTickMs": 0,
+      "readingGaps": 0,
+      "comparison": null,
+      "assessment": {
+        "status": "pass",
+        "notes": []
+      }
+    },
+    {
+      "id": "S20",
+      "creditLimits": 0,
+      "hostLimits": [],
+      "limitedHours": 0,
+      "cpuCoreHours": 5172.2189654031445,
+      "entries": 0,
+      "falseEntries": 0,
+      "minBank": 3305.517650137275,
+      "maxOver": 544.3811933919151,
+      "pad": 0.02,
+      "margin": {
+        "mul": 1.05,
+        "add": 0.10717373224487663
+      },
+      "gapBilledCoreSeconds": 0,
+      "sustainedTriggered": false,
+      "reboot": null,
+      "corruptionRecovered": false,
+      "ticksAfterCorruption": 0,
+      "slowestTickMs": 0,
+      "readingGaps": 1,
+      "comparison": {
+        "id": "S20-comparison",
+        "creditLimits": 0,
+        "hostLimits": [],
+        "limitedHours": 0,
+        "cpuCoreHours": 5211.733109788043,
+        "entries": 0,
+        "falseEntries": 0,
+        "minBank": 3129.4415110072996,
+        "maxOver": 591.2881142636252,
+        "pad": 0.02,
+        "margin": {
+          "mul": 1.05,
+          "add": 0.04
+        },
+        "gapBilledCoreSeconds": 0,
+        "sustainedTriggered": false,
+        "reboot": null,
+        "corruptionRecovered": false,
+        "ticksAfterCorruption": 0,
+        "slowestTickMs": 0,
+        "readingGaps": 0
+      },
+      "assessment": {
+        "status": "pass",
+        "notes": [],
+        "cpuCostPercent": 0.7581766670033077,
+        "limitsPrevented": 0
+      }
+    },
+    {
+      "id": "S21",
+      "creditLimits": 0,
+      "hostLimits": [],
+      "limitedHours": 0,
+      "cpuCoreHours": 5976.307511912143,
+      "entries": 0,
+      "falseEntries": 0,
+      "minBank": 3305.517650137275,
+      "maxOver": 544.3811933919151,
+      "pad": 0.02,
+      "margin": {
+        "mul": 1.05,
+        "add": 0.1901918008221251
+      },
+      "gapBilledCoreSeconds": 0,
+      "sustainedTriggered": false,
+      "reboot": null,
+      "corruptionRecovered": false,
+      "ticksAfterCorruption": 0,
+      "slowestTickMs": 0,
+      "readingGaps": 1,
+      "comparison": null,
+      "assessment": {
+        "status": "pass",
+        "notes": []
+      }
+    },
+    {
+      "id": "S22",
+      "creditLimits": 0,
+      "hostLimits": [],
+      "limitedHours": 0,
+      "cpuCoreHours": 5216.091168091675,
+      "entries": 0,
+      "falseEntries": 0,
+      "minBank": 3261.0701083783124,
+      "maxOver": 995.8690648711354,
+      "pad": 0.02,
+      "margin": {
+        "mul": 1.05,
+        "add": 0.15482783967101027
+      },
+      "gapBilledCoreSeconds": 0,
+      "sustainedTriggered": false,
+      "reboot": null,
+      "corruptionRecovered": false,
+      "ticksAfterCorruption": 0,
+      "slowestTickMs": 0,
+      "readingGaps": 1,
+      "comparison": null,
+      "assessment": {
+        "status": "pass",
+        "notes": []
+      }
+    }
+  ]
+}

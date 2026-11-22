@@ -1,35 +1,17 @@
-// The credit mirror and the law that spends it. Pure, so the simulation drives the code the daemon
-// runs.
-import { type Plan, RULES_SINCE } from "./plans.ts";
+// The law that spends the credit estimate, and the tests that tell a credit limit from neighbours.
+// Pure, so the simulation drives the code the daemon runs.
+import type { Plan } from "./plans.ts";
 
 const clamp = (x: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, x));
 
-// Hostinger's API reports no balance, so the governor keeps a lower bound of it: Hostinger is assumed
-// to bill more CPU than the guest sees. A limit that comes anyway proves the margin too small and
-// widens it (widen).
+// What the guest's own count charges for busy CPU: mul x cores + add (src/estimate.ts).
 export type Margin = { mul: number; add: number };
-export const MARGIN: Margin = { mul: 1.05, add: 0.08 };
-export const charged = (busyCores: number, m: Margin) => m.mul * busyCores + m.add;
-
-// The balance after `seconds` at `busyCores`. While limited and still pressing on the limit nothing is
-// earned, so the balance cannot rise.
-export function creditStep(
-  p: Plan,
-  balance: number,
-  busyCores: number,
-  seconds: number,
-  m: Margin,
-  earning = true,
-): number {
-  const delta = ((earning ? p.baseline : 0) - charged(busyCores, m)) * seconds;
-  return clamp(balance + delta, 0, p.capacity);
-}
 
 // Spend law: the baseline plus the balance's surplus over the floor, spread across `spendS`; under
 // the floor the shortfall is made up over `refillS`. The balance glides onto the floor and stays,
 // and every credit above it goes to work that asks for it.
 export type Law = { floor: number; spendS: number; refillS: number };
-export const LAW: Law = { floor: 0.2, spendS: 1800, refillS: 3600 };
+export const LAW: Law = { floor: 0.1, spendS: 1800, refillS: 3600 };
 export function allowedCores(p: Plan, balance: number, m: Margin, law = LAW): number {
   const floor = law.floor * p.capacity;
   const billed = p.baseline + (balance - floor) / (balance >= floor ? law.spendS : law.refillS);
@@ -39,18 +21,6 @@ export function allowedCores(p: Plan, balance: number, m: Margin, law = LAW): nu
 // The slice ceiling in percent of one vCPU: the allowance less what runs outside the slice.
 export const sliceCeiling = (p: Plan, allowed: number, outsideCores: number) =>
   clamp(Math.floor((allowed - outsideCores) * 10) * 10, 20, 100 * p.vcpus);
-
-// A limit means the balance was empty while the mirror said `err` was left, after `used` billed
-// core-seconds since it was last known. Widen the margin toward that drift with a quarter extra.
-// Large differences may need several updates; under a core-hour there is too little evidence.
-export function widen(m: Margin, err: number, used: number): Margin {
-  if (used < 3600) return m;
-  const r4 = (x: number) => Math.round(x * 10_000) / 10_000;
-  return {
-    mul: r4(m.mul + clamp((1.25 * err) / used, 0.02, 0.1)),
-    add: r4(m.add + 0.02),
-  };
-}
 
 // Steal as a share of demand (busy + steal). A limit refuses most of what is asked; neighbours take a
 // share of whatever runs. Cutting demand under the limit makes a limit's steal vanish and neighbours'
@@ -112,7 +82,7 @@ export const canProbeSlice = (p: Plan, busy: number, steal: number, outside: num
 // baseline, so even the most the margin can charge takes this long to spend it: no credit limit can
 // come sooner after a lift, on any plan (2,160 seconds at cost; less with the margin).
 export const quietAfterLiftSeconds = (p: Plan, m: Margin) =>
-  p.recovered / Math.max(0.1, charged(p.vcpus, m) - p.baseline);
+  p.recovered / Math.max(0.1, m.mul * p.vcpus + m.add - p.baseline);
 // Heuristics for demand, not the host's unobservable count of throttled scheduling periods.
 export const LIMIT_PRESSING = 0.02;
 export const LIFT_STEAL = 0.15;
@@ -127,14 +97,6 @@ export const limitPressing = (p: Plan, busy: number, steal: number) =>
   demandSteal(busy, steal) >= LIMIT_PRESSING &&
   (busy + steal) * p.vcpus >= 0.8 * (p.limit / p.vcpus) &&
   steal * p.vcpus >= Math.min(0.01, LIMIT_PRESSING * p.limit);
-// Walking back to a limit's onset stops once delivered CPU exceeds the plan's cap or once demand
-// and steal drop below what a real cap can produce, so neither healthy busy ticks nor continuous
-// idle neighbour steal can pull onset before the real limit began.
-export const limitOnsetSample = (p: Plan, busy: number, steal: number) =>
-  busy * p.vcpus <= p.limit + 0.1 &&
-  demandSteal(busy, steal) >= LIMIT_STEAL &&
-  (busy + steal) * p.vcpus >= p.limit / p.vcpus &&
-  steal * p.vcpus >= Math.min(0.1, 0.25 * p.limit);
 export const recoveryCeiling = (p: Plan, outside: number) =>
   Math.max(20, Math.floor((p.limit - outside - 0.2) * 10) * 10);
 export const tightenCeiling = (ceiling: number, managedDemand: number) =>
@@ -142,31 +104,9 @@ export const tightenCeiling = (ceiling: number, managedDemand: number) =>
 export const liftConfirmed = (p: Plan, burners: number, busyCores: number, steal: number) =>
   steal < LIFT_STEAL && busyCores >= Math.max(burners * 0.75, p.limit + 0.1);
 
-// End-stamped readings cover the interval since the previous reading. Unknown intervals
-// invalidate the model balance; readings can never increase the acted estimate.
+// End-stamped readings cover the interval since the previous reading, in percent of the plan.
 export type Reading = { at: number; v: number };
-// Valid reading intervals (#13 §2): 900 to 2,700 seconds. Longer ones are gaps.
+// Valid reading intervals: 900 to 2,700 seconds. Longer ones are gaps.
 export const MAX_SPACING_MS = 2_700_000;
 export const validSpacing = (start: number, end: number) =>
   end - start >= 900_000 && end - start <= MAX_SPACING_MS;
-export type Anchor = { at: number; balance: number; exact: boolean };
-export function replay(p: Plan, readings: Reading[], since = RULES_SINCE): Anchor | null {
-  const rs = readings.filter((r) => r.at >= since).sort((a, b) => a.at - b.at);
-  if (rs.length < 2) return null;
-  let balance = 0;
-  let exact = false;
-  for (let i = 1; i < rs.length; i++) {
-    const seconds = (rs[i].at - rs[i - 1].at) / 1000;
-    if (
-      !validSpacing(rs[i - 1].at, rs[i].at) || !Number.isFinite(rs[i].v) || rs[i].v < 0 ||
-      rs[i].v > 100
-    ) {
-      [balance, exact] = [0, false];
-      continue;
-    }
-    balance += (p.baseline - (rs[i].v / 100) * p.vcpus) * seconds;
-    if (balance >= p.capacity) [balance, exact] = [p.capacity, true];
-    else if (balance < 0) balance = 0;
-  }
-  return { at: rs.at(-1)!.at, balance, exact };
-}

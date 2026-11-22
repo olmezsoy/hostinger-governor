@@ -2,7 +2,7 @@
   aria-labelledby="title" aria-describedby="desc">
   <title id="title">How hostinger-governor works</title>
   <desc
-    id="desc">Hostinger holds the CPU credit bank, and the VPS cannot read its balance. Every 30 seconds by default, governor.service reads CPU and steal from the kernel, keeps a cautious estimate of the bank, and sets one shared CPU quota on user.slice: every login, governor exec jobs, and services or Docker you enroll. Everything else is measured, not capped. Provider diagnostics start every 30 minutes unless limited, and a request already in flight can still finish. Readings can only tighten the estimate in apply mode. Spending: every vCPU while the estimate is high, then a glide onto the spending floor, 20% in off or shadow and initially 5% in apply; with no governor, the same load empties the bank and Hostinger limits the VPS. After a reboot, an install or a limit, the estimate starts at 0, so the ceiling starts under the baseline. When steal follows demand during a 20-second probe at 0.2 vCPU, which runs only while user.slice has work to cut (at least 0.4 vCPU on KVM 4+, 0.3 on KVM 1-2), or reaches 60% of demand and a quarter of the host limit, or burners confirm the whole VPS is capped while work outside an idle user.slice presses on it, the governor treats the VPS as limited: it holds user.slice below the host limit, down to 0.2 vCPU, until a lift test passes. At the lift it classifies the limit; a sustained-use limit gets back the estimate its reset hid, and a confirmed credit lift starts a quiet window before probing again. If the probe or cap check does not confirm a limit, the governor stays in Spending and retries in 10 minutes, doubling to 1 hour. A saved limit resumes on start. While the daemon is not running, systemd holds user.slice, SSH included, at 0.2 vCPU by default.</desc>
+    id="desc">Hostinger holds the CPU credit bank, and the VPS cannot read its balance. Every 30 seconds by default, governor.service reads CPU and steal from the kernel, updates its estimate of the bank, and sets one shared CPU quota on user.slice: every login, governor exec jobs, and services or Docker you enroll. Everything else is measured, not capped. Every 30 minutes it fetches Hostinger's CPU readings in the background. Settled readings are replayed through Hostinger's rules and move the estimate up or down. The guest's own count, 1.05 × use + 0.04 vCPU or more, covers the 30 to 100 minutes no settled reading reaches yet. After two hours without a reading, or with no token, the estimate runs on the own count alone. Spending: every vCPU while the estimate is high, then a glide onto the 10% spending floor; with no governor, the same load empties the bank and Hostinger limits the VPS. When steal follows demand during a 20-second probe at 0.2 vCPU, which runs only while user.slice has work to cut (at least 0.4 vCPU on KVM 4 and up, 0.3 on KVM 1 and 2), or reaches 60% of demand and a quarter of the host limit, or burners confirm the whole VPS is capped while work outside an idle user.slice presses on it, the governor treats the VPS as limited: it sets the estimate to 0 and holds user.slice below the host limit, down to 0.2 vCPU, until a lift test passes. At the lift, a confirmed credit limit raises the pad billed on top of every reading and starts a quiet window before probing again; a sustained-use limit gets back the estimate from before it. If the probe or cap check does not confirm a limit, the governor stays in Spending and retries in 10 minutes, doubling to 1 hour. A saved limit resumes on start. A restart keeps the estimate; after a reboot the time down counts at the most the VPS could have spent, or the estimate restarts at 0 without recent readings. While the daemon is not running, systemd holds user.slice, SSH included, at 0.2 vCPU by default.</desc>
   <style>
   svg {
     --bg: #ffffff;
@@ -308,10 +308,10 @@
   <circle class="badge" cx="245" cy="476" r="9" />
   <text class="num" x="245" y="480" text-anchor="middle">2</text>
   <text class="h4" x="260" y="481">Estimate</text>
-  <text x="236" y="504">a cautious model, billed</text>
-  <text x="236" y="522">5% + 0.08 vCPU above use</text>
-  <text x="236" y="540">(apply: + 0.04 at first);</text>
-  <text x="236" y="558">0 after boot, install, limit</text>
+  <text x="236" y="504">readings replayed through</text>
+  <text x="236" y="522">Hostinger's rules, plus the</text>
+  <text x="236" y="540">guest's count since then:</text>
+  <text x="236" y="558">1.05 × use + 0.04 or more</text>
 
   <circle class="badge" cx="445" cy="476" r="9" />
   <text class="num" x="445" y="480" text-anchor="middle">3</text>
@@ -326,11 +326,11 @@
     y="592">Then it writes /run/governor/state.json: credits, ceiling, limit and accepting.</text>
 
   <rect class="api" x="644" y="458" width="196" height="104" rx="8" />
-  <text class="h4" x="660" y="480">Provider diagnostics</text>
-  <text class="s" x="660" y="500">New fetches every 30 min.</text>
-  <text class="s" x="660" y="516">No new fetch while limited.</text>
-  <text class="s" x="660" y="532">Older results may arrive;</text>
-  <text class="s" x="660" y="548">tighten only in apply.</text>
+  <text class="h4" x="660" y="480">Hostinger's readings</text>
+  <text class="s" x="660" y="500">Fetched every 30 min.</text>
+  <text class="s" x="660" y="516">Settled ones move the</text>
+  <text class="s" x="660" y="532">estimate up or down. None</text>
+  <text class="s" x="660" y="548">for 2 h: own count alone.</text>
   <path class="arrow muted" d="M800 184V456" marker-end="url(#muted)" />
 
   <!-- Modes. -->
@@ -340,7 +340,7 @@
   <rect class="slice" x="24" y="668" width="320" height="300" rx="10" />
   <text class="h" x="44" y="694">Spending</text>
   <text class="m" x="44" y="716">Every vCPU while the estimate is high,</text>
-  <text class="m" x="44" y="734">then onto the floor: 20%, 5% in apply.</text>
+  <text class="m" x="44" y="734">then a glide onto the 10% floor.</text>
 
   <!-- Chart points come from tools/diagram-curves.ts. -->
   <text class="b" x="44" y="760">Credits</text>
@@ -351,27 +351,27 @@
   <g transform="translate(0 770)">
     <line class="grid" x1="84" y1="0" x2="300" y2="0" />
     <line class="grid" x1="84" y1="44" x2="300" y2="44" />
-    <line class="threshold" x1="84" y1="35.2" x2="300" y2="35.2" />
+    <line class="threshold" x1="84" y1="39.6" x2="300" y2="39.6" />
     <text class="tick" x="78" y="4" text-anchor="end">100%</text>
     <text class="tick" x="78" y="48" text-anchor="end">0</text>
-    <text class="tick" x="90" y="31.2">20% floor</text>
-    <polyline class="series other" points="84,0 224.9,44 300,44" />
+    <text class="tick" x="90" y="35.6">10% floor</text>
+    <polyline class="series other" points="84,0 226.4,44 300,44" />
     <polyline class="series"
-      points="84,0 122.3,11.9 124.5,12.7 171.8,27.4 176.3,28.6 180.8,29.6 187.5,30.8 189.8,31.1 192,31.5 194.3,31.7 198.8,32.3 207.8,33.1 216.8,33.6 219,33.8 225.8,34.1 232.5,34.3 234.8,34.3 239.3,34.5 243.8,34.5 246,34.6 248.3,34.6 250.5,34.7 255,34.7 266.3,34.8 268.5,34.9 279.8,34.9 282,35 300,35" />
+      points="84,0 106.5,7 108.8,7.6 151.5,20.9 153.8,21.5 185.3,31.3 189.8,32.6 196.5,34.1 203.3,35.3 212.3,36.5 219,37.2 221.3,37.3 225.8,37.7 243.8,38.6 250.5,38.8 252.8,38.8 255,38.9 257.3,38.9 259.5,39 264,39 270.8,39.1 273,39.2 282,39.2 297.8,39.3 300,39.4" />
   </g>
 
   <text class="b" x="44" y="840">vCPUs in use</text>
   <g transform="translate(0 850)">
     <line class="grid" x1="84" y1="0" x2="300" y2="0" />
     <line class="grid" x1="84" y1="48" x2="300" y2="48" />
-    <line class="threshold" x1="84" y1="33.6" x2="224.9" y2="33.6" />
+    <line class="threshold" x1="84" y1="33.6" x2="226.4" y2="33.6" />
     <text class="tick" x="78" y="4" text-anchor="end">8</text>
     <text class="tick" x="78" y="52" text-anchor="end">0</text>
     <text class="tick" x="90" y="29.6">host limit</text>
-    <polyline class="series other" points="84,0 224.9,0 224.9,33.6 300,33.6" />
+    <polyline class="series other" points="84,0 226.4,0 226.4,33.6 300,33.6" />
     <polyline class="series"
-      points="84,0 169.5,0 174,3.6 185.3,9.6 187.5,10.2 189.8,11.4 207.8,16.2 210,16.2 214.5,17.4 216.8,17.4 219,18 223.5,18 225.8,18.6 230.3,18.6 232.5,19.2 239.3,19.2 241.5,19.8 250.5,19.8 252.8,20.4 277.5,20.4 279.8,21 300,21" />
-    <text class="tick" x="304" y="25">4.5</text>
+      points="84,0 183,0 185.3,0.6 187.5,1.8 189.8,3.6 201,9.6 203.3,10.2 205.5,11.4 223.5,16.2 225.8,16.2 228,16.8 230.3,16.8 232.5,17.4 234.8,17.4 237,18 239.3,18 241.5,18.6 248.3,18.6 250.5,19.2 257.3,19.2 259.5,19.8 273,19.8 275.3,20.4 300,20.4" />
+    <text class="tick" x="304" y="24.4">4.6</text>
     <text class="tick" x="304" y="37.6">2.4</text>
   </g>
   <text class="tick" x="84" y="916" text-anchor="middle">0 h</text>
@@ -380,7 +380,7 @@
   <text class="tick" x="246" y="916" text-anchor="middle">3 h</text>
   <text class="tick" x="300" y="916" text-anchor="middle">4 h</text>
   <text class="s" x="44" y="938">KVM 8, all vCPUs wanted, billed 5% +</text>
-  <text class="s" x="44" y="954">0.08 vCPU above use: full bank lasts 2.6 h</text>
+  <text class="s" x="44" y="954">0.04 vCPU above use: full bank lasts 2.6 h</text>
 
   <text class="b" x="428" y="712" text-anchor="middle">Steal follows demand</text>
   <path class="arrow orange" d="M352 726H504" marker-end="url(#orange)" />
@@ -396,9 +396,9 @@
   <text class="s" x="420" y="870" text-anchor="middle">doubling to 1 h</text>
   <text class="b" x="428" y="904" text-anchor="middle">Lift test passes</text>
   <path class="arrow blue" d="M504 918H352" marker-end="url(#blue)" />
-  <text class="s" x="428" y="938" text-anchor="middle">classifies it, runs hooks;</text>
-  <text class="s" x="428" y="954" text-anchor="middle">sustained use restores</text>
-  <text class="s" x="428" y="970" text-anchor="middle">the estimate it hid</text>
+  <text class="s" x="428" y="938" text-anchor="middle">runs hooks; a credit limit</text>
+  <text class="s" x="428" y="954" text-anchor="middle">raises the pad, sustained</text>
+  <text class="s" x="428" y="970" text-anchor="middle">use restores the estimate</text>
 
   <rect class="limited" x="512" y="668" width="344" height="300" rx="10" />
   <text class="h" x="532" y="694">Recovering</text>
@@ -416,7 +416,7 @@
   <text x="532" y="938">then after 2, 4, 8, then every 15 min.</text>
 
   <path class="arrow ink" d="M184 1000V970" marker-end="url(#ink)" />
-  <text class="s" x="192" y="990">start: estimate kept, or 0 after a reboot or install</text>
+  <text class="s" x="192" y="990">start: estimate kept, less the time a reboot took</text>
   <path class="arrow ink" d="M640 1000V970" marker-end="url(#ink)" />
   <text class="s" x="648" y="990">start: a saved limit resumes</text>
   <rect class="idle" x="24" y="1000" width="832" height="76" rx="10" />

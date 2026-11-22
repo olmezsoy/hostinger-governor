@@ -6,11 +6,8 @@
 //   deno task sim "hidden overhead" 5    scenarios whose name starts with that, seeds 1-5
 //   deno task sim "baseline 30%" 3 --episodes
 //   deno task sim --detection [name]     limit detection on an idle box (DETECTION_SCENARIOS)
-//   deno task sim --calibration [S3]     the eight-week calibration studies (test/calibration-sim.ts)
-//   deno task sim:check | sim:record     rerun them against, or rewrite, docs/calibration-results.json
-//   deno task sim:legacy | sim:legacy-record
-//                                        every scenario in off, seed 1, against, or rewriting,
-//                                        test/fixtures/legacy-off.json
+//   deno task sim --studies [S3] [seed]  the eight-week studies (test/studies.ts)
+//   deno task sim:check | sim:record     rerun them against, or rewrite, docs/study-results.json
 //
 // Host model (help center, revised 2026-10-09): earn the baseline in core-seconds every second, pay
 // what the VM is billed (billMul x busy + billAdd), clamp to [0, capacity]; at 0, limit the VM to
@@ -26,35 +23,26 @@
 //     2-6 core spikes a day), 0.2 cores of system load outside, and batch work that saturates
 //     whatever the slice allows; neighbours steal a share of whatever runs, in episodes;
 //   - Hostinger's readings report exactly what it bills, averaged since the previous reading,
-//     1,500-2,100 seconds apart; the governor fetches them as from the API. The calibration
-//     studies use their own meter with noise, day-level wobble and a billing gap.
+//     1,500-2,100 seconds apart; the governor fetches them as from the API. The studies use
+//     their own meter with noise, day-level wobble and a billing gap.
 //
 // Output per run: throttles (host-side limit events), throttled_h (hours limited), paused_h (hours
 // limited AND pressing, so earning nothing: the real loss), used_pct (credits spent / earned),
 // services_unmet_pct, slice_at_20pct_min, delivered_core_h (CPU the slice ran), probes,
 // false_limits (limits the governor entered that the host never imposed), followon_false (false
-// limits within two hours of the one before), burn_tests, margin (the legacy off-mode margin), applied and gap (the
-// calibration's settings and learned gap), clamp_ticks (passes with a readings clamp),
-// rules_mismatches, classifications (one per limit record), and with --episodes one line per host
-// limit:
+// limits within two hours of the one before), burn_tests, margin (what the own count charges), pad
+// (cores billed on top of every reading), max_over (the most the estimate ran above the real bank
+// outside a limit, in core-seconds), and with --episodes one line per host limit:
 // lag_s (host limit to governor noticing), gov_min (minutes the governor knew), burns, avgCeil,
 // paused_min split by cause (burn test, probe, other = pressing with no test running).
-import type { CalibrationOptions } from "../src/calibration.ts";
 import { Governor, type GovernorIO } from "../src/governor.ts";
-import {
-  brokerWindow,
-  checkStudies,
-  recordStudies,
-  runStudies,
-  STUDIES,
-} from "./calibration-sim.ts";
+import { brokerWindow, checkStudies, recordStudies, runStudies, STUDIES } from "./studies.ts";
 import { EARNING_PAUSE_SHARE, plan } from "../src/plans.ts";
 
 type Sc = {
   name: string;
   days?: number;
   seed?: number;
-  calibration?: CalibrationOptions;
   baselineTrue?: number; // the real baseline share (the governor always assumes 0.6)
   limitShare?: number; // the real limit, share of the vCPUs
   perVcpu?: boolean | "spread"; // per-vCPU limit; true = all demand on the fewest threads
@@ -84,6 +72,7 @@ type Sc = {
   };
   pulse?: [number, number, number]; // outside the slice: minutes on, minutes off, cores; repeating
   svcBurst?: [number, number, number]; // inside the slice: start hour, hours, cores
+  noReadings?: boolean; // no Hostinger API configured: the guest's own count alone
 };
 
 const VCPUS = 8;
@@ -413,8 +402,9 @@ export function run(sc: Sc) {
   const p = plan(VCPUS); // the governor's assumption: the documented 60%
   const cfg = {
     tick_seconds: 30,
-    hostinger: { vm_id: 1, token_file: "/etc/governor/hostinger-token" },
-    calibration: sc.calibration,
+    ...(sc.noReadings
+      ? {}
+      : { hostinger: { vm_id: 1, token_file: "/etc/governor/hostinger-token" } }),
   };
   let g = new Governor(cfg, p, undefined, io);
   gRef.g = g;
@@ -453,7 +443,8 @@ export function run(sc: Sc) {
   };
   wrap(g);
   let stopped = false;
-  let clampTicks = 0;
+  // The most the estimate ran above the real bank outside a limit, in core-seconds.
+  let maxOver = -Infinity;
   return (async () => {
     while (h.i < n) {
       if (!stopped && stopAt >= 0 && h.i >= stopAt) { // stop, then boot with a fresh kernel
@@ -467,21 +458,17 @@ export function run(sc: Sc) {
           h.totalT =
           h.sliceUsec =
             0;
-        // history.json survives the reboot, as on a real box, so a limit spanning it still gets
-        // its lift and class.
-        const history = g.history;
-        g = new Governor(
-          cfg,
-          p,
-          structuredClone(g.s),
-          io,
-        );
-        g.adoptHistory(history, h.t);
+        await g.closeDiagnostics();
+        g = new Governor(cfg, p, structuredClone(g.s), io);
         gRef.g = g;
         wrap(g);
       }
       await g.tick();
-      if (g.calibration.estimates.clamp !== null) clampTicks++;
+      // Let a readings fetch that finished reach the next pass.
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+      if (!h.limited && !g.s.limit) maxOver = Math.max(maxOver, g.s.balance - h.bank);
       advance(30);
     }
     const m = h.m;
@@ -502,12 +489,9 @@ export function run(sc: Sc) {
       limit_entries: counts.entries,
       false_limits: counts.falseEntries,
       burn_tests: counts.burnTests,
-      margin: g.s.margin,
-      applied: g.calibration.applied,
-      gap: g.calibration.gap,
-      clamp_ticks: clampTicks,
-      rules_mismatches: g.history.calibrations.filter((r) => r.trigger === "rules-mismatch").length,
-      classifications: g.history.limits.map((r) => r.class ?? "unknown"),
+      margin: g.margin,
+      pad: +g.s.estimate.pad.toFixed(4),
+      max_over: Math.round(maxOver),
       episodes: h.eps.map((e) => ({
         at_h: +(e.start / 3600).toFixed(1),
         min: Math.round(e.dur / 60),
@@ -626,67 +610,12 @@ export const SCENARIOS: Sc[] = [
   },
 ];
 
-// `off` must keep today's behavior (#13 §13), so the legacy scenarios in off, seed 1, are recorded and
-// every change is compared with them: an intended difference means recording them again.
-export const LEGACY_OFF = "test/fixtures/legacy-off.json";
-export async function legacyOff() {
-  const log = console.log;
-  const results = [];
-  try {
-    for (const sc of SCENARIOS) {
-      console.log = () => {};
-      const { episodes: _, ...summary } = await run({
-        ...sc,
-        seed: 1,
-        calibration: { mode: "off" },
-      });
-      results.push(summary);
-    }
-  } finally {
-    console.log = log;
-  }
-  return results;
-}
-export async function checkLegacyOff(): Promise<string[]> {
-  const recorded = JSON.parse(await Deno.readTextFile(LEGACY_OFF)) as Record<string, unknown>[];
-  const fresh = await legacyOff();
-  const failures: string[] = [];
-  if (fresh.length !== recorded.length) {
-    failures.push(`${fresh.length} scenarios; recorded ${recorded.length}`);
-  }
-  for (const r of fresh as Record<string, unknown>[]) {
-    const before = recorded.find((x) => x.name === r.name);
-    if (!before) {
-      failures.push(`${r.name}: not recorded`);
-      continue;
-    }
-    const changed = [...new Set([...Object.keys(before), ...Object.keys(r)])].filter((k) =>
-      JSON.stringify(before[k]) !== JSON.stringify(r[k])
-    );
-    for (const k of changed) {
-      failures.push(
-        `${r.name}: ${k} ${JSON.stringify(r[k])}, recorded ${JSON.stringify(before[k])}`,
-      );
-    }
-  }
-  return failures;
-}
-
 if (import.meta.main) {
-  if (Deno.args.includes("--legacy-record")) {
-    await Deno.writeTextFile(LEGACY_OFF, JSON.stringify(await legacyOff(), null, 2) + "\n");
-    Deno.exit(0);
-  }
-  if (Deno.args.includes("--legacy-check")) {
-    const failures = await checkLegacyOff();
-    for (const failure of failures) console.error(failure);
-    Deno.exit(failures.length ? 1 : 0);
-  }
-  if (Deno.args.includes("--calibration")) {
+  if (Deno.args.includes("--studies")) {
     // A study name matches its id in any case; a name that matches none fails rather than passing.
     const names = Deno.args.filter((a) => !a.startsWith("--"));
-    const only = names[0]?.toUpperCase();
-    if (names.length > 1 || only && !STUDIES.some((s) => s.id === only)) {
+    const only = names[0]?.toUpperCase(), seed = names[1] === undefined ? undefined : +names[1];
+    if (names.length > 2 || only && !STUDIES.some((s) => s.id === only)) {
       console.error(
         `unknown study ${names.join(" ")}; expected one of ${STUDIES.map((s) => s.id).join(", ")}`,
       );
@@ -697,7 +626,7 @@ if (import.meta.main) {
       const failures = await checkStudies(only);
       for (const failure of failures) console.error(failure);
       Deno.exit(failures.length ? 1 : 0);
-    } else await runStudies(only);
+    } else await runStudies(only, seed);
     Deno.exit(0);
   }
   const flags = Deno.args.filter((a) => a.startsWith("--"));
