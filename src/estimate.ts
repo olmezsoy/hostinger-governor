@@ -100,19 +100,21 @@ const overlap = (x: Sample, from: number, to: number) =>
     : (Math.min(to, x.at) - Math.max(from, x.at - x.seconds * 1000)) / 1000;
 
 // The guest's own count over a stretch of wall time: the seconds its samples cover, and mean busy,
-// stolen and charged-steal cores over them.
+// stolen and charged-steal cores over them. `sure` is the core-seconds that certainly ran inside
+// the stretch: a sample that reaches past either end may have run all its CPU out there.
 function own(p: Plan, samples: Sample[], from: number, to: number) {
-  let seconds = 0, busy = 0, steal = 0, billed = 0;
+  let seconds = 0, busy = 0, steal = 0, billed = 0, sure = 0;
   for (const x of samples) {
     const s = overlap(x, from, to);
     if (s <= 0) continue;
     seconds += s;
+    sure += Math.max(0, x.busy * x.seconds - (x.seconds - s)) * p.vcpus;
     busy += x.busy * p.vcpus * s;
     steal += x.steal * p.vcpus * s;
     billed += billedSteal(p, x) * s;
   }
   const mean = (v: number) => seconds ? v / seconds : 0;
-  return { seconds, busy: mean(busy), steal: mean(steal), billed: mean(billed) };
+  return { seconds, busy: mean(busy), steal: mean(steal), billed: mean(billed), sure };
 }
 
 // Move the anchor through every reading that has settled since it. Returns whether it moved.
@@ -136,9 +138,9 @@ export function settle(p: Plan, e: Estimate, readings: Reading[], samples: Sampl
     // One that began before the anchor averages time the anchor already settled. And one under
     // what the guest itself counted cannot be Hostinger's bill for it: the feed is broken. Where
     // samples watched too little of the interval to check its mean, the reading must still
-    // cover the core-seconds they did count.
+    // cover the core-seconds they certainly counted inside it, to within rounding.
     const usable = validSpacing(prev.at, cur.at) && prev.at >= a.at &&
-      reading >= o.busy * (covered ? 1 : o.seconds / seconds);
+      (covered ? reading >= o.busy : reading * seconds >= o.sure - 1e-6);
     // What the watched seconds cost, as a mean: the reading, or the own count in its place.
     let bill = m.mul * o.busy + o.billed + m.add;
     if (usable) {

@@ -228,6 +228,36 @@ Deno.test("a gap in the samples costs the earnings of the gap, not of the half h
   );
 });
 
+Deno.test("across a gap, a reading is checked only against CPU that certainly ran inside it", () => {
+  // Ten idle minutes watched, then nothing, then one sample that straddles the end of the
+  // interval: a job that started just after it gives that sample 3.75 cores on average, and
+  // every one of its core-seconds may lie outside.
+  const straddling: Sample = {
+    at: T0 + HALF + 15_000,
+    seconds: 30,
+    busy: 3.75 / p.vcpus,
+    steal: 0,
+    outside: 0,
+    earning: true,
+  };
+  const e = fresh(5000);
+  settle(p, e, readings(0.01), [...samples(T0, T0 + 600_000, 0), straddling]);
+  // The reading stands: 615 watched seconds earn and pay it in the shape of what they counted,
+  // all of it in the 15 busy seconds, and the rest pay it and earn nothing.
+  const bill = 0.01 + ESTIMATE.pad;
+  const watched = 615 * p.baseline - bill * 615;
+  assertAlmostEquals(e.anchor!.balance, 5000 + watched - bill * 1185, 1e-6);
+  // A reading that exactly matches what the samples counted is no broken feed: three cores for
+  // three minutes is 0.3 cores over the half hour, to the last digit or not.
+  const exact = fresh(5000);
+  settle(p, exact, readings(0.3), samples(T0 + 600_000, T0 + 780_000, 3));
+  assertAlmostEquals(
+    exact.anchor!.balance,
+    5000 + (p.baseline - 0.32) * 180 - 0.32 * 1620,
+    1e-6,
+  );
+});
+
 Deno.test("time no sample watched is billed and earns nothing", () => {
   // A limit may have come and gone unseen, and one pauses earning while work presses on it.
   const mean = 8 / 3, bill = mean + ESTIMATE.pad;
