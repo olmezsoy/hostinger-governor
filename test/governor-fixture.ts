@@ -36,6 +36,7 @@ export function fixture(
     // What a burner test measures.
     burn: { busy: 4.7 / p.vcpus, steal: 0.06, seconds: 25 },
     burners: 0,
+    burnSeconds: 0,
     snapshots: 0,
   };
   const io: GovernorIO = {
@@ -67,7 +68,12 @@ export function fixture(
     requestBody: () => Promise.resolve(JSON.stringify(request)),
     pause: () => Promise.resolve(),
     steal: () => Promise.resolve(world.probe.shift() ?? 0),
-    demand: () => Promise.resolve({ ...world.burn }),
+    demand: () => {
+      // A burner test takes time: let a test move the clock while it runs.
+      at += world.burnSeconds * 1000;
+      uptime += world.burnSeconds * 1000;
+      return Promise.resolve({ ...world.burn });
+    },
     burner: () => {
       world.burners++;
       return {

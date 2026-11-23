@@ -10,7 +10,7 @@
       "creditLimits": 0,
       "hostLimits": [],
       "limitedHours": 0,
-      "cpuCoreHours": 5217.49108932186,
+      "cpuCoreHours": 5217.485287009828,
       "entries": 0,
       "falseEntries": 0,
       "minBank": 3261.0701083783124,
@@ -53,7 +53,7 @@
       "assessment": {
         "status": "pass",
         "notes": [],
-        "cpuCostPercent": -0.11048108973583166,
+        "cpuCostPercent": -0.11036975801738758,
         "limitsPrevented": 0
       }
     },
@@ -62,7 +62,7 @@
       "creditLimits": 0,
       "hostLimits": [],
       "limitedHours": 0,
-      "cpuCoreHours": 5217.49108932186,
+      "cpuCoreHours": 5217.485287009828,
       "entries": 0,
       "falseEntries": 0,
       "minBank": 2266.0363472392,
@@ -95,15 +95,15 @@
         }
       ],
       "limitedHours": 0.8969444444444444,
-      "cpuCoreHours": 5140.043622842772,
+      "cpuCoreHours": 5143.30337399404,
       "entries": 1,
       "falseEntries": 0,
       "minBank": 0,
-      "maxOver": 4877.995432123553,
-      "pad": 0.13850647862345133,
+      "maxOver": 4878.003779110419,
+      "pad": 0.13341133554796872,
       "margin": {
         "mul": 1.05,
-        "add": 0.2732890553450241
+        "add": 0.26819391226954153
       },
       "gapBilledCoreSeconds": 483840.999959153,
       "sustainedTriggered": false,
@@ -123,7 +123,7 @@
       "creditLimits": 0,
       "hostLimits": [],
       "limitedHours": 0,
-      "cpuCoreHours": 5178.877539690204,
+      "cpuCoreHours": 5178.871737378172,
       "entries": 0,
       "falseEntries": 0,
       "minBank": 1928.9771644966306,
@@ -151,11 +151,11 @@
       "creditLimits": 0,
       "hostLimits": [],
       "limitedHours": 0,
-      "cpuCoreHours": 5211.950864002037,
+      "cpuCoreHours": 5204.544175333581,
       "entries": 1,
       "falseEntries": 1,
       "minBank": 3285.6385489212025,
-      "maxOver": 969.1200386511182,
+      "maxOver": 969.1200383629948,
       "pad": 0.02,
       "margin": {
         "mul": 1.05,
@@ -179,7 +179,7 @@
       "creditLimits": 0,
       "hostLimits": [],
       "limitedHours": 0,
-      "cpuCoreHours": 5211.588849981164,
+      "cpuCoreHours": 5211.5830476691235,
       "entries": 1,
       "falseEntries": 1,
       "minBank": 3295.9356566902698,
@@ -207,11 +207,11 @@
       "creditLimits": 0,
       "hostLimits": [],
       "limitedHours": 0,
-      "cpuCoreHours": 5211.625565026687,
+      "cpuCoreHours": 5211.608446434441,
       "entries": 0,
       "falseEntries": 0,
       "minBank": 3269.324525515046,
-      "maxOver": 884.4290127343393,
+      "maxOver": 862.7717641420122,
       "pad": 0.02,
       "margin": {
         "mul": 1.05,
@@ -235,7 +235,7 @@
       "creditLimits": 0,
       "hostLimits": [],
       "limitedHours": 0,
-      "cpuCoreHours": 5217.1990034891,
+      "cpuCoreHours": 5217.193201177068,
       "entries": 0,
       "falseEntries": 0,
       "minBank": 3237.6796495469007,
@@ -267,7 +267,7 @@
       "creditLimits": 0,
       "hostLimits": [],
       "limitedHours": 0,
-      "cpuCoreHours": 5210.815635774826,
+      "cpuCoreHours": 5210.824683699131,
       "entries": 0,
       "falseEntries": 0,
       "minBank": 2917.362018143101,
@@ -295,7 +295,7 @@
       "creditLimits": 0,
       "hostLimits": [],
       "limitedHours": 0,
-      "cpuCoreHours": 5217.493679263417,
+      "cpuCoreHours": 5217.487876951383,
       "entries": 0,
       "falseEntries": 0,
       "minBank": 3261.0701083783124,
@@ -323,7 +323,7 @@
       "creditLimits": 0,
       "hostLimits": [],
       "limitedHours": 0,
-      "cpuCoreHours": 5217.307704685029,
+      "cpuCoreHours": 5216.94025270149,
       "entries": 0,
       "falseEntries": 0,
       "minBank": 3291.9122780630814,
@@ -338,7 +338,7 @@
       "reboot": null,
       "corruptionRecovered": true,
       "ticksAfterCorruption": 141120,
-      "slowestTickMs": 52.75729200000205,
+      "slowestTickMs": 1.819499999997788,
       "readingGaps": 1,
       "comparison": null,
       "assessment": {
@@ -351,7 +351,7 @@
       "creditLimits": 0,
       "hostLimits": [],
       "limitedHours": 0,
-      "cpuCoreHours": 5206.319412936269,
+      "cpuCoreHours": 5206.314443957574,
       "entries": 0,
       "falseEntries": 0,
       "minBank": 3584.483193452459,
@@ -379,11 +379,11 @@
       "creditLimits": 0,
       "hostLimits": [],
       "limitedHours": 0,
-      "cpuCoreHours": 5189.821851139564,
+      "cpuCoreHours": 5189.816048827531,
       "entries": 0,
       "falseEntries": 0,
       "minBank": 3764.9298481956266,
-      "maxOver": 966.978151472832,
+      "maxOver": 966.9781514725837,
       "pad": 0.02,
       "margin": {
         "mul": 1.05,
@@ -407,7 +407,7 @@
       "creditLimits": 0,
       "hostLimits": [],
       "limitedHours": 0,
-      "cpuCoreHours": 5108.153139575892,
+      "cpuCoreHours": 5108.149750851007,
       "entries": 0,
       "falseEntries": 0,
       "minBank": 2607.032382883811,
@@ -429,7 +429,7 @@
         "creditLimits": 0,
         "hostLimits": [],
         "limitedHours": 0,
-        "cpuCoreHours": 5178.877539690204,
+        "cpuCoreHours": 5178.871737378172,
         "entries": 0,
         "falseEntries": 0,
         "minBank": 1928.9771644966306,
@@ -450,7 +450,7 @@
       "assessment": {
         "status": "pass",
         "notes": [],
-        "cpuCostPercent": 1.3656318299146808,
+        "cpuCostPercent": 1.3655867554458465,
         "limitsPrevented": 0
       }
     },
@@ -459,7 +459,7 @@
       "creditLimits": 0,
       "hostLimits": [],
       "limitedHours": 0,
-      "cpuCoreHours": 4918.846035756788,
+      "cpuCoreHours": 4918.840233444759,
       "entries": 0,
       "falseEntries": 0,
       "minBank": 2090.9473003416388,
@@ -487,11 +487,11 @@
       "creditLimits": 0,
       "hostLimits": [],
       "limitedHours": 0,
-      "cpuCoreHours": 4494.061720415884,
+      "cpuCoreHours": 4494.055918103854,
       "entries": 0,
       "falseEntries": 0,
       "minBank": 3305.517650137275,
-      "maxOver": 544.3811933919151,
+      "maxOver": 544.3811933920274,
       "pad": 0.02,
       "margin": {
         "mul": 1.05,
@@ -509,7 +509,7 @@
         "creditLimits": 0,
         "hostLimits": [],
         "limitedHours": 0,
-        "cpuCoreHours": 5217.49108932186,
+        "cpuCoreHours": 5217.485287009828,
         "entries": 0,
         "falseEntries": 0,
         "minBank": 3261.0701083783124,
@@ -530,7 +530,7 @@
       "assessment": {
         "status": "pass",
         "notes": [],
-        "cpuCostPercent": 13.865464387405463,
+        "cpuCostPercent": 13.865479807046583,
         "limitsPrevented": 0
       }
     },
@@ -567,11 +567,11 @@
       "creditLimits": 0,
       "hostLimits": [],
       "limitedHours": 0,
-      "cpuCoreHours": 5172.2189654031445,
+      "cpuCoreHours": 5172.213163091113,
       "entries": 0,
       "falseEntries": 0,
       "minBank": 3305.517650137275,
-      "maxOver": 544.3811933919151,
+      "maxOver": 544.3811933920274,
       "pad": 0.02,
       "margin": {
         "mul": 1.05,
@@ -610,7 +610,7 @@
       "assessment": {
         "status": "pass",
         "notes": [],
-        "cpuCostPercent": 0.7581766670033077,
+        "cpuCostPercent": 0.7582879987217519,
         "limitsPrevented": 0
       }
     },
@@ -619,15 +619,15 @@
       "creditLimits": 0,
       "hostLimits": [],
       "limitedHours": 0,
-      "cpuCoreHours": 5976.307511912143,
+      "cpuCoreHours": 5977.272542933415,
       "entries": 0,
       "falseEntries": 0,
       "minBank": 3305.517650137275,
-      "maxOver": 544.3811933919151,
+      "maxOver": 544.3811933920274,
       "pad": 0.02,
       "margin": {
         "mul": 1.05,
-        "add": 0.1901918008221251
+        "add": 0.19018872674709375
       },
       "gapBilledCoreSeconds": 0,
       "sustainedTriggered": false,
@@ -647,7 +647,7 @@
       "creditLimits": 0,
       "hostLimits": [],
       "limitedHours": 0,
-      "cpuCoreHours": 5216.091168091675,
+      "cpuCoreHours": 5216.085365779645,
       "entries": 0,
       "falseEntries": 0,
       "minBank": 3261.0701083783124,
@@ -656,6 +656,95 @@
       "margin": {
         "mul": 1.05,
         "add": 0.15482783967101027
+      },
+      "gapBilledCoreSeconds": 0,
+      "sustainedTriggered": false,
+      "reboot": null,
+      "corruptionRecovered": false,
+      "ticksAfterCorruption": 0,
+      "slowestTickMs": 0,
+      "readingGaps": 1,
+      "comparison": null,
+      "assessment": {
+        "status": "pass",
+        "notes": []
+      }
+    },
+    {
+      "id": "S23",
+      "creditLimits": 1,
+      "hostLimits": [
+        {
+          "at": 1792015957000,
+          "lift": 1792017836000
+        }
+      ],
+      "limitedHours": 0.5222222222222223,
+      "cpuCoreHours": 5053.089230825336,
+      "entries": 1,
+      "falseEntries": 0,
+      "minBank": 0,
+      "maxOver": 5067.352423187094,
+      "pad": 0.10824514532706893,
+      "margin": {
+        "mul": 1.05,
+        "add": 0.23407895701791565
+      },
+      "gapBilledCoreSeconds": 483840.999959153,
+      "sustainedTriggered": false,
+      "reboot": null,
+      "corruptionRecovered": false,
+      "ticksAfterCorruption": 0,
+      "slowestTickMs": 0,
+      "readingGaps": 0,
+      "comparison": null,
+      "assessment": {
+        "status": "pass",
+        "notes": []
+      }
+    },
+    {
+      "id": "S24",
+      "creditLimits": 0,
+      "hostLimits": [],
+      "limitedHours": 0,
+      "cpuCoreHours": 5207.929819013212,
+      "entries": 0,
+      "falseEntries": 0,
+      "minBank": 3261.0701083783124,
+      "maxOver": 995.869064749987,
+      "pad": 0.02,
+      "margin": {
+        "mul": 1.05,
+        "add": 0.15482783967101027
+      },
+      "gapBilledCoreSeconds": 0,
+      "sustainedTriggered": false,
+      "reboot": null,
+      "corruptionRecovered": false,
+      "ticksAfterCorruption": 0,
+      "slowestTickMs": 0,
+      "readingGaps": 1,
+      "comparison": null,
+      "assessment": {
+        "status": "pass",
+        "notes": []
+      }
+    },
+    {
+      "id": "S25",
+      "creditLimits": 0,
+      "hostLimits": [],
+      "limitedHours": 0,
+      "cpuCoreHours": 5977.437333597694,
+      "entries": 0,
+      "falseEntries": 0,
+      "minBank": 3305.517650137275,
+      "maxOver": 544.3811933920274,
+      "pad": 0.02,
+      "margin": {
+        "mul": 1.05,
+        "add": 0.1719742467551886
       },
       "gapBilledCoreSeconds": 0,
       "sustainedTriggered": false,

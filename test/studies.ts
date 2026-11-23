@@ -51,7 +51,15 @@ export type Study = {
   // unless given, since what the API shows and what the bank is charged are separate facts.
   // With `share`, the contention is steady instead: that share of what runs is stolen all the
   // time, redrawn every 10 seconds within `jitter` of it, as on a host that is always busy.
-  contention?: { cores: number; meter: number; bill?: number; share?: number; jitter?: number };
+  // With `underLimit`, the neighbours go on stealing while Hostinger limits the VM.
+  contention?: {
+    cores: number;
+    meter: number;
+    bill?: number;
+    share?: number;
+    jitter?: number;
+    underLimit?: boolean;
+  };
   // The workload and meter noise seed; the recorded studies use 13.
   seed?: number;
   // Called after every control pass with the study clock in seconds, for tools that trace a run.
@@ -79,6 +87,17 @@ export const STUDIES: Study[] = [
   { id: "S20", readingScale: 0.5 },
   { id: "S21", hole: { fromDay: 8.24, hours: 2.4 }, flatDemand: { fromDay: 8.25, cores: 8 } },
   { id: "S22", clockOff: { fromDay: 7, hours: 30, ms: 3 * 3_600_000 } },
+  {
+    id: "S23",
+    gap: 0.10,
+    contention: { cores: 0, meter: 0.5, share: 0.03, jitter: 0.25, underLimit: true },
+  },
+  { id: "S24", clockOff: { fromDay: 7.3, hours: 12, ms: -3 * 3_600_000 } },
+  {
+    id: "S25",
+    clockOff: { fromDay: 7.3, hours: 12, ms: 90 * 60_000 },
+    flatDemand: { fromDay: 7.3, cores: 8 },
+  },
 ];
 // The study clock counts seconds.
 const DAY_S = 86400;
@@ -190,7 +209,7 @@ export async function study(sc: Study) {
       let stolen = 0;
       if (sc.contention?.share !== undefined) {
         if (t % 10 === 0) shareZ = normal();
-        if (!limited && !down) {
+        if ((!limited || sc.contention.underLimit) && !down) {
           stolen = Math.max(
             0,
             sc.contention.share * busy * (1 + (sc.contention.jitter ?? 0) * shareZ),
@@ -213,8 +232,10 @@ export async function study(sc: Study) {
       const stealBill = (sc.contention?.bill ?? sc.contention?.meter ?? 0) * stolen;
       const bill = Math.max(0, metered - stealMeter + stealBill + (sc.gap ?? 0));
       gapBilled += bill - metered;
-      // The simulated host stops earning while limited at the governor's own pressing test.
-      const pressing = limited && steal / Math.max(0.001, ownWant) >= LIMIT_PRESSING;
+      // The simulated host stops earning while limited at the governor's own pressing test. Only
+      // what the limit itself refuses presses on it, never what the neighbours take.
+      const pressing = limited &&
+        (steal - stolen) / Math.max(0.001, ownWant) >= LIMIT_PRESSING;
       bank = Math.max(0, Math.min(p.capacity, bank + (pressing ? 0 : p.baseline) - bill));
       if (!limited && bank <= 0) {
         limited = true;
@@ -548,12 +569,22 @@ export function assessStudy(sc: Study, r: Result, comparison: Result | null) {
       noLimit();
       break;
     case "S22":
-      // A clock three hours ahead lays every sample against the wrong reading.
+    case "S24":
+    case "S25":
+      // A clock hours ahead or behind lays every sample against the wrong reading. One that is
+      // 90 minutes ahead is too close for its readings to look stale.
       noLimit();
       must(
         r.maxOver <= 0.1 * p.capacity,
         "The estimate ran above the bank by more than the floor holds back.",
       );
+      break;
+    case "S23":
+      // S3's hidden billing with neighbours that keep stealing under the limit. The recovery
+      // ceiling then shows little delivered CPU, which must not make the limit look like
+      // something other than a credit limit: it has to teach, once.
+      must(r.creditLimits <= 2, "More than two credit limits occurred.");
+      must(r.pad >= 0.1, "The learned pad is below the 0.10-core gap.");
       break;
   }
   return {

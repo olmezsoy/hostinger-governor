@@ -11,7 +11,7 @@ layer.
   That one rule needed a meter fit, drift detection, a steal model, holds, a 90-day history store, a
   replay command and three modes. An audit found that about half the product code served it, and
   that its machinery had raised false alarms on a live box. The new estimate is about 200 lines in
-  `src/estimate.ts`, and `src/` goes from 10,104 lines to 4,093.
+  `src/estimate.ts`, and `src/` goes from 10,104 lines to 4,106.
   [The credit estimate](docs/estimate.md) describes it:
   - Anchor. Hostinger's own CPU readings, about one every 30 minutes through the API or the broker,
     are replayed through its published credit rules. Readings move the estimate both ways.
@@ -25,11 +25,11 @@ layer.
     the plan's limit + 0.1 cores. At or under that it charges none, because the steal may be a
     limit's own.
   - Unknown time. A reading no sample covers counts its CPU in the worst order. Time nothing
-    measured, as after a reboot, lost state, a first start or a hole in the readings longer than the
-    samples reach, counts at the most the VM could have spent until readings settle past it.
-  - Clock. Readings carry Hostinger's clock. After a wall-clock step of more than a minute the
-    estimate carries on from the guest's own count, and readings that end more than two hours before
-    the box's clock move nothing.
+    measured, as after a reboot or a hole in the readings longer than the samples reach, counts at
+    the most the VM could have spent until readings settle past it.
+  - Clock. Readings carry Hostinger's clock. After a wall-clock step of more than a minute, either
+    way, the estimate carries on from the guest's own count, and readings that end more than two
+    hours before the box's clock move nothing.
 - Remove the modes. There is no `calibration.mode`. With a Hostinger token or broker configured, the
   estimate follows the readings. Without one it runs on the guest's own count alone.
 - Use one spending floor, 10% of capacity. It was 5% in `apply` and 20% in `off`. The spend law is
@@ -38,10 +38,11 @@ layer.
   billed on top of every reading, by 1.25 times the rate the estimate was wrong. What the limit
   found is the lowest the estimate read in the 20 minutes before it, since the estimate rises under
   a limit nobody has recognised yet. A limit that found the estimate already empty teaches nothing.
-  A limit whose cap is not flat at the plan's limit is Hostinger's sustained-use limit. It teaches
-  nothing either, and the estimate from before it comes back. The own count's addition, pad
-  included, stops at the baseline less 1.05 × (the plan's limit − 0.2 cores): past that the governor
-  would hold the box harder in normal running than while a limit recovers.
+  A limit that began with the VM delivering more than the plan's limit + 0.3 cores is not a credit
+  limit, but something like Hostinger's sustained-use limit. It teaches nothing either, and the
+  estimate restarts at what the limit found, at most 20%, until readings say more. The own count's
+  addition, pad included, stops at the baseline less 1.05 × (the plan's limit − 0.2 cores): past
+  that the governor would hold the box harder in normal running than while a limit recovers.
 - Drop the three-hour hold at the baseline that followed a sustained-use limit. No governed box has
   met that limit, and the hold was part of the calibration layer.
 - Keep v0.3.2's limit detection: evident steal, the probe that cuts the slice to 20%, the burner
@@ -96,20 +97,21 @@ layer.
 - Log an `estimate:` line after each fetch, with the balance, anchor, margin and pad. The
   `recovery observation` line at each lift stays, and now says whether a lift test confirmed the
   limit.
-- Replace the calibration studies with 20 eight-week studies in `test/studies.ts`, which run in
-  about a minute and a half in sequence. `deno task sim:legacy` and `deno task sim:jumps` are gone.
+- Replace the calibration studies with 23 eight-week studies in `test/studies.ts`, which run in
+  under two minutes in sequence. `deno task sim:legacy` and `deno task sim:jumps` are gone.
   [Study results](docs/study-results.md) has every number. All of it is simulation:
-  - At the recorded seed all 20 studies pass. Over 12 seeds, 240 runs of 56 simulated days, they
-    take 14 credit limits: 12 in S3, one per run, the limit that teaches a 0.10-core billing gap,
-    and 2 in S17, a 0.5-core jump in Hostinger's meter.
+  - At the recorded seed all 23 studies pass. Over 12 seeds, 276 runs of 56 simulated days, they
+    take 26 credit limits: one per run in S3 and S23, the limit that teaches a 0.10-core billing
+    gap, and 2 in S17, a 0.5-core jump in Hostinger's meter.
   - The floor was chosen on the first 17 studies: with a 5% floor their 204 runs took 52 limits,
     with 7.5% they took 20, and with 10% they took 15. CPU delivered differed by 0.17% between 5%
     and 10%.
-  - The 15 week-long scenarios take 32 throttles at seed 1, against 43 for v0.3.3 `apply` and 46 for
-    `off`, with 92.0 throttled hours against 248.7 and 241.1. They deliver 9,793.9 core-hours
-    against 9,147.9 and 9,129.2. All 32 throttles are in the three scenarios where Hostinger's real
-    baseline is 30%, not the published 60%.
-  - The 25 detection scenarios take 45 throttles against 58 and 48, with 2 false limits in each.
+  - The 15 week-long scenarios take 27 throttles at seed 1, against 43 for v0.3.3 `apply` and 46 for
+    `off`, with 78.5 throttled hours against 248.7 and 241.1. They deliver 9,799.6 core-hours
+    against 9,147.9 and 9,129.2. One scenario carries most of that gap: without it v1.0.0 delivers
+    1.4% more than `apply`, and throttled hours go from 106.9 to 78.5. All 27 throttles are in the
+    three scenarios where Hostinger's real baseline is 30%, not the published 60%.
+  - The 25 detection scenarios take 46 throttles against 58 and 48, with 2 false limits in each.
 
 Real hardware has shown little of this.
 [The credit estimate](docs/estimate.md#what-real-hardware-has-shown) lists what was measured. No
@@ -123,13 +125,17 @@ described in [Hostinger credentials](docs/hostinger-credentials.md).
 - Configuration. The `calibration`, `readings` and `recovery` blocks of an older config are accepted
   and ignored. The daemon logs one line naming them. Every other setting works as before.
 - State. `persist.json` is now schema 3. The first start carries a v0.3 file over: its estimate, the
-  lower of the open and the acted one, its samples and readings, and any active limit. What its
-  limits taught carries over as the pad: `apply`'s billing gap, or the margin `off` and `shadow`
-  widened. State from before v0.3 starts the estimate from zero and keeps an active limit.
+  lower of the open and the acted one, its samples and readings, a probe cooldown, and any active
+  limit. The estimate stands where v0.3 had it and readings move it from there. What v0.3's limits
+  taught carries over as the pad: `apply`'s billing gap, or the margin `off` and `shadow` widened.
+  State from before v0.3 starts the estimate from zero and keeps an active limit.
+- Upgrade outside a limit if you can. A limit in force is carried and lifts as a credit limit, but
+  what it would have taught is not: on a host that bills more than it reads, the same upgrade took
+  one or two more limits in simulation where a v0.3.2 restart took none.
 - `initial_balance`. It counts on a first start only, and only when above zero. A `persist.json`
-  that is lost or unreadable starts the estimate from zero, as v0.3 did. The installer's
-  `"initial_balance": 0` states nothing, so a first start with a token or broker replays the last 48
-  hours of readings.
+  that is lost or unreadable starts the estimate from zero, as v0.3 did.
+- Readings from before the governor watched are never replayed. A first start, or lost state, begins
+  at zero and climbs with what the bank earns from then on.
 - History. `history.json` and `history.log` in `/var/lib/governor` are no longer read or written.
   Delete them by hand if you want the space back.
 - Downgrade. v0.3.2 does not read schema 3, so going back starts its estimate from zero.

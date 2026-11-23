@@ -45,7 +45,10 @@ When they don't, nobody watched that time, and it counts at the most the VM coul
 of more than about two hours in Hostinger's readings ends that way, because samples are kept three
 hours.
 
-With no anchor, as on a first start, the replay begins with an empty bank at the oldest reading.
+The anchor never reaches further back than the samples do. On a first start, after lost state, or
+when the anchor is older than the three hours of samples kept, it is set to that moment with the
+estimate the own count has, and readings move it from there. Readings from before the governor
+watched are never replayed: they cannot say whether a limit stopped the bank earning then.
 
 ## Tail
 
@@ -97,10 +100,8 @@ steal that reveals a limit would not grow.
 
 Two cases have no sample.
 
-A reading no sample covers, as after a first start or lost state, is taken as it is. Its CPU is
-counted in the worst order: the VM idle first, with the bank full and forgetting what it earns, then
-all the CPU. A bank replayed from readings alone then never reads above the real one, as long as
-billing matches the readings.
+A reading no sample covers, as across a reboot, is taken as it is. Its CPU is counted in the worst
+order: the VM idle first, with the bank full and forgetting what it earns, then all the CPU.
 
 Time since the anchor that no sample covers, as after a reboot, counts at the most the VM could have
 spent: every vCPU busy at the margin. On KVM 8 at the starting margin that is 3.64 cores above the
@@ -110,9 +111,10 @@ seconds are ignored, because the wall clock and uptime drift apart a little.
 ## Clock
 
 Readings carry Hostinger's clock and samples the box's own. When the wall clock moves more than 60
-seconds against uptime within one pass, it has stepped. No earlier sample can be laid beside a
-reading any more, so the anchor moves to that moment with the estimate the own count had, and
-readings move it again from there.
+seconds against uptime within one pass, it has stepped, forward or back. No earlier sample can be
+laid beside a reading any more, so the anchor moves to that moment with the estimate the own count
+had, and readings move it again from there. Readings the new clock places in the future were settled
+under the old one and are dropped.
 
 Readings that end more than two hours before the box's clock move nothing. Either the feed stopped
 or the clock is wrong. In study S22, a clock three hours ahead for 30 hours cost no limit.
@@ -129,8 +131,8 @@ the runs behind 10%.
 
 ## Credit limits
 
-Limit detection is v0.3.2's. The [README](../README.md#how-it-works) describes it. This section
-covers what a limit does to the estimate.
+Limit detection is v0.3.2's with the hardening #23 merged. The [README](../README.md#how-it-works)
+describes it. This section covers what a limit does to the estimate.
 
 On entry the bank is empty, since that is what a credit limit means, and the estimate goes to zero.
 The governor keeps the anchor from before and what the limit found: the lowest the estimate read in
@@ -140,16 +142,19 @@ the guest's own count and stops at 20%, Hostinger's lift point. Readings are not
 lift.
 
 At the lift the governor asks two questions. Was the limit confirmed, meaning a lift test failed
-during it with the VM held at the cap? And was the cap flat? `creditCap()` in `src/governor.ts`
-takes the cores the VM delivered while pressing, sampled at entry and every half hour. Flat means
-none above the plan's limit + 0.3 cores and no two more than 0.6 cores apart. A cap that starts
-higher or falls is Hostinger's sustained-use limit.
+during it with the VM held at the cap? And did it begin as a credit limit does? A credit limit
+delivers no more than the plan's limit. `creditCap()` in `src/governor.ts` takes the cores the VM
+delivered in the sample that showed the limit: more than the plan's limit + 0.3 cores means
+something else, such as Hostinger's sustained-use limit or heavy neighbours. Later samples are not
+judged. They show what the governor's own recovery ceiling let through.
 
-| What the lift finds           | Estimate                                                            | Pad       |
-| ----------------------------- | ------------------------------------------------------------------- | --------- |
-| Confirmed, flat cap           | Stays where the own count put it, raised to the 10% floor if lower  | May rise  |
-| Cap not flat                  | The one from before comes back, replayed through the readings since | Unchanged |
-| Flat cap, no failed lift test | Restarts at what the limit found, at most 20%                       | Unchanged |
+| What the lift finds                  | Estimate                                                                     | Pad       |
+| ------------------------------------ | ---------------------------------------------------------------------------- | --------- |
+| Confirmed, began at the plan's limit | Stays where the own count put it, raised to the 10% floor if lower           | May rise  |
+| Began above the plan's limit         | What the limit found, at most 20%; readings since the old anchor then replay | Unchanged |
+| Began at the limit, never confirmed  | The higher of the own count and what the limit found, at most 20%            | Unchanged |
+
+A limit root declared with `governor limit on` counts as beginning at the plan's limit.
 
 The pad is the one thing the governor learns. A confirmed credit limit means the bank emptied while
 the estimate still showed credits. `billingGap()` divides those credits by the time since the bank
@@ -234,13 +239,13 @@ baseline predicts, and whether a lift test confirmed the limit.
 | Steal charged above                   | Plan's limit + 0.1 cores            | `billedSteal()`                       |
 | Hole ignored                          | Under 60 seconds                    | `UNCOVERED_SLACK_S`                   |
 | Clock step                            | Over 60 seconds in one pass         | `CLOCK_STEP_S` in `governor.ts`       |
-| Most the own count adds               | Baseline − 1.05 × (limit − 0.2)     | `mostAdded()`                         |
+| Most the own count adds               | Baseline − 1.05 × (limit − 0.2)     | `mostAdded()`, never under 0.04       |
 | Pad learned per limit                 | 1.25 × the rate, at most 1 core     | `learnedPad()`                        |
 | Largest rate taken as a billing gap   | 0.2 cores                           | `BILLING_GAP_MAX`                     |
 | Shortest time a rate is measured over | 1 hour                              | `billingGap()`                        |
 | Floor, spend time, refill time        | 10%, 30 minutes, 60 minutes         | `LAW` in `src/credits.ts`             |
 | Valid reading interval                | 900 to 2,700 seconds                | `validSpacing()` in `credits.ts`      |
-| Flat cap                              | Limit + 0.3 at most, 0.6 apart      | `creditCap()` in `governor.ts`        |
+| A credit limit's first sample         | Limit + 0.3 cores at most           | `creditCap()` in `governor.ts`        |
 | What a limit found                    | Lowest estimate in 20 minutes       | `ONSET_MS` in `governor.ts`           |
 | Samples kept                          | 3 hours                             | `KEEP_MS` in `governor.ts`            |
 | Readings fetched and kept             | 48 hours, 72 hours                  | `FETCH_WINDOW_MS`, `READINGS_KEEP_MS` |

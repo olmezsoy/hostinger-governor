@@ -66,9 +66,9 @@ result is not proof of live Hostinger behavior.
 
 CI runs two more gates apart from `deno task check`:
 
-- `deno task sim:check` reruns the 20 eight-week studies in `test/studies.ts`, about a minute and a
-  half in sequence, and fails when a study's outcome or limit count changes. If your change means to
-  change one, run `deno task sim:record` and update `docs/study-results.md` to match.
+- `deno task sim:check` reruns the 23 eight-week studies in `test/studies.ts`, under two minutes in
+  sequence, and fails when a study's outcome or limit count changes. If your change means to change
+  one, run `deno task sim:record` and update `docs/study-results.md` to match.
 - `deno task bench:cpu` fails when the daemon uses more than 0.1% of one core averaged over a
   simulated day. If your change adds work to the control pass, include before and after numbers from
   it.

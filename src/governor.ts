@@ -108,9 +108,8 @@ export type Limit = {
   entry?: { balance: number; learn: boolean };
   // A lift test failed while it lasted: Hostinger was limiting the VM, not the neighbours.
   confirmed?: boolean;
-  // Cores the VM delivered while it pressed on the cap, at entry and every half hour.
-  caps?: number[];
-  capAt?: number;
+  // Cores the VM delivered in the sample that showed the limit.
+  cap?: number;
   recovery?: { seconds: number; earningSeconds: number; charged: number };
   // Uptime of the last test that still found the limit.
   limitedUptime?: number;
@@ -155,7 +154,7 @@ export type Private = {
 // The limit as consumers see it; internal evidence and timing stay private.
 export type PublicLimit = Omit<
   Limit,
-  "limitedUptime" | "tightenedCeiling" | "caps" | "capAt"
+  "limitedUptime" | "tightenedCeiling" | "cap"
 >;
 
 // What every consumer reads.
@@ -218,7 +217,6 @@ const BACKOFF_MS = 10 * 60_000;
 const BACKOFF_MAX_MS = 3_600_000;
 // How far back a limit's onset is looked for: twice the first cooldown.
 const ONSET_MS = 2 * BACKOFF_MS;
-const CAP_EVERY_MS = 30 * 60_000;
 const DAY_MS = 86_400_000;
 const HOT_BUSY = 0.6;
 const HOT_STEAL = 0.05;
@@ -248,11 +246,11 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const finite = (...xs: unknown[]) => xs.every((x) => typeof x === "number" && Number.isFinite(x));
 const planKey = (p: Plan) => `${p.vcpus}:${p.baseline}:${p.capacity}`;
 
-// A credit limit's cap is flat at the plan's limit. One that starts higher or falls is Hostinger's
-// sustained-use limit: the credit rules went on under it, and it teaches nothing about billing.
-export const creditCap = (p: Plan, caps: number[]) =>
-  caps.length > 0 && Math.max(...caps) <= p.limit + 0.3 &&
-  Math.max(...caps) - Math.min(...caps) <= 0.6;
+// A credit limit delivers no more than the plan's limit. A limit that began with the VM delivering
+// more is something else, such as Hostinger's sustained-use limit or heavy neighbours: the credit
+// rules went on under it, and it teaches nothing about billing. Only the sample that showed the
+// limit is judged. Later ones show what the governor's own recovery ceiling let through.
+export const creditCap = (p: Plan, cap?: number) => cap !== undefined && cap <= p.limit + 0.3;
 
 // Hostinger's readings less the guest's own busy CPU, in percentage points of the plan, over the
 // reading intervals the samples cover in full. A diagnostic for the report.
@@ -279,8 +277,7 @@ const publicLimit = (limit: Limit): PublicLimit => {
   const copy: Limit = { ...limit };
   delete copy.limitedUptime;
   delete copy.tightenedCeiling;
-  delete copy.caps;
-  delete copy.capAt;
+  delete copy.cap;
   return copy;
 };
 async function list(dir: string): Promise<Deno.DirEntry[]> {
@@ -412,6 +409,8 @@ type Legacy = {
   bootId?: string;
   uptime?: number;
   limit?: { since?: number };
+  probe?: { cooldownUntil?: number; backoffMs?: number; failedSf?: number; quietUntil?: number };
+  vmId?: number | null;
   margin?: { mul?: number; add?: number };
   readings?: Reading[];
   samples?: Partial<Sample>[];
@@ -547,15 +546,14 @@ export class Governor {
         since: old.limit.since!,
         ceiling: recoveryCeiling(p, DEFAULT_OUTSIDE_CORES),
         tightenedCeiling: 100 * p.vcpus,
-        heldFrom: 0,
-        startedAt: 0,
-        caps: [p.limit],
+        heldFrom: old.uptime ?? 0,
+        startedAt: old.uptime ?? 0,
+        cap: p.limit,
       };
     }
     if (old.schema === 2 && samePlan && finite(old.balance, old.at)) {
-      // v0.3's estimate was a lower bound, so it stands until the first readings replace it. Its
-      // samples cover the time those readings have not settled yet, and a billing gap its limits
-      // taught carries over as the pad.
+      // v0.3's estimate was a lower bound, so it stands, and readings move it from here. Its
+      // samples cover the time those readings have not settled yet.
       const acted = old.calibration?.estimates?.acted;
       s.balance = Math.max(
         0,
@@ -566,6 +564,16 @@ export class Governor {
       s.uptime = old.uptime;
       s.cpuPrev = old.cpuPrev;
       s.usagePrev = old.usagePrev;
+      s.vmId = old.vmId;
+      const probe = old.probe;
+      if (probe && finite(probe.cooldownUntil, probe.backoffMs) && probe.backoffMs! > 0) {
+        s.probe = {
+          cooldownUntil: probe.cooldownUntil!,
+          backoffMs: probe.backoffMs!,
+          ...(finite(probe.failedSf) ? { failedSf: probe.failedSf } : {}),
+          ...(finite(probe.quietUntil) ? { quietUntil: probe.quietUntil } : {}),
+        };
+      }
       s.readings = (old.readings ?? []).filter((r) => finite(r?.at, r?.v));
       s.samples = (old.samples ?? []).flatMap((x): Sample[] =>
         finite(x.at, x.seconds, x.busy, x.steal) && x.seconds! > 0
@@ -651,10 +659,13 @@ export class Governor {
     // Nor do readings that end hours before this box's clock: either the feed stopped or the
     // clock is wrong, and the samples would be laid against the wrong readings.
     if (s.limit || this.stale) return;
-    const moved = settle(this.plan, s.estimate, s.readings, s.samples);
-    if (moved && s.estimate.anchor) {
-      s.balance = tail(this.plan, s.estimate.anchor, s.samples, this.margin, s.at);
-      s.rebuilding = null;
+    // The anchor never reaches further back than the samples that can stand beside readings.
+    // Without one, or with one older than samples are kept, the estimate carries on from the
+    // own count and readings move it from here.
+    const a = s.estimate.anchor;
+    if (!a || s.at - a.at > KEEP_MS) s.estimate.anchor = { at: s.at, balance: s.balance };
+    if (settle(this.plan, s.estimate, s.readings, s.samples)) {
+      s.balance = tail(this.plan, s.estimate.anchor!, s.samples, this.margin, s.at);
     }
   }
 
@@ -772,10 +783,9 @@ export class Governor {
       startedAt: s.uptime ?? 0,
       entry: { balance: found, learn },
       confirmed: false,
-      // The first cap comes from the sample that showed the limit: the 5-minute window still
-      // holds samples from before it.
-      caps: latest ? [latest.busy * this.plan.vcpus] : [],
-      capAt: now,
+      // From the sample that showed the limit: the 5-minute window still holds samples from
+      // before it. A limit root declared is taken as the credit limit root says it is.
+      cap: learn && latest ? latest.busy * this.plan.vcpus : this.plan.limit,
       recovery: { seconds: 0, earningSeconds: 0, charged: 0 },
     };
     s.balance = 0;
@@ -788,7 +798,7 @@ export class Governor {
   private lift(limit: Limit, now: number, finished: Clock) {
     const s = this.s, p = this.plan, e = s.estimate;
     const entry = limit.entry?.balance ?? 0;
-    const flat = creditCap(p, limit.caps ?? []);
+    const flat = creditCap(p, limit.cap);
     const credit = !!limit.confirmed && flat;
     const gap = billingGap(entry, e.known.slack, (limit.since - e.known.at) / 1000);
     // More than a fifth of a core is not a billing gap: something else emptied the bank, such as
@@ -850,7 +860,6 @@ export class Governor {
         quietAfterLiftSeconds(p, this.margin) * 1000;
     }
     s.limit = undefined;
-    if (s.balance >= LAW.floor * p.capacity) s.rebuilding = null;
     log("limit: lifted");
     this.notify("limit-end");
   }
@@ -1030,7 +1039,11 @@ export class Governor {
     // The wall clock jumped against uptime. Readings carry Hostinger's clock, so no sample from
     // before the jump, or across it, can be laid beside one any more.
     const stepped = Math.abs((now - beforeAt) / 1000 - seconds) > CLOCK_STEP_S;
-    if (stepped) { for (const x of s.samples) x.clockValid = false; }
+    if (stepped) {
+      for (const x of s.samples) x.clockValid = false;
+      // Readings the new clock places in the future were settled under the old one.
+      s.readings = s.readings.filter((r) => r.at <= now);
+    }
     // Longer than two passes: the daemon was stopped, so the sample only knows the average. A
     // pass that probed or tested the lift runs up to a minute longer, which the daemon watched.
     const unobserved = seconds >
@@ -1165,10 +1178,6 @@ export class Governor {
 
     const limit = s.limit;
     if (limit) {
-      if (pressing && !sample.test && now - (limit.capAt ?? 0) >= CAP_EVERY_MS) {
-        limit.caps = [...(limit.caps ?? []), busy * p.vcpus];
-        limit.capAt = now;
-      }
       // The recovery ceiling follows work outside the slice, under any tighter cap set because the
       // VM actually pressed on the limit. It tightens at once, on the latest sample, and relaxes
       // back up only to what every sample of the five-minute window allows: a spike gives its
@@ -1209,7 +1218,6 @@ export class Governor {
         const done = Math.max(uptime, finished.uptime);
         if (lifted) {
           this.lift(limit, now, finished);
-          this.resettle();
         } else {
           if (this.liftEvidence === "limited") {
             limit.confirmed = true;

@@ -63,8 +63,10 @@ export const stale = (readings: Reading[], now: number) =>
 
 // The most the own count may add, in cores. With more, the allowance at the spending floor would
 // be under what the governor leaves the VM while it recovers from a credit limit, 0.2 cores under
-// the plan's limit: it would hold the box harder in normal running than under a limit.
-export const mostAdded = (p: Plan) => p.baseline - ESTIMATE.mul * (p.limit - 0.2);
+// the plan's limit: it would hold the box harder in normal running than under a limit. Never
+// under the fixed addition, which a low configured baseline would otherwise undercut.
+export const mostAdded = (p: Plan) =>
+  Math.max(ESTIMATE.add, p.baseline - ESTIMATE.mul * (p.limit - 0.2));
 
 // The own count's margin. The addition is what the last day's readings showed above the own count,
 // two deviations up, and never under the fixed one.
@@ -111,12 +113,15 @@ function own(p: Plan, samples: Sample[], from: number, to: number) {
 }
 
 // Move the anchor through every reading that has settled since it. Returns whether it moved.
-// Each reading is Hostinger's mean over the interval since the one before it.
+// Each reading is Hostinger's mean over the interval since the one before it. Without an anchor
+// there is nothing to move: readings from before the governor watched are never replayed, since
+// they cannot say whether a limit stopped the bank earning then.
 export function settle(p: Plan, e: Estimate, readings: Reading[], samples: Sample[]): boolean {
-  if (readings.length < 2) return false;
-  // No anchor yet, or one from before the readings begin: an empty bank there is a lower bound.
-  let a = e.anchor && e.anchor.at >= readings[0].at ? e.anchor : { at: readings[0].at, balance: 0 };
-  const before = e.anchor?.at;
+  // Nor is there without a reading from at or before the anchor: the first interval after it
+  // would begin later, and the time between would count for nothing.
+  if (!e.anchor || readings.length < 2 || readings[0].at > e.anchor.at) return false;
+  let a = e.anchor;
+  const before = a.at;
   for (let i = 1; i < readings.length; i++) {
     const prev = readings[i - 1], cur = readings[i];
     if (cur.at <= a.at) continue;
@@ -166,7 +171,7 @@ export function settle(p: Plan, e: Estimate, readings: Reading[], samples: Sampl
     // readings alone, as after a first start or lost state, then never reads above the real one.
     const rest = seconds - stepped;
     const idle = rest * (1 - Math.min(1, bill / p.vcpus));
-    const forgotten = stepped ? 0 : Math.max(0, balance + p.baseline * idle - p.capacity);
+    const forgotten = Math.max(0, balance + p.baseline * idle - p.capacity);
     balance = clamp(balance + (p.baseline - bill) * rest - forgotten, 0, p.capacity);
     if (balance >= p.capacity) e.known = { at: cur.at, slack: 0 };
     a = { at: cur.at, balance };

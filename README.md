@@ -79,14 +79,14 @@ The governor measures the whole machine and caps workloads placed under `user.sl
   point, or after the earliest possible idle recovery time. Failed tests back off for 2, 4, 8, then
   15 minutes from completion. Probe and test intervals still count toward billed CPU, but cannot
   tighten the quota or masquerade as outside demand.
-- **Learns one thing from limits.** A credit limit that a failed lift test confirmed, and whose
-  delivered CPU stayed flat and never more than 0.3 cores above the plan's limit, means the bank
-  emptied while the estimate still showed credits. The governor turns those credits into a rate,
-  multiplies it by 1.25 and adds it to the pad, the cores it bills on top of every reading. A cap
-  that starts higher or falls is Hostinger's sustained-use limit: it teaches nothing, and the
-  estimate from before it comes back. A limit whose first lift test passes teaches nothing either
-  and restarts the estimate at what the limit found, at most 20%. Neither does a limit that found
-  the estimate already empty, as when work outside the slice spends the bank.
+- **Learns one thing from limits.** A credit limit that a failed lift test confirmed, and that began
+  with the VM delivering no more than 0.3 cores above the plan's limit, means the bank emptied while
+  the estimate still showed credits. The governor turns those credits into a rate, multiplies it by
+  1.25 and adds it to the pad, the cores it bills on top of every reading. A limit that begins with
+  the VM delivering more is not a credit limit, but something like Hostinger's sustained-use limit:
+  it teaches nothing, and the estimate restarts at what the limit found, at most 20%, until readings
+  say more. A limit whose first lift test passes teaches nothing either. Neither does a limit that
+  found the estimate already empty, as when work outside the slice spends the bank.
 - **Keeps a fallback quota.** The default is 20% of one core before startup, after shutdown or a
   crash, and early in boot. Operators can choose a different fallback. The helper can change only
   `user.slice`; recovery and probe floors still use 20%.
@@ -206,10 +206,10 @@ configuration if setup fails. See
 | Owners                     | `sudo governor limit off` when Hostinger support lifts a limit, `sudo governor limit on` to start one by hand (a limit already detected goes on), `sudo governor seed <core-seconds>` to set the balance. |
 | Events                     | Executables in `/etc/governor/hooks.d` run as the `governor` user on limit and calibration events, with the event in `GOVERNOR_EVENT` and the state on stdin. See `examples/hooks.d`.                     |
 
-A fresh install starts the estimate at zero because the real balance is unknown. With a Hostinger
-token or broker, the first fetch replays up to 48 hours of readings from an empty bank, and the
-estimate follows the readings from there. Without one it grows from observed CPU use. Root can state
-a known balance with `governor seed`.
+A fresh install starts the estimate at zero because the real balance is unknown. It grows from
+observed CPU use, and with a Hostinger token or broker the readings move it from the first pass on.
+Readings from before the install are not replayed. Root can state a known balance with
+`governor seed`.
 
 To run one control pass immediately, as root:
 
@@ -547,7 +547,7 @@ deno task sim                                 # 15 week-long scenarios, seed 1
 deno task sim "hidden overhead" 5 --episodes  # scenarios by name, seeds 1 to 5
 deno task sim --detection                     # 25 limit-detection scenarios
 deno task sim --studies S3                    # one eight-week study
-deno task sim:check                           # all 20 studies against docs/study-results.json
+deno task sim:check                           # all 23 studies against docs/study-results.json
 deno task sim:record                          # rewrite that record
 ```
 
@@ -555,10 +555,10 @@ The week-long scenarios model neighbour steal, billing overhead, stops, outside 
 baselines, and aggregate or per-vCPU limits. Scheduling and host earning windows are assumptions.
 The original model freezes a growing bank while pressing; the `paused earning debits CPU` scenarios
 instead subtract CPU consumption during pauses. `used_pct` compares billed CPU with the theoretical
-baseline, including paused time, not actual earned-credit utilization. The 20 studies in
+baseline, including paused time, not actual earned-credit utilization. The 23 studies in
 `test/studies.ts` each change one condition over eight weeks: a billing gap, a meter jump, a broken
-feed, an API outage, a hole in the readings, a reboot, lost state, a wrong clock. They run in about
-a minute and a half in sequence.
+feed, an API outage, a hole in the readings, a reboot, lost state, a wrong clock. They run in under
+two minutes in sequence.
 
 [Study results](docs/study-results.md) has the numbers. No model here validates live billing.
 

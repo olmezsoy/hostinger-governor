@@ -60,6 +60,9 @@ Deno.test("the own count charges 1.05 times busy CPU plus 0.04, and what reading
   assertAlmostEquals(margin(p, { pad: 9, excess: [] }).add, 2.49);
   assertAlmostEquals(margin(p, { pad: ESTIMATE.pad, excess: Array(8).fill(5) }).add, 2.49);
   assertAlmostEquals(mostAdded(plan(1)), 0.39);
+  // A baseline configured at 25% is under the plan's limit: the fixed addition still stands.
+  assertEquals(mostAdded(plan(8, undefined, 0.25)), ESTIMATE.add);
+  assertEquals(margin(plan(8, undefined, 0.25), fresh()).add, 0.04);
   assertAlmostEquals(margin(plan(1), { pad: 1, excess: [] }).add, 0.39);
 });
 
@@ -92,14 +95,20 @@ Deno.test("readings move the anchor both ways through Hostinger's rules", () => 
   assertEquals(settle(p, e, rs, []), false);
 });
 
-Deno.test("without an anchor the replay starts from an empty bank at the oldest reading", () => {
-  const e = fresh();
-  assert(settle(p, e, readings(2), []));
-  assertAlmostEquals(e.anchor!.balance, (p.baseline - 2 - ESTIMATE.pad) * 1800);
-  // An anchor older than every reading kept starts over the same way.
-  const old = fresh(30_000, T0 - 10 * HALF);
-  assert(settle(p, old, readings(2), []));
-  assertAlmostEquals(old.anchor!.balance, (p.baseline - 2 - ESTIMATE.pad) * 1800);
+Deno.test("readings from before the anchor are never replayed, and without an anchor they move nothing", () => {
+  // Two idle days of readings cannot say whether a limit stopped the bank earning then.
+  const none = fresh();
+  assertEquals(settle(p, none, readings(...Array(96).fill(0.5)), []), false);
+  assertEquals(none.anchor, undefined);
+  // With an anchor, only what came after it counts.
+  const late = fresh(5000, T0 + 95 * HALF);
+  assert(settle(p, late, readings(...Array(96).fill(0.5)), []));
+  assertAlmostEquals(late.anchor!.balance, 5000 + (p.baseline - 0.5 - ESTIMATE.pad) * 1800);
+  // No reading from at or before the anchor: the time between would count for nothing, so the
+  // anchor waits.
+  const early = fresh(5000, T0 - 10 * HALF);
+  assertEquals(settle(p, early, readings(2), []), false);
+  assertEquals(early.anchor, { at: T0 - 10 * HALF, balance: 5000 });
 });
 
 Deno.test("a reading under the guest's own count is a broken feed, and one far over it is held", () => {
