@@ -2,18 +2,20 @@ import { assert, assertEquals } from "@std/assert";
 import { DETECTION_SCENARIOS, run } from "./sim.ts";
 
 for (const debitPaused of [false, true]) {
-  Deno.test(`week of hidden billing overhead recovers with debitPaused=${debitPaused}`, async () => {
-    const result = await run({
-      name: "overhead",
-      seed: 1,
-      billMul: 1.12,
-      billAdd: 0.15,
-      debitPaused,
-    });
-    assert(result.throttles > 0);
+  const overhead = { name: "overhead", seed: 1, billMul: 1.12, billAdd: 0.15, debitPaused };
+  Deno.test(`a week of hidden billing overhead costs no limit where readings show it, debitPaused=${debitPaused}`, async () => {
+    const result = await run(overhead);
+    assertEquals(result.throttles, 0);
     assertEquals(result.false_limits, 0);
-    assert(result.paused_h < 0.3, `earning paused for ${result.paused_h}h`);
-    assert(result.burn_tests <= 12, `${result.burn_tests} burn tests`);
+  });
+  Deno.test(`without readings the same week's limits teach the overhead and recover, debitPaused=${debitPaused}`, async () => {
+    const result = await run({ ...overhead, noReadings: true });
+    assert(result.throttles > 0 && result.throttles <= 6, `${result.throttles} limits`);
+    assertEquals(result.false_limits, 0);
+    // Billing runs 0.07 cores a core and 0.11 cores above the own count's margin.
+    assert(result.pad > 0.3, `pad ${result.pad}`);
+    assert(result.paused_h < 0.5, `earning paused for ${result.paused_h}h`);
+    assert(result.burn_tests <= 25, `${result.burn_tests} burn tests`);
   });
 }
 

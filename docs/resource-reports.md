@@ -82,16 +82,17 @@ Treat strings as text and escape them when constructing HTML or messaging markup
 
 ## Estimate and freshness
 
-The bank is a conservative guest-side estimate, not a balance fetched from hPanel. A reboot,
-untrusted old state, or a changed plan can reset that estimate while the real bank still has
-credits. `Estimate rebuilding` explains that state. Reaching the local reserve clears the notice.
-Rebuilding alone does not pause jobs, and ordinary spending below the reserve does not restore the
-notice.
+The bank is an estimate built from Hostinger's CPU readings and the guest's own count, not a balance
+fetched from hPanel. A reboot without recent readings, unreadable or older state, or a changed plan
+can reset that estimate while the real bank still has credits. `Estimate rebuilding` explains that
+state. Reaching the local reserve clears the notice. Rebuilding alone does not pause jobs, and
+ordinary spending below the reserve does not restore the notice.
 
 Runway stops at the reserve rather than promising the entire estimated bank can be spent. Refill
 ETAs assume the measured rate continues. A detected host limit and paused work are shown separately.
-Hostinger API history never raises the estimate. In calibration's `apply` mode it can lower it, so
-the report calls it tighten only; otherwise it calls it diagnostic.
+The `Hostinger API history` section says whether the credit estimate follows those readings. A
+`Warnings` section appears once no settled reading has arrived for two hours, and names the time of
+the last one. [The credit estimate](estimate.md) explains both.
 
 The command refuses to display a stale bank. Without fresh governor state it still reports machine
 resources, with `governor` and `credits` set to `null` and an unavailable notice. API history may be

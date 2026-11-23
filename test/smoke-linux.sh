@@ -92,7 +92,7 @@ if sudo -u governor governor limit off; then echo "daemon control unexpectedly s
 if governor tick; then echo "consumer tick unexpectedly succeeded" >&2; exit 1; fi
 if sudo -u governor governor tick; then echo "daemon tick CLI unexpectedly succeeded" >&2; exit 1; fi
 # A root daemon would leave state the service can't read, and a second daemon beside the service
-# would append to the same history.
+# would overwrite its state.
 if sudo governor run >"$fixture_dir/root-run.log" 2>&1; then
   echo "governor run unexpectedly started as root" >&2; exit 1
 fi

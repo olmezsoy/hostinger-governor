@@ -46,8 +46,8 @@ Deno.test("resource reports use the same bank, units and layout across all forma
         "4.8 / 8",
         "3.1 credits/s",
         "8 / 8 vCPUs",
-        "6,912",
-        "16,509",
+        "3,456",
+        "19,965",
         "22.9 / 31",
         "Lowest free 0.8",
         "89% used",
@@ -56,7 +56,7 @@ Deno.test("resource reports use the same bank, units and layout across all forma
         "88 / 387",
         "ci2",
         "Europe/Istanbul",
-        "conservative estimates",
+        "not the hPanel balance",
       ]
     ) assert(output.includes(text), text);
   }
@@ -76,8 +76,9 @@ Deno.test("resource reports use the same bank, units and layout across all forma
 
 Deno.test("burst runway includes margin and only spends surplus above the reserve", () => {
   const f = fixture();
-  assertAlmostEquals(f.report().credits!.fullCpuRunwaySeconds, 16509 / 3.68);
-  assert(renderReport(f.report(), "html").includes("~1h 15m until reserve"));
+  // Every vCPU at the margin spends 8 x 1.05 + 0.04 - 4.8 cores above what the plan earns.
+  assertAlmostEquals(f.report().credits!.fullCpuRunwaySeconds, 19965 / 3.64);
+  assert(renderReport(f.report(), "html").includes("~1h 32m until reserve"));
   f.state.credits.balance = 0;
   const r = f.report();
   assertEquals(r.credits!.fullCpuRunwaySeconds, 0);
@@ -96,7 +97,7 @@ Deno.test("sample warmup is not a measured earning rate or a refill promise", ()
   for (
     const s of [
       "Estimate rebuilding",
-      "older, untrusted estimate",
+      "state it could not use",
       "not an empty bank",
       "Accepting work",
       "Waiting for the first CPU sample",
@@ -172,14 +173,14 @@ Deno.test("missing history stays missing, not zero CPU", () => {
   const text = renderReport(report);
   assert(text.includes("Not available"));
   assert(text.includes("························"));
-  assert(text.includes("History is unavailable"));
+  assert(text.includes("Readings are unavailable"));
   const storage = report.sections.find((s) => s.title === "Memory, load and storage")!;
   assertEquals(storage.table!.rows[0][2], "Not available");
   assertEquals(storage.table!.rows[1][2], "Not available");
   assertEquals(storage.table!.rows[2][2], "Not available");
 });
 
-Deno.test("Hostinger history is diagnostic and the report does not mutate governor state", () => {
+Deno.test("the report says whether the estimate follows Hostinger's readings, and does not mutate governor state", () => {
   const f = fixture();
   f.state.readings = [{ at: now - 100_000, v: 53 }];
   f.state.credits.anchor = {
@@ -190,9 +191,11 @@ Deno.test("Hostinger history is diagnostic and the report does not mutate govern
   };
   const before = structuredClone({ state: f.state, resources: f.resources });
   const text = renderReport(f.report());
-  assert(text.includes("Diagnostic only"));
+  assert(text.includes("Not in use for the credit estimate yet."));
   assert(text.includes("not comparable"));
-  assert(text.includes("does not reset the bank"));
+  f.state.credits.anchor.applied = true;
+  assert(renderReport(f.report()).includes("The credit estimate follows these readings."));
+  f.state.credits.anchor.applied = false;
   assertEquals(f.state, before.state);
   assertEquals(f.resources, before.resources);
 });
@@ -259,17 +262,17 @@ Deno.test("collector uses the requested window and normalizes counters without p
 Deno.test("report reserve follows the spending floor while idle recovery retains the lift point", () => {
   const state = new Governor({
     hostinger: { vm_id: 1, token_file: "/etc/governor/hostinger-token" },
-    calibration: { mode: "apply" },
   }, plan(8))
     .publicState(1000);
   state.credits.balance = 10000;
   state.readings = [{ at: 900, v: 53 }];
   const result = buildReport(state, fixture().resources, 12, 1000);
-  // In apply, readings can tighten the estimate, so the API history is not called diagnostic.
-  const api = result.sections.find((s) => s.title === "Hostinger API history");
-  assertEquals(api?.note, "Tighten only; it never raises the bank.");
-  assertEquals(result.credits?.reserve, state.plan.capacity * 0.05);
-  assertEquals(result.credits?.surplus, 10000 - state.plan.capacity * 0.05);
+  assertEquals(result.credits?.reserve, state.plan.capacity * 0.1);
+  assertEquals(result.credits?.surplus, 10000 - state.plan.capacity * 0.1);
+  // State from a release before the spend law had a floor of its own spent down to 20%.
+  const old = structuredClone(state);
+  delete old.credits.law;
+  assertEquals(buildReport(old, fixture().resources, 12, 1000).credits?.reserve, 6912);
   state.limit = { since: 0, ceiling: 200, heldFrom: 0 };
   const recovery = buildReport(state, fixture().resources, 12, 1000).sections.find((s) =>
     s.title === "Limit recovery"
@@ -328,12 +331,11 @@ Deno.test("sysstatFiles resolves union of local and UTC dates across both saYYYY
   assertEquals(await dates("America/Los_Angeles"), ["20260328", "20260329"]);
 });
 
-Deno.test("report surfaces calibration warnings, shadow-mode holds, and ceiling failure during or outside limits", () => {
+Deno.test("report warns when readings have stopped, and shows a ceiling failure during or outside limits", () => {
   const f = fixture();
-  assert(!f.report().sections.some((s) => s.title === "Calibration warnings"));
+  assert(!f.report().sections.some((s) => s.title === "Warnings"));
   const state = new Governor({
     hostinger: { vm_id: 1, token_file: "/etc/governor/hostinger-token" },
-    calibration: { mode: "apply" },
   }, plan(8)).publicState(now);
   state.accepting = false;
   state.capFailed = true;
@@ -341,28 +343,19 @@ Deno.test("report surfaces calibration warnings, shadow-mode holds, and ceiling 
     checkedAt: now - 60_000,
     exact: false,
     applied: false,
-    difference: null,
+    difference: 2.5,
   };
-  Object.assign(state.credits.calibration!, {
-    failing: { since: now - 120_000, behind: 500 },
-    rulesMismatch: true,
-    hold: { since: now - 3_600_000, reason: "invalid" as const },
-    ownHold: { gap: 0.25, settings: { mul: 1.05, add: 0.35, floor: 0.05 } },
-    readingsInvalid: true,
-    apiStaleSince: now - 1_800_000,
-    invalidReasons: ["residuals" as const],
-    cooldownUntil: now + 3_600_000,
-  });
+  state.credits.staleSince = now - 7_200_000;
   const r = buildReport(state, f.resources, 12, now);
   const text = renderReport(r);
   assert(text.includes("New work paused (ceiling not applied)"));
-  assert(text.includes("Calibration warnings"));
-  assert(text.includes("Failing since"));
-  assert(text.includes("Rules mismatch"));
-  assert(text.includes(`Invalid (residuals) since ${new Date(now - 1_800_000).toISOString()}`));
-  assert(text.includes("Own-count hold"));
-  assert(text.includes("Sustained-use cooldown"));
-  assert(text.includes("Readings are invalid (residuals) and excluded from calibration"));
+  assert(text.includes("Warnings"));
+  assert(
+    text.includes(
+      `None since ${new Date(now - 7_200_000).toISOString()}; the estimate runs on guest CPU alone`,
+    ),
+  );
+  assert(text.includes("Hostinger reads 2.5 percentage points above the guest's CPU count"));
 
   // Recovery quota failure remains visible even while an active limit is present.
   state.limit = { since: now - 60_000, ceiling: 100, heldFrom: 0 };
@@ -371,10 +364,4 @@ Deno.test("report surfaces calibration warnings, shadow-mode holds, and ceiling 
       "New work paused (recovery ceiling not applied)",
     ),
   );
-
-  // Shadow mode renders holds as recorded/not applied rather than active.
-  state.credits.calibration!.mode = "shadow";
-  const shadowText = renderReport(buildReport(state, f.resources, 12, now));
-  assert(shadowText.includes("Recorded (invalid readings since"));
-  assert(shadowText.includes("not applied in shadow mode"));
 });

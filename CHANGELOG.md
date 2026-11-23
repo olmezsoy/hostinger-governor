@@ -1,137 +1,178 @@
 # Changelog
 
-## v0.3.3
+## v1.0.0
 
-- Keep neighbours' steal out of drift detection, and charge it in `apply` where it drains the bank.
-  Hostinger's reading rises with hypervisor steal, by about half a core per stolen core on the
-  audited KVM 8:
-  - A fit records the steal its pairs showed at each load (`stealAt`), which its line already
-    carries. Until a steal model is fitted, drift detection, its verification and the
-    extreme-residual test count only what lies outside the range the steal beyond that can explain,
-    from nothing to a core per stolen core. A contention burst raises no alarm, marks no reading
-    invalid and still reaches the fit, and steady steal on a busy host hides no drift (study S16).
-    Scored at its full residual, the first burst after an upgrade raised an alarm, was verified on
-    the burst's own remaining pairs, and held the margin until a refit the alarm kept from running.
-  - `fitMeter()` keeps the 1D margin fit (`a`, `b`, `aHi`, `sigma`) unchanged and separately fits a
-    detection-only steal model (`stealFit: host = a * own + b + c * steal`) by within-day fixed
-    effects over at least two contention days. Its coefficient must stand three standard errors
-    above zero, with each residual weighted by its own leverage (the meter is noisier under load,
-    where steal shows), and its day-block bootstrap bound above `0.05`. Loads that reached the 100%
-    cap and the first pairs of an unfinished UTC day stay out of it.
-  - An established `c` carries across quiet windows, weak ones and drift changes, and goes only when
-    a window's own estimate lies three standard errors from it. Whatever `c` is, a reading that some
-    sensitivity from 0 to 1 explains is never extreme, so a model that has gone wrong is refuted by
-    the pairs it misreads instead of marking them invalid.
-  - In `apply`, charge neighbours' steal as it happens (`stealCharge`). Where Hostinger bills what
-    its reading shows, a burst drains the bank by up to a core per stolen core while the guest's own
-    count sees nothing: in study S15 the first burst that met a bank at its floor ended in a limit.
-    Each stolen core is charged at the most the readings let the meter's sensitivity be: the steal
-    model's upper bound, a contention window's bound where no model is established, and a whole core
-    until a window has enough contention to say. Only steal beyond what the fit expects at that load
-    is charged, so calm hours and a busy host's steady steal are not charged twice; a box without a
-    fit, which is every KVM 1 and KVM 2 at the default `fit.min_cores`, is charged a whole core per
-    stolen core. The live estimate, the clamp's tail, bridged reading gaps, the floor's replay and a
-    sustained-use restore charge it. `off` and `shadow` leave their live estimate uncharged and
-    report the clamp `apply` would hold, charge included. A limit is not charged. What its cap's
-    steal was charged before it was detected goes back into the estimate it learns from, once, less
-    the share of demand the last failed probe left to the neighbours. S15 has no limit with it.
-  - Give the ceiling up for the steal charge that the slice's unused allowance does not cover. Steal
-    that comes on top of what the slice consumes is not in the allowance: its charge is given up at
-    once, or the estimate falls a whole floor's reserve before the law takes half a core back. Steal
-    that displaced the slice's own CPU left that much allowance unspent, which pays for the charge:
-    giving the ceiling up there too cut what the slice asked for, and under a new cap that shrank
-    the steal a limit is recognised by.
-  - Keep a cap in sight while steal is charged. Giving up stops one step above what a cap would
-    leave the slice, so the slice keeps pressing on a cap. And delivery that has lost a fifth of its
-    share of demand since a failed probe, in every sample of the five-minute window, bypasses that
-    probe's cooldown: charged for a cap's steal, the estimate no longer rises and opens the ceiling
-    until the steal has doubled. A limit that begins a minute into an hour's cooldown is entered
-    within six minutes on every plan, with the neighbours still there or gone. `off` and `shadow`
-    charge no steal and probe as before.
-  - Persist explicit `steal: 0` on exact interval pairs (`pairSamples`) so measured zero-steal
-    intervals never fall back to 10-minute slot averages; compare post-change fits at both ends of
-    the steal each load leaves room for in `carries()` before resetting a learned gap; preserve
-    steal rates across `clockBridged()`.
-- Unstick calibration and propagate `referenceFit` everywhere:
-  - Judge a pending CUSUM change on every valid pair, also when the box has gone too idle to qualify
-    for a refit: 48 pairs verify it or withdraw it. A slope reading (`slopeFit`) stays in the
-    residual band, so heavy pairs on a real slope change never turn the readings invalid; one
-    withdrawn on idle pairs, which cannot show a slope, is raised again within a few pairs of the
-    load coming back, once the fit window qualifies for a fit again.
-  - Measure a verified change instead of keeping the alarm's reading of it: the offset becomes the
-    mean residual of the pairs since the change plus three standard errors at the noise of a full
-    box. The alarm reads it from its clearly shifted pairs alone, and a box that stayed idle held
-    +0.24 cores for a meter that had moved 0.025. Until verification the hold still only rises.
-  - Use `driftReference(s)` across `withStart`, `newRun.tighten`, `checkLifts`, `learnGaps`,
-    `learn`, `settledBase`, `calculateEstimates`, `calibrationSummary` long-interval residuals, and
-    long reading interval logs; `explainCalibration`'s `candidateFit` is built from the daemon's own
-    refit inputs (`refitInputs`): the same pairs, change point and carried steal sensitivity.
-  - Accept post-reboot anchors at `a.at <= newest` in `settledBase()` to halve the post-reboot clamp
-    blind window.
-  - Record the evaluator's version on calibration checkpoints (`evaluator: 2`). A checkpoint replays
-    only under the version that wrote it, so one from `v0.3.2` or earlier is not rerun under
-    arithmetic its daemon never had: `calibrate --explain` says so until the daemon's first
-    evaluation rewrites it, and a start that needs it recovers from the recorded decisions.
-  - Stop setting `FLAGS.pressing` on unlimited slots (which blocked `certifiedAnchors` on noisy idle
-    hosts) while subtracting `slot.steal` in `certifiedAnchors()` so `off` and `shadow` can never
-    certify a full bank during heavy steal; require `pressingShare(s) >= 0.1` in
-    `pressedDuringRecovery()` so a lone 30-second neighbour blip does not disqualify lift checks.
-- Harden limit detection, recovery and control stability:
-  - Preserve post-burner `startedAt`, `heldFrom` and `testDelivery` when `confirmPinnedLimit()`
-    enters a limit, while still requiring a failed recovery lift test for confirmation, `limitedAt`
-    and `quietUntil` (matching every other limit path).
-  - Require `sliceBusy > PROBE_CEILING / 100` (0.20 cores) on every plan, including KVM 1 and KVM 2,
-    so slices a 20% cgroup quota cannot cut route to `pinnedAtCap()` burner confirmation instead of
-    looping futile probes; check `pinned` before `canProbeSlice`.
-  - Gate `limitPressing()` and `limitOnsetSample()` on real cap-scale demand and steal, require
-    `busy * vcpus <= p.limit + 0.1` in `limitOnsetSample()`, and bound ambiguous low-load onset
-    walkbacks to the 5-minute detection window.
-  - Track `tightenedCeiling` separately from transient `outside` spikes (migrating active `v0.3.2`
-    limits conservatively and latching it only when pressing cuts strictly below the current
-    ceiling). The recovery ceiling tightens at once and relaxes to what every sample of the
-    five-minute window allows: a spike gives its room back once it has left the window, and outside
-    load that keeps swinging holds the low side instead of moving the quota every pass.
-  - Restore starving `s.balance` and clamp `replayBase` (and reset `s.used`) up to the spending
-    floor on confirmed `credit` lifts, from a lower bound for the bank since the last failed lift
-    test. The bound runs on uptime, so a wall-clock step cannot hide spending; counts time no sample
-    covers, or the daemon did not watch, at the most the VM can spend; and is recorded as
-    `liftBalance` on the limit record less what the passing test's burners could have spent. A start
-    that finds its limit lifted in history gives the same restore back.
-  - Measure post-probe cooldown from post-probe completion uptime and decay `backoffMs` back to 10
-    minutes after 24 hours of calm past cooldown.
-  - Skip 10% ceiling jitter on 4+ vCPU plans outside limits away from the 20% floor and full-plan
-    ceiling; while actively throttling below full box capacity (`allowed < vcpus`), never delay
-    tightening so the deadband cannot bias credit spend upward.
-- Improve reporting, observability and broker timeouts:
-  - Resolve `saYYYYMMDD` and legacy `saDD` across the union of local and UTC calendar dates, counted
-    as dates so a night that skips midnight loses no day, and deduplicate `sadf` rows by timestamp;
-    keep 72 hours of settled readings in public state so `governor report 72` has full API history.
-  - Show `Not available` instead of synthetic zero-history peaks when memory, swap or load history
-    is empty.
-  - Publish `capFailed` explicitly in public state and share a mode-aware warning list across
-    `governor status`, `governor report` and `governor calibrate --explain`, surfacing failed
-    recovery quotas during active limits, `apiStaleSince` alongside `readingsInvalid`, and
-    non-applied holds in `off` and `shadow` modes. Warnings carry their date, and a failing
-    evaluation shows in every mode: `failing` is no longer null in `off` and `shadow`, where its
-    `behind` is 0 since nothing is held.
-  - `calibrate --explain` prints the detection-only steal model as its own fit, beside the margin's.
+v0.3.3 was not released. PR #23 was merged to `main` without a tag. Its limit-detection, reporting
+and broker changes ship here. Its calibration work is removed with the rest of the calibration
+layer.
+
+- Replace calibration with an estimate that follows Hostinger's readings. v0.3 estimated the bank
+  from the guest's own CPU count with a fitted margin and let Hostinger's readings only lower it.
+  That one rule needed a meter fit, drift detection, a steal model, holds, a 90-day history store, a
+  replay command and three modes. An audit found that about half the product code served it, and
+  that its machinery had raised false alarms on a live box. The new estimate is about 200 lines in
+  `src/estimate.ts`, and `src/` goes from 10,104 lines to 4,149.
+  [The credit estimate](docs/estimate.md) describes it:
+  - Anchor. Hostinger's own CPU readings, about one every 30 minutes through the API or the broker,
+    are replayed through its published credit rules. Readings move the estimate both ways.
+  - Tail. The 30 to 100 minutes no settled reading covers yet come from `/proc/stat`, at 1.05 × busy
+    cores + 0.04, plus what the last day's readings showed above that: the mean plus two standard
+    deviations of the last 48.
+  - Guard. A reading under what the guest counted itself cannot be Hostinger's bill, so the own
+    count stands in for it. A reading counts for at most 1.3 × the guest's count + steal + 0.3
+    cores, so a feed that breaks high cannot starve the box.
+  - Steal. The tail charges stolen CPU whole while the VM delivers more than a credit limit could,
+    the plan's limit + 0.1 cores. At or under that it charges none, because the steal may be a
+    limit's own.
+  - Unknown time. A reading no sample covers is billed and earns nothing, because a limit may have
+    come and gone unseen. Time nothing measured, as after a reboot or a hole in the readings longer
+    than the samples reach, counts at the most the VM could have spent until readings settle past
+    it.
+  - Clock. Readings carry Hostinger's clock. After a wall-clock step of more than a minute, either
+    way, the estimate carries on from the guest's own count, and readings that end more than two
+    hours before the box's clock move nothing.
+- Remove the modes. There is no `calibration.mode`. With a Hostinger token or broker configured, the
+  estimate follows the readings. Without one it runs on the guest's own count alone.
+- Use one spending floor, 10% of capacity. It was 5% in `apply` and 20% in `off`. The spend law is
+  otherwise the same.
+- Learn one thing from limits. The first lift test that fails says what holds the VM. Held at the
+  plan's limit, it is Hostinger's credit limit, and the pad, the cores billed on top of every
+  reading, rises by 1.25 times the rate the estimate was wrong. What the limit found is the lowest
+  the estimate read in the 20 minutes before it, since the estimate rises under a limit nobody has
+  recognised yet. A limit that found the estimate already empty teaches nothing. Neither does one
+  whose first failed test finds the VM held higher, as Hostinger's sustained-use limit may, or one
+  whose first test passes. The own count's addition, pad included, stops at the baseline less 1.05 ×
+  (the plan's limit − 0.2 cores): past that the governor would hold the box harder in normal running
+  than while a limit recovers.
+- After any limit the estimate carries on from what the guest's own count rebuilt since the limit
+  began, and the anchor is set there. Nothing from before the limit comes back: what the limit found
+  may have been spent while it lasted, and the earlier anchor, replayed through a limit that work
+  pressed on, would earn what the bank did not.
+- Drop the three-hour hold at the baseline that followed a sustained-use limit. No governed box has
+  met that limit, and the hold was part of the calibration layer.
+- Stop false credit limits on a nearly idle box. A probe compares two 15-second steal shares, and at
+  a third of a core of demand it scores noise. A live box on v0.3.1 took two false limits in one
+  morning that way, each holding every login at 0.2 cores for 23 minutes, and v0.3.2's 0.4-core gate
+  would have cleared that box by 2%. A probe that passes now only earns a burner test, and the
+  burners decide: a credit limit holds the VM at the plan's limit whatever is asked of it, so only a
+  VM they find held there starts a limit. Replayed on the box's own samples, v0.3.1 enters two
+  limits, v0.3.2 one or two, and v1.0.0 none. The burner test adds 35 seconds to recognising a limit
+  through a probe.
+- A limit lifts when the VM delivers three quarters of what the burners ask, whatever the neighbours
+  take on top. Their steal used to keep a limit in force.
+- Keep the rest of v0.3.2's limit detection: evident steal, the probe that cuts the slice to 20%,
+  the burner test when the VM is pinned at the cap, the cooldown that backs off from 10 to 60
+  minutes, and the bypass when steal jumps. The live steal charge of #23 and the detection rules
+  added for it are gone. This hardening from #23 stays:
+  - No plan probes a slice whose own CPU is at or under 0.20 cores, KVM 1 and KVM 2 included: a 20%
+    quota cannot cut it. Such a slice goes to the burner check, `pinnedAtCap()`, which runs before a
+    probe is considered.
+  - A limit the burner check enters starts its recovery clock after the burners. It still needs a
+    failed lift test to count as confirmed.
+  - `limitPressing()` needs demand and steal a cap could cause, so a neighbour's blip on an idle box
+    does not stop the estimate earning.
+  - The recovery ceiling tracks `tightenedCeiling` apart from spikes of work outside the slice. It
+    tightens at once and relaxes to what every sample of the five-minute window allows: a spike
+    gives its room back once it has left the window, and outside load that keeps swinging holds the
+    low side instead of moving the quota every pass.
+  - A probe's cooldown runs from the probe's end, and the backoff returns to 10 minutes after 24
+    hours of calm past the cooldown.
+  - On plans with 4 or more vCPUs, outside a limit and away from the 20% floor and the full-plan
+    ceiling, 10% ceiling jitter is skipped. While the allowance is under every vCPU, tightening is
+    never delayed, so the deadband cannot bias spending upward.
+- Keep the reporting and broker fixes from #23:
+  - Resolve `saYYYYMMDD` and legacy `saDD` sysstat files across the union of local and UTC calendar
+    dates, counted as dates so a night that skips midnight loses no day, and deduplicate `sadf` rows
+    by timestamp. Keep 72 hours of settled readings in public state so `governor report 72` has full
+    API history.
+  - Show `Not available` instead of zero peaks when memory, swap or load history is empty.
+  - Publish `capFailed` in public state. `governor status` and `governor report` show a recovery
+    quota that failed to apply during a limit, and share one warning list. Warnings carry their
+    date.
   - Enforce a total HTTP deadline inside `API_SECONDS` (15 s) in `tools/hostinger-broker.py` via
-    `ITIMER_REAL` using a private deadline exception outside `OSError`, with any outer timer taken
-    off while it runs and restored after it, a periodic one in phase; map non-JSON HTTP 200 replies
-    to `upstream_unavailable`.
+    `ITIMER_REAL`, using a private deadline exception outside `OSError`, with any outer timer taken
+    off while it runs and restored after it. Map non-JSON HTTP 200 replies to
+    `upstream_unavailable`.
   - `governor check-hostinger` retries a transient broker `busy` and runs both of its requests
     inside one 50-second budget, which setup's 55-second connection check allows for.
+- Fetch readings during a limit too. v0.3 started no new fetch while limited. The estimate still
+  ignores readings until the lift.
+- Change public state under `credits`, keeping `schemaVersion: 1`. `credits.calibration` is gone.
+  `credits.staleSince` is new: the timestamp in milliseconds of the last settled reading once none
+  has arrived for two hours, else null. `credits.anchor.applied` now means the estimate stands on
+  Hostinger's readings. `credits.law.floor` is 0.1.
+- Fire three hook events: `limit-start`, `limit-end` and `calibration`, which now fires when a limit
+  raises the pad. `limit-classified`, `rules-mismatch` and `readings-invalid` no longer fire.
+- Remove `governor calibrate --explain`. It prints a message and exits 2. The `--reset` form stays
+  and resets the pad and the addition learned from readings. Every other command is unchanged.
+- Remove `recovery.quota_period_ms`, the 10 ms quota period while limited. The fallback quota still
+  resets a period an earlier release left.
+- Log an `estimate:` line after each fetch, with the balance, anchor, margin and pad. The
+  `recovery observation` line at each lift stays, and now says whether a lift test confirmed the
+  limit.
+- Replace the calibration studies with 23 eight-week studies in `test/studies.ts`, which run in
+  under two minutes in sequence. `deno task sim:legacy` and `deno task sim:jumps` are gone.
+  [Study results](docs/study-results.md) has every number. All of it is simulation:
+  - At the recorded seed all 23 studies pass. Over 12 seeds, 276 runs of 56 simulated days, they
+    take 26 credit limits: one per run in S3 and S23, the limit that teaches a 0.10-core billing
+    gap, and 2 in S17, a 0.5-core jump in Hostinger's meter. 275 runs pass. In the other a simulated
+    sustained-use limit, once its cap has fallen to the plan's limit, raises the pad.
+  - The floor was chosen on the first 17 studies: with a 5% floor their 204 runs took 52 limits,
+    with 7.5% they took 20, and with 10% they took 15. CPU delivered differed by 0.17% between 5%
+    and 10%.
+  - The 15 week-long scenarios take 27 throttles at seed 1, against 43 for v0.3.3 `apply` and 46 for
+    `off`, with 80.3 throttled hours against 248.7 and 241.1. They deliver 9,798.7 core-hours
+    against 9,147.9 and 9,129.2. One scenario carries most of that gap: without it v1.0.0 delivers
+    1.4% more than `apply`, and throttled hours go from 106.9 to 80.3. All 27 throttles are in the
+    three scenarios where Hostinger's real baseline is 30%, not the published 60%.
+  - The 25 detection scenarios take 46 throttles against 58 and 48, and no false limit where the
+    earlier design took 2.
+
+Real hardware has shown little of this.
+[The credit estimate](docs/estimate.md#what-real-hardware-has-shown) lists what was measured. No
+governed box has yet met a real credit limit, a meter jump or a sustained-use limit, so the design
+assumes Hostinger bills what its readings show plus a small constant. If real billing runs above the
+readings, the box takes a limit and the pad learns.
 
 Upgrade by running the installer again and updating `/usr/local/libexec/governor-hostinger.py` as
-described in [Hostinger credentials](docs/hostinger-credentials.md). Configuration, credit
-estimates, legacy margins and learned calibration carry over. `governor calibrate --explain` works
-again once the upgraded daemon has made its first evaluation, within ten minutes of its start. Going
-back to `v0.3.2` keeps `persist.json` and history readable; that version recovers from the recorded
-decisions until its own first evaluation, and reads a lift's lower-bound bank as the full 20%.
+described in [Hostinger credentials](docs/hostinger-credentials.md).
 
-On a host that steals a little CPU all the time, `v0.3.2` never certified a full bank. A box
-upgraded there starts without a base for the clamp and gets one when its bank is next certified full
-or a limit lifts. Until then `apply` acts on its own estimate, with the steal charge in it.
+- Configuration. The `calibration`, `readings` and `recovery` blocks of an older config are accepted
+  and ignored. The daemon logs one line naming them. Every other setting works as before.
+- State. `persist.json` is now schema 3. The first start carries a v0.3 file over: its estimate, the
+  lower of the open and the acted one, its samples and readings, a probe cooldown, and any active
+  limit. The estimate stands where v0.3 had it and readings move it from there. What v0.3's limits
+  taught carries over as the pad: `apply`'s billing gap, or the margin `off` and `shadow` widened.
+  State from before v0.3 starts the estimate from zero and keeps an active limit.
+- Upgrade outside a limit if you can. A limit in force is carried with the ceiling it was held at
+  and its lift-test clock, but what it would have taught is not: on a host that bills more than it
+  reads, the same upgrade took one more limit in simulation where a v0.3.2 restart took none.
+- `initial_balance`. It counts on a first start only, and only when above zero. A `persist.json`
+  that is lost, unreadable or holds no state starts the estimate from zero, as v0.3 did. v0.3 told
+  lost state from a first start by its history file. v1.0.0 keeps none and goes by `daemon.lock` in
+  `/var/lib/governor`, which every release leaves behind from its first run.
+- Daemon stops and reboots. Time the daemon did not watch is charged from the kernel's counters and
+  earns nothing, as before. It is no longer laid beside Hostinger's readings, and the readings that
+  cover it are billed without earning either: a limit may have come and gone unseen. The estimate
+  reads low after a long stop until the bank is next full.
+- Readings from before the governor watched are never replayed. A first start, or lost state, begins
+  at zero and climbs with what the bank earns from then on.
+- History. `history.json` and `history.log` in `/var/lib/governor` are no longer read or written.
+  Delete them once the upgrade has settled.
+- Downgrade. v0.3.2 does not read schema 3, so going back starts its estimate from zero. It does
+  read its old `history.json` as if no time had passed, a limit that was in force then included.
+  Delete both history files before going back.
+- Floor. A box that ran in `off`, the default, now spends down to 10% of its bank where it stopped
+  at 20%. A box in `apply` holds 10% where it held 5%.
+- Hooks. A hook that waits for `limit-classified`, `rules-mismatch` or `readings-invalid` never
+  hears them again. Readings that stop arriving show in `credits.staleSince` and in
+  `governor status`.
+- Scripts. `governor calibrate --explain` exits 2, and `credits.calibration` is gone from
+  `governor status --json`. `credits.margin`, `credits.anchor` and `credits.staleSince` hold what is
+  left to read. In `limit`, `entry.used` is gone and `confirmed` is new: unset until a lift test
+  fails, then whether that test found the VM held at the plan's limit.
+- `tick_seconds` above 100. Limit detection now looks at the last three passes when they take longer
+  than five minutes. In v0.3 such a box recognised no limit at all.
 
 ## v0.3.2
 
@@ -193,8 +234,9 @@ writes a new checkpoint.
   that limit's inputs until the first diagnosis after the hold ends, so a later limit in the same
   outage can't leave the readings invalid. `ownHold.central` is no longer reported.
 - The fit still can't set the multiplier below `start.mul`, and readings still never raise the acted
-  estimate. [Calibration](docs/calibration.md#running-closer-to-the-readings) says what evidence
-  each needs first.
+  estimate.
+  [Calibration](https://github.com/olmezsoy/hostinger-governor/blob/v0.3.1/docs/calibration.md#running-closer-to-the-readings)
+  says what evidence each needs first.
 - In the calibration studies, S4's clamp and CUSUM act 9.5 hours after its slope change instead of
   11.5 and 12.0, and S12 logs 22 would-be changes instead of 24. The 0.5-core meter jump costs 7
   limits over ten seeds, one more than v0.3.0; every jump still meets the criteria.
@@ -380,7 +422,7 @@ then a wrong unit or value from Hostinger makes readings go stale instead of rai
 new events, and they fire in every mode, `off` included: for a sustained-use or unknown limit, a
 latched rules mismatch, and readings marked invalid. `calibration` fires only in `apply`. To try it,
 set `hostinger.vm_id` and `"calibration": { "mode": "shadow" }`, then see
-[Calibration](docs/calibration.md).
+[Calibration](https://github.com/olmezsoy/hostinger-governor/blob/v0.3.0/docs/calibration.md).
 
 ## v0.2.5
 

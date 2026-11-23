@@ -1,5 +1,4 @@
 // Channel-neutral report data and presentation. No bot credentials, delivery or governor control.
-import { LAW } from "./credits.ts";
 import type { PublicState } from "./governor.ts";
 
 export type Point = { at: number; v: number };
@@ -89,122 +88,36 @@ const peak = (points: Point[], fallback = 0) => Math.max(fallback, ...points.map
 const badge = (value: number, warning: number, danger: number) =>
   value >= danger ? "🔴" : value >= warning ? "🟡" : "🟢";
 
-// Whether the last quota update failed. Reads the explicit field when present and falls back to
-// the pre-v0.3.3 inference (`!limit && !accepting`) for older saved state files.
+// Whether the last quota update failed. Reads the explicit field when present; state files from
+// before it existed are inferred (`!limit && !accepting`).
 export const isCapFailed = (state: PublicState) =>
   state.capFailed ?? (!state.limit && !state.accepting);
 
-export type CalibrationWarning = {
+export type Warning = {
   condition: string;
   severity: "danger" | "warning";
   stateText: string;
   statusLine: string;
 };
 
-// Shared, mode-aware calibration warnings for `governor status` and `governor report`.
-export function calibrationWarnings(
-  state: PublicState,
-  clock: (ms: number) => string,
-): CalibrationWarning[] {
-  const cal = state.credits.calibration;
-  if (!cal) return [];
-  const applying = cal.mode === "apply";
-  const warnings: CalibrationWarning[] = [];
-  if (cal.failing) {
-    const since = clock(cal.failing.since);
-    // Off and shadow apply nothing, but a failing evaluation there is what an operator needs to
-    // see before turning apply on.
-    const note = applying
-      ? "holding fallback margin"
-      : `estimates not updating in ${cal.mode} mode`;
-    warnings.push({
-      condition: "Calibration evaluation",
-      severity: "danger",
-      stateText: `Failing since ${since}; ${note}`,
-      statusLine: `Calibration failing since ${since}; ${note}`,
-    });
-  }
-  if (cal.rulesMismatch) {
-    const note = applying ? "holding fallback margin" : `not applied in ${cal.mode} mode`;
-    warnings.push({
-      condition: "Rules mismatch",
-      severity: "danger",
-      stateText: `Latched until calibration reset; ${note}`,
-      statusLine: `Rules mismatch latched until calibration reset; ${note}`,
-    });
-  }
-  if (cal.hold) {
-    const since = clock(cal.hold.since);
-    const kind = applying ? "Active" : "Recorded";
-    const modeNote = applying ? "" : `; not applied in ${cal.mode} mode`;
-    warnings.push({
-      condition: "Fallback hold",
-      severity: "warning",
-      stateText: `${kind} (${cal.hold.reason} readings since ${since}${modeNote})`,
-      statusLine:
-        `Fallback hold ${kind.toLowerCase()} (${cal.hold.reason} readings since ${since}${modeNote})`,
-    });
-  }
-  if (cal.ownHold) {
-    const gap = Math.round(cal.ownHold.gap * 1000) / 1000;
-    const kind = applying ? "Active" : "Recorded";
-    const modeNote = applying ? "" : `; not applied in ${cal.mode} mode`;
-    warnings.push({
-      condition: "Own-count hold",
-      severity: "warning",
-      stateText: `${kind} (${gap}-core gap${modeNote})`,
-      statusLine: `Own-count hold ${kind.toLowerCase()} (${gap}-core gap${modeNote})`,
-    });
-  }
-  if (cal.readingsInvalid) {
-    const why = cal.invalidReasons?.length ? ` (${cal.invalidReasons.join(", ")})` : "";
-    const since = cal.apiStaleSince !== null ? ` since ${clock(cal.apiStaleSince)}` : "";
-    const scope = applying ? "calibration and clamping" : "calibration";
-    warnings.push({
-      condition: "Hostinger readings",
-      severity: "danger",
-      stateText: `Invalid${why}${since}; excluded from ${scope}`,
-      statusLine: `Hostinger readings invalid${why}${since}; excluded from ${scope}`,
-    });
-  } else if (cal.apiStaleSince !== null) {
-    const since = clock(cal.apiStaleSince);
-    warnings.push({
-      condition: "Hostinger readings",
-      severity: "warning",
-      stateText: `Stale since ${since}`,
-      statusLine: `Hostinger readings stale since ${since}`,
-    });
-  }
-  if (cal.cusum.pending) {
-    const pend = cal.cusum.pending;
-    const since = clock(pend.at);
-    const detail = pend.verified
-      ? `Verified since ${since}, waiting for refit`
-      : `Pending verification since ${since} (${pend.readings} readings)`;
-    warnings.push({
-      condition: "Drift change",
-      severity: "warning",
-      stateText: detail,
-      statusLine: `Drift change ${detail[0].toLowerCase()}${detail.slice(1)}`,
-    });
-  }
-  if (cal.cooldownUntil !== null) {
-    const until = clock(cal.cooldownUntil);
-    warnings.push({
-      condition: "Sustained-use cooldown",
-      severity: "warning",
-      stateText: `Active until ${until}`,
-      statusLine: `Sustained-use cooldown until ${until}`,
-    });
-  }
-  return warnings;
+// Warnings about Hostinger's readings, shared by `governor status` and `governor report`.
+export function readingsWarnings(state: PublicState, clock: (ms: number) => string): Warning[] {
+  const since = state.credits.staleSince;
+  if (since === null || since === undefined) return [];
+  const note = "the estimate runs on guest CPU alone";
+  return [{
+    condition: "Hostinger readings",
+    severity: "warning",
+    stateText: `None since ${clock(since)}; ${note}`,
+    statusLine: `No Hostinger reading since ${clock(since)}; ${note}`,
+  }];
 }
 
 // What the estimate can spend above the reserve, and how fast every vCPU spends it. State from
-// before v0.3 has no law: it always spent down to the legacy floor.
+// before v0.3 has no law: it always spent down to a 20% floor.
 export function spending(state: PublicState) {
   const p = state.plan, c = state.credits;
-  const reserve = (c.law?.floor ?? LAW.floor) * p.capacity;
+  const reserve = (c.law?.floor ?? 0.2) * p.capacity;
   return {
     reserve,
     surplus: Math.max(0, c.balance - reserve),
@@ -313,20 +226,20 @@ export function buildReport(
       chart: `${"█".repeat(filled)}${"░".repeat(20 - filled)}  ${percent.toFixed(1)}%`,
       table: { headers: ["Credit metric", "Current estimate"], rows },
     });
-    const warnRows = calibrationWarnings(state, (ms) => new Date(ms).toISOString()).map((w) => [
+    const warnRows = readingsWarnings(state, (ms) => new Date(ms).toISOString()).map((w) => [
       w.condition,
       `${w.severity === "danger" ? "🔴" : "🟡"} ${w.stateText}`,
     ]);
     if (warnRows.length) {
       sections.push({
-        title: "Calibration warnings",
+        title: "Warnings",
         table: { headers: ["Condition", "State"], rows: warnRows },
       });
     }
     if (c.rebuilding) {
       const reasons = {
         "first-start": "first startup",
-        "state-upgrade": "discarding an older, untrusted estimate",
+        "state-upgrade": "starting over from state it could not use",
         "plan-change": "a plan or baseline change",
         "reboot": "a VPS reboot",
         "counter-reset": "a CPU counter reset",
@@ -420,9 +333,9 @@ export function buildReport(
     sections.push({
       title: `${label} history`,
       note: label === "Hostinger API"
-        ? state?.credits.calibration?.mode === "apply"
-          ? "Tighten only; it never raises the bank."
-          : "Diagnostic only; it does not reset the bank."
+        ? state?.credits.anchor?.applied
+          ? "The credit estimate follows these readings."
+          : "Not in use for the credit estimate yet."
         : undefined,
       chart: sparkline(
         [...points],
@@ -436,26 +349,17 @@ export function buildReport(
   if (!host.length) {
     sections.push({
       title: "Hostinger API",
-      note: "History is unavailable. The bank estimate uses guest CPU measurements.",
+      note: "Readings are unavailable. The credit estimate uses guest CPU measurements alone.",
     });
   }
   if (state?.credits.anchor) {
     const a = state.credits.anchor;
-    const cal = state.credits.calibration;
-    const detail = cal?.readingsInvalid
-      ? `Readings are invalid${
-        cal.invalidReasons?.length ? ` (${cal.invalidReasons.join(", ")})` : ""
-      } and excluded from calibration`
-      : cal?.apiStaleSince !== null && cal?.apiStaleSince !== undefined
-      ? `Readings are stale since ${new Date(cal.apiStaleSince).toISOString()}`
-      : a.difference === null
-      ? "Guest/API samples are not comparable"
-      : `Guest/API difference ${number(a.difference)} percentage points`;
+    const detail = a.difference === null
+      ? "Guest and API samples are not comparable yet"
+      : `Hostinger reads ${number(a.difference)} percentage points above the guest's CPU count`;
     sections.push({
       title: "API comparison",
-      note: `Last checked ${
-        new Date(a.checkedAt).toISOString()
-      }. ${detail}. API history never resets the bank.`,
+      note: `Last checked ${new Date(a.checkedAt).toISOString()}. ${detail}.`,
     });
   }
   const { memory, swap, load, disk } = resources;
@@ -515,7 +419,7 @@ export function buildReport(
     note: (state
       ? `Governor snapshot ${Math.max(0, Math.round((now - state.updatedAt) / 1000))}s ago. `
       : "") +
-      "Credit figures are conservative estimates, not the hPanel balance. One credit = one vCPU-second. Runway includes the billing margin and stops at the reserve. ETAs assume the current rate continues. Missing chart samples are ·; CPU/memory scale 0–100%. Live CPU averages build after daemon startup.",
+      "Credit figures are estimates from Hostinger's CPU readings and the guest's own count, not the hPanel balance. One credit = one vCPU-second. Runway includes the billing margin and stops at the reserve. ETAs assume the current rate continues. Missing chart samples are ·; CPU/memory scale 0–100%. Live CPU averages build after daemon startup.",
   });
   return report;
 }

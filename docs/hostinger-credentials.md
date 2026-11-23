@@ -129,9 +129,9 @@ The command exits zero and writes one JSON response on stdout:
 
 For metrics, `data` contains the usual `cpu_usage` object with a percent `unit` and a `usage`
 mapping from Unix seconds to numeric percentages. Governor validates readings and keeps the newest
-bucket out of its calculations, using it only to track revisions, unless `readings.use_newest` is on
-([calibration](calibration.md#readings)). The VM ID and protocol version in the response must match
-the request.
+bucket out of its estimate until a later fetch returns it behind a newer one
+([the credit estimate](estimate.md#the-rules-it-replays)). The VM ID and protocol version in the
+response must match the request.
 
 VM `ipv4` entries contain only an `address` validated as IPv4. The reference broker drops every
 other address field, IPv6 and unrelated provider data. Governor validates addresses again before
@@ -148,8 +148,8 @@ connection, TLS or truncated-response error, so Governor logs the HTTP status or
 exposing upstream response text. A metrics request may also receive the fixed code `invalid_metrics`
 when Hostinger returned metrics no CPU percentage can be: a unit other than percent, a timestamp
 that isn't Unix seconds, a value that isn't a number from 0 to 100, or a reading stamped more than
-five minutes ahead. Governor then treats the readings as invalid, as it does on its own API path,
-and alerts once with `readings-invalid`. No arbitrary error text is accepted through this channel.
+five minutes ahead. Governor then treats the fetch as failed, as it does on its own API path: it
+logs the failure and fetches again later. No arbitrary error text is accepted through this channel.
 
 Responses are limited to 4 MiB. Governor attempts to stop a command after 25 seconds. A privileged
 broker must also bound its own lifetime because an unprivileged caller may not be able to terminate
@@ -159,18 +159,16 @@ error text.
 
 The daemon starts diagnostics in the background after applying the CPU ceiling, with at most one
 request in flight. A slow or hung request cannot delay this pass or the next one. The usual
-30-minute schedule and exponential retry backoff remain; failed requests retry from completion. New
-requests pause while limited. A request already in flight can finish and publish after the limit
-starts, and provider work can overlap local limit tests. Shutdown stops new diagnostics and waits
-for the active request within its existing deadline, so a privileged worker finishes before the next
-daemon can start another request. Results from before a reboot or counter reset are discarded
-without interrupting that worker. Scheduling starts fresh for each daemon, so a previous request
-cannot postpone the first diagnostics check after restart. With a direct token, each restart that
-reaches a full pass can make another provider request; the broker shares cached results across
-restarts for its 60-second window. In calibration's `off` and `shadow` modes, provider readings
-never change the ceiling, credit estimate or job admission. In `apply` they can lower the estimate
-the governor acts on and tighten its margin and floor, never the reverse; see
-[Calibration](calibration.md).
+30-minute schedule and exponential retry backoff remain; failed requests retry from completion.
+Requests continue while limited, and provider work can overlap local limit tests. Shutdown stops new
+diagnostics and waits for the active request within its existing deadline, so a privileged worker
+finishes before the next daemon can start another request. Results from before a reboot or counter
+reset are discarded without interrupting that worker. Scheduling starts fresh for each daemon, so a
+previous request cannot postpone the first diagnostics check after restart. With a direct token,
+each restart that reaches a full pass can make another provider request; the broker shares cached
+results across restarts for its 60-second window. Settled readings move the credit estimate up or
+down, and the ceiling with it; see [the credit estimate](estimate.md). They never change job
+admission.
 
 Re-run the regular Governor installer when upgrading. Its `KillMode=mixed` service setting sends the
 initial stop signal to the daemon so its broker launcher can finish; systemd still cleans up
@@ -193,9 +191,8 @@ curl -fsSLO "$base/hostinger-broker.py" && curl -fsSLO "$base/SHA256SUMS" &&
 
 A checkout of that release has the same file at `tools/hostinger-broker.py`.
 
-The launcher and sudo rule stay as they are, and the next request runs the new source. Until then an
-older broker reports a wrong unit or value as a plain failure, so readings go stale instead of
-raising `readings-invalid`, and a broker older than the IPv4 change omits `ipv4`.
+The launcher and sudo rule stay as they are, and the next request runs the new source. Until then a
+broker older than the IPv4 change omits `ipv4`.
 
 The reference broker uses nested budgets: a 15-second total HTTP deadline (enforced across the
 connection, TLS and the whole body read, not only per socket read), 18-second worker runtime,
@@ -292,11 +289,11 @@ does not revoke a token or remove copies from server snapshots.
 ## Rotate an installed broker token
 
 The wizard refuses existing broker installations. Rotation is a manual administrator operation;
-schedule it before the expiry chosen in hPanel. An expired token disables API diagnostics, not local
-CPU accounting or quota control. Calibration loses its readings too: in every mode, fitting and
-drift detection pause after two hours, and after a day `apply` holds at least 1.05× + 0.08 until
-readings resume ([stale readings](calibration.md#stale-and-invalid-readings)). Do not delete the
-installed broker to make the wizard run again.
+schedule it before the expiry chosen in hPanel. An expired token stops the readings, not local CPU
+accounting or quota control. After two hours without a settled reading the credit estimate runs on
+the guest's own count alone until readings resume
+([stale readings](estimate.md#stale-readings-and-no-readings)). Do not delete the installed broker
+to make the wizard run again.
 
 1. Create a replacement token in the same Hostinger account. Keep the old token valid until the new
    one has passed a connection check.

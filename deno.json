@@ -16,23 +16,11 @@
       "dependencies": ["deno:version"]
     },
     "sim:check": {
-      "command": "deno run --allow-env=GOVERNOR_CONFIG --allow-read=test/.tmp,docs/calibration-results.json --allow-write=test/.tmp test/sim.ts --calibration --check",
+      "command": "deno run --allow-env=GOVERNOR_CONFIG --allow-read=test/.tmp,docs/study-results.json --allow-write=test/.tmp test/sim.ts --studies --check",
       "dependencies": ["deno:version"]
     },
     "sim:record": {
-      "command": "deno run --allow-env=GOVERNOR_CONFIG --allow-read=test/.tmp --allow-write=test/.tmp,docs/calibration-results.json test/sim.ts --calibration --record",
-      "dependencies": ["deno:version"]
-    },
-    "sim:jumps": {
-      "command": "deno run --allow-env=GOVERNOR_CONFIG --allow-read=src,test --allow-write=test/.tmp test/jump-study.ts",
-      "dependencies": ["deno:version"]
-    },
-    "sim:legacy": {
-      "command": "deno run --allow-env=GOVERNOR_CONFIG --allow-read=test/fixtures test/sim.ts --legacy-check",
-      "dependencies": ["deno:version"]
-    },
-    "sim:legacy-record": {
-      "command": "deno run --allow-env=GOVERNOR_CONFIG --allow-read=test/fixtures --allow-write=test/fixtures/legacy-off.json test/sim.ts --legacy-record",
+      "command": "deno run --allow-env=GOVERNOR_CONFIG --allow-read=test/.tmp --allow-write=test/.tmp,docs/study-results.json test/sim.ts --studies --record",
       "dependencies": ["deno:version"]
     },
     "bench:cpu": {
@@ -40,7 +28,7 @@
       "dependencies": ["deno:version"]
     },
     "check": {
-      "command": "deno fmt --check && deno lint && deno check src/main.ts tools/compile.ts tools/deno-version.ts tools/diagram-curves.ts tools/rules-watch.ts test/jump-study.ts test/daemon-cpu.ts && deno task test && bash -n install.sh test/smoke-linux.sh tools/rules-heartbeat.sh tools/setup-hostinger-broker.sh",
+      "command": "deno fmt --check && deno lint && deno check src/main.ts tools/compile.ts tools/deno-version.ts tools/diagram-curves.ts tools/rules-watch.ts test/daemon-cpu.ts && deno task test && bash -n install.sh test/smoke-linux.sh tools/rules-heartbeat.sh tools/setup-hostinger-broker.sh",
       "dependencies": ["deno:version"]
     },
     "compile:jitless": {

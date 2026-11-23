@@ -4,7 +4,8 @@
 // bank, then holds at Hostinger's limit. Rerun it when src/credits.ts or src/plans.ts changes.
 //
 //   deno run --allow-read=src tools/diagram-curves.ts
-import { allowedCores, creditStep, LAW, MARGIN, sliceCeiling } from "../src/credits.ts";
+import { allowedCores, LAW, sliceCeiling } from "../src/credits.ts";
+import { ESTIMATE } from "../src/estimate.ts";
 import { plan } from "../src/plans.ts";
 
 // Chart geometry in the SVG: x from 84 to 300 spans four hours; heights are 44 and 48.
@@ -36,6 +37,13 @@ function simplify(points: Point[]): string {
 }
 
 const p = plan(8);
+// The own count's margin, and the balance after `seconds` at `busy` cores.
+const MARGIN = { mul: ESTIMATE.mul, add: ESTIMATE.add };
+const creditStep = (balance: number, busy: number, seconds: number) =>
+  Math.min(
+    p.capacity,
+    Math.max(0, balance + (p.baseline - (MARGIN.mul * busy + MARGIN.add)) * seconds),
+  );
 const estimate: Point[] = [];
 const cpu: Point[] = [];
 let balance = p.capacity;
@@ -46,13 +54,13 @@ for (let t = 0; t <= MINUTES * 60; t += PASS_SECONDS) {
     estimate.push([x(t), round(ESTIMATE_HEIGHT * (1 - balance / p.capacity))]);
     cpu.push([x(t), round(CPU_HEIGHT * (1 - busy / p.vcpus))]);
   }
-  balance = creditStep(p, balance, busy, PASS_SECONDS, MARGIN);
+  balance = creditStep(balance, busy, PASS_SECONDS);
 }
 
 let bank = p.capacity;
 let empty = 0;
 while (bank > 0) {
-  bank = creditStep(p, bank, p.vcpus, 1, MARGIN);
+  bank = creditStep(bank, p.vcpus, 1);
   empty++;
 }
 const drop = x(empty);

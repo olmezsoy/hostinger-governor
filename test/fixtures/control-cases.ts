@@ -233,7 +233,7 @@ for (
 
 Deno.test("real control passes apply queued requests, publish state and report cap failure once", async () => {
   await Deno.mkdir(`${dir}/requests`, { recursive: true });
-  const f = fixture({}, { run: dir, lib: dir });
+  const f = fixture({}, undefined, { run: dir, lib: dir });
   // Keep real files and ownership validation; emulate root ownership for this unprivileged test.
   f.g.io.requestInfo = async (path) => ({ ...await Deno.lstat(path), uid: 0 });
   f.g.io.requestBody = Deno.readTextFile;
@@ -260,7 +260,7 @@ Deno.test("real control passes apply queued requests, publish state and report c
     await assertRejects(() => Deno.stat(`${dir}/requests/control.json`), Deno.errors.NotFound);
     const ceiling = f.cap;
     const samples = f.g.s.samples.length;
-    f.elapse(0.02, 0.25, 0, 0, 0.02, 16);
+    f.elapse(0.02, 0.25, 0, 0, 0.02);
     await s.tick();
     assertEquals(f.cap, ceiling);
     assertEquals(f.g.s.samples.length, samples);
@@ -284,7 +284,7 @@ Deno.test("real control passes apply queued requests, publish state and report c
 });
 
 Deno.test("real state write failure reaches the caller and a later pass can recover", async () => {
-  const f = fixture({}, { run: dir, lib: dir });
+  const f = fixture({}, undefined, { run: dir, lib: dir });
   const s = server(() => controlPass(f.g));
   try {
     await s.ready;
@@ -303,7 +303,7 @@ Deno.test("real state write failure reaches the caller and a later pass can reco
 });
 
 Deno.test("timed cap failures publish once per pass without duplicate failure logging", async () => {
-  const f = fixture({}, { run: dir, lib: dir });
+  const f = fixture({}, undefined, { run: dir, lib: dir });
   await f.g.tick();
   f.g.s.balance = p.capacity;
   f.capFails();
