@@ -134,9 +134,11 @@ export function settle(p: Plan, e: Estimate, readings: Reading[], samples: Sampl
     const m = margin(p, e);
     // Three readings say nothing usable. Nobody knows what one after a long interval averages.
     // One that began before the anchor averages time the anchor already settled. And one under
-    // what the guest itself counted cannot be Hostinger's bill for it: the feed is broken.
+    // what the guest itself counted cannot be Hostinger's bill for it: the feed is broken. Where
+    // samples watched too little of the interval to check its mean, the reading must still
+    // cover the core-seconds they did count.
     const usable = validSpacing(prev.at, cur.at) && prev.at >= a.at &&
-      !(covered && reading < o.busy);
+      reading >= o.busy * (covered ? 1 : o.seconds / seconds);
     // What the watched seconds cost, as a mean: the reading, or the own count in its place.
     let bill = m.mul * o.busy + o.billed + m.add;
     if (usable) {

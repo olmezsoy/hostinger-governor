@@ -79,8 +79,9 @@ A broken feed must not steer the box. Where samples cover at least 90% of a read
 `settle()` checks the reading against them.
 
 A reading under the guest's own busy cores cannot be Hostinger's bill for them. The feed is broken,
-and the own count stands in for that interval. In study S20, readings at half the meter cost no
-limit.
+and the own count stands in for that interval. With less than 90% covered the mean cannot be
+checked, but the reading must still cover the core-seconds the samples did count. In study S20,
+readings at half the meter cost no limit.
 
 A reading counts for at most 1.3 × the guest's busy cores + stolen cores + 0.3, so a feed that
 breaks high cannot starve the box. In study S18, readings at eight times the meter cost no limit and

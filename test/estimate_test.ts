@@ -156,13 +156,24 @@ Deno.test("samples must cover nine tenths of a reading's interval to stand besid
   // the VM could have spent.
   const drain = maxDrain(p, margin(p, most));
   assertAlmostEquals(most.anchor!.balance, 10_000 + (p.baseline - 4.24) * 1620 - drain * 180);
-  // 26 minutes: not covered. The reading is all there is, and stands unguarded. The watched
-  // minutes still earn, and the four that nobody watched pay the reading and earn nothing.
+  // A reading that stands over those 27 minutes is checked by them, and counts toward the
+  // addition.
+  const checked = fresh(10_000);
+  settle(p, checked, readings(4.3), samples(T0, T0 + 1_620_000, 4));
+  assertEquals(checked.excess.length, 1);
+  // 26 minutes: too few to check the reading's mean by. It stands if it covers at least the
+  // core-seconds those minutes counted: 4 cores over 26 of 30 minutes is 3.47 on average. The
+  // watched minutes earn, and the four that nobody watched pay the reading and earn nothing.
   const less = fresh(10_000);
-  settle(p, less, readings(1), samples(T0, T0 + 1_560_000, 4));
-  const bill = 1 + ESTIMATE.pad;
+  settle(p, less, readings(3.5), samples(T0, T0 + 1_560_000, 4));
+  const bill = 3.5 + ESTIMATE.pad;
   assertAlmostEquals(less.anchor!.balance, 10_000 + (p.baseline - bill) * 1560 - bill * 240);
   assertEquals(less.excess, []);
+  // A reading under that cannot be the bill, whatever ran in the four minutes: the feed is
+  // broken. The own count stands in for the watched minutes, and the rest counts at the most.
+  const low = fresh(10_000);
+  settle(p, low, readings(3.4), samples(T0, T0 + 1_560_000, 4));
+  assertAlmostEquals(low.anchor!.balance, 10_000 + (p.baseline - 4.24) * 1560 - drain * 240);
 });
 
 Deno.test("the readings remembered for the addition are the last 48", () => {

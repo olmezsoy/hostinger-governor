@@ -588,6 +588,10 @@ two minutes in sequence.
 - A settled reading is taken as final. If Hostinger revised older readings upward, the estimate
   would miss the difference until a limit taught the pad. Seven days of comparing the newest reading
   with its later values on a real box showed no revision.
+- A limit the governor does not recognise keeps earning in the estimate, so the estimate reads above
+  the bank until the limit is recognised. One known case: Hostinger limits each vCPU, the slice is
+  idle, and one light thread outside it presses on its vCPU's share. No probe or burner check starts
+  for that, and work that arrives later can spend into a second limit.
 - Time the daemon did not watch earns nothing in the estimate, because a limit may have come and
   gone unseen. After a long stop or a reboot the estimate reads low until the bank is next full.
 - The burner test is the last word on a limit that steal alone does not make evident, and it can be
