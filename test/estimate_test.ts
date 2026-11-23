@@ -86,13 +86,14 @@ Deno.test("readings move the anchor both ways through Hostinger's rules", () => 
   const e = fresh(10_000);
   // Half an hour at 2 cores earns (4.8 - 2.02) a second; half an hour at 7 cores spends.
   const rs = readings(2, 7);
-  assert(settle(p, e, rs, []));
+  const own = [...samples(T0, T0 + HALF, 1.9), ...samples(T0 + HALF, T0 + 2 * HALF, 6.6)];
+  assert(settle(p, e, rs, own));
   const up = 10_000 + (p.baseline - 2 - ESTIMATE.pad) * 1800;
   assertAlmostEquals(e.anchor!.balance, up + (p.baseline - 7 - ESTIMATE.pad) * 1800);
   assertEquals(e.anchor!.at, rs[2].at);
   assert(up > 10_000 && e.anchor!.balance < up);
   // Nothing new settled: the anchor stays.
-  assertEquals(settle(p, e, rs, []), false);
+  assertEquals(settle(p, e, rs, own), false);
 });
 
 Deno.test("readings from before the anchor are never replayed, and without an anchor they move nothing", () => {
@@ -100,10 +101,10 @@ Deno.test("readings from before the anchor are never replayed, and without an an
   const none = fresh();
   assertEquals(settle(p, none, readings(...Array(96).fill(0.5)), []), false);
   assertEquals(none.anchor, undefined);
-  // With an anchor, only what came after it counts.
+  // With an anchor, only what came after it counts. Nobody watched it here, so it earns nothing.
   const late = fresh(5000, T0 + 95 * HALF);
   assert(settle(p, late, readings(...Array(96).fill(0.5)), []));
-  assertAlmostEquals(late.anchor!.balance, 5000 + (p.baseline - 0.5 - ESTIMATE.pad) * 1800);
+  assertAlmostEquals(late.anchor!.balance, 5000 - (0.5 + ESTIMATE.pad) * 1800);
   // No reading from at or before the anchor: the time between would count for nothing, so the
   // anchor waits.
   const early = fresh(5000, T0 - 10 * HALF);
@@ -151,12 +152,12 @@ Deno.test("samples must cover nine tenths of a reading's interval to stand besid
   // 27 of 30 minutes: covered, so the feed that reads low is caught.
   const most = fresh(10_000);
   settle(p, most, readings(1), samples(T0, T0 + 1_620_000, 4));
-  // The three minutes without samples are billed like the rest.
-  assertAlmostEquals(most.anchor!.balance, 10_000 + (p.baseline - 4.2 - 0.04) * 1800);
+  // The three minutes without samples are billed like the rest, and earn nothing.
+  assertAlmostEquals(most.anchor!.balance, 10_000 + (p.baseline - 4.24) * 1620 - 4.24 * 180);
   // 26 minutes: not covered. The reading is all there is, and stands unguarded.
   const less = fresh(10_000);
   settle(p, less, readings(1), samples(T0, T0 + 1_560_000, 4));
-  assertAlmostEquals(less.anchor!.balance, 10_000 + (p.baseline - 1 - ESTIMATE.pad) * 1800);
+  assertAlmostEquals(less.anchor!.balance, 10_000 - (1 + ESTIMATE.pad) * 1800);
   assertEquals(less.excess, []);
 });
 
@@ -185,23 +186,23 @@ Deno.test("a bank that fills inside a reading's interval forgets what it earned 
   assert(p.capacity - 1000 + (p.baseline - bill) * 1800 > p.capacity);
 });
 
-Deno.test("a reading no sample covers counts its CPU in the worst order", () => {
-  // The same reading without samples: the VM could have idled first with the bank full.
-  const e = fresh(p.capacity - 1000);
+Deno.test("an idle interval the daemon watched earns the baseline", () => {
+  const e = fresh(5000);
+  settle(p, e, readings(0), samples(T0, T0 + HALF, 0));
+  assertAlmostEquals(e.anchor!.balance, 5000 + (p.baseline - ESTIMATE.pad) * 1800);
+});
+
+Deno.test("time no sample watched is billed and earns nothing", () => {
+  // A limit may have come and gone unseen, and one pauses earning while work presses on it.
   const mean = 8 / 3, bill = mean + ESTIMATE.pad;
+  const e = fresh(p.capacity - 1000);
   settle(p, e, readings(mean), []);
-  const idle = 1800 * (1 - bill / p.vcpus);
-  const forgotten = p.capacity - 1000 + p.baseline * idle - p.capacity;
-  assertAlmostEquals(
-    e.anchor!.balance,
-    p.capacity - 1000 + (p.baseline - bill) * 1800 - forgotten,
-    1e-6,
-  );
-  assert(e.anchor!.balance < p.capacity - 1000);
-  // Far from full there is nothing to forget, and the mean stands.
-  const low = fresh(5000);
-  settle(p, low, readings(mean), []);
-  assertAlmostEquals(low.anchor!.balance, 5000 + (p.baseline - bill) * 1800);
+  assertAlmostEquals(e.anchor!.balance, p.capacity - 1000 - bill * 1800);
+  // Even an idle half hour earns nothing unwatched: the estimate stays a lower bound.
+  const idle = fresh(5000);
+  settle(p, idle, readings(0), []);
+  assertAlmostEquals(idle.anchor!.balance, 5000 - ESTIMATE.pad * 1800);
+  assertEquals(idle.known, { at: T0, slack: 0 });
 });
 
 Deno.test("a full bank is known, and a replay never leaves the bank's bounds", () => {
@@ -267,8 +268,8 @@ Deno.test("a sample whose place in time is unknown covers no reading", () => {
   const own = samples(T0, T0 + HALF, 4).map((x) => ({ ...x, clockValid: false }));
   const e = fresh(10_000);
   settle(p, e, readings(1), own);
-  // Uncovered, so the reading stands unguarded.
-  assertAlmostEquals(e.anchor!.balance, 10_000 + (p.baseline - 1 - ESTIMATE.pad) * 1800);
+  // Uncovered, so the reading stands unguarded, and earns nothing.
+  assertAlmostEquals(e.anchor!.balance, 10_000 - (1 + ESTIMATE.pad) * 1800);
   assertEquals(e.excess, []);
 });
 
@@ -287,11 +288,11 @@ Deno.test("a sample over time the daemon was stopped covers no reading", () => {
   const e = fresh(p.capacity);
   settle(p, e, readings(0, 0, 8, 8), [stopped]);
   // Laid beside the readings, that mean would pass the idle hour for a broken feed and hold the
-  // busy hour's 8 cores to 5.5. The readings stand as they are: the bank was full, then spent.
-  // The idle hour's pad, 36 core-seconds, counts as 4.5 seconds with every core busy.
+  // busy hour's 8 cores to 5.5. The readings stand as they are, and the two hours earn nothing:
+  // the bank may have run empty in the busy hour, with a limit that paused it.
   assertAlmostEquals(
     e.anchor!.balance,
-    p.capacity - (8 - p.baseline) * 4.5 + (p.baseline - 8 - ESTIMATE.pad) * 3600,
+    p.capacity - ESTIMATE.pad * 3600 - (8 + ESTIMATE.pad) * 3600,
   );
   assertEquals(e.excess, []);
   // The estimate still charges the stop from that sample, and earns nothing for it.

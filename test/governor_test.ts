@@ -267,15 +267,16 @@ test("lesser steal is tested: a limit's steal goes when the slice is cut and com
   assertEquals(f.world.caps.slice(-3), [20, 800, 210]);
   // The burners ran, and recovery's clock starts after them.
   assertEquals(f.world.burners, 5);
-  // Burners that find the VM held, though above the plan's limit, do not overrule the probe:
-  // something caps the VM, and the first failed lift test will say it is no credit limit.
+  // Burners that find the VM held above the plan's limit start none: a credit limit delivers
+  // no more than the plan's limit, so whatever holds it is something else.
   const held = fixture({ initial_balance: 20_000 });
   await held.advance();
   held.world.probe = [0.01, 0.16];
-  held.world.burn = { busy: 4 / p.vcpus, steal: 0.2, seconds: 25 };
+  held.world.burn = { busy: 3.2 / p.vcpus, steal: 0.3, seconds: 25 };
   await held.run(3, 0.5, 0.1);
-  assert(held.g.s.limit);
-  assertEquals(held.g.s.limit.confirmed, undefined);
+  assertEquals(held.world.burners, 5);
+  assertEquals(held.g.s.limit, undefined);
+  assertEquals(held.g.s.probe.backoffMs, 1_200_000);
 });
 
 test("a probe that scores noise on a nearly idle box starts no limit: the burners all run", async () => {
@@ -286,7 +287,9 @@ test("a probe that scores noise on a nearly idle box starts no limit: the burner
   f.world.probe = [0.07, 0.13];
   await f.run(9, 0.3 / p.vcpus, 0.02 / p.vcpus);
   await f.advance(30, 1.58 / p.vcpus, 0.36 / p.vcpus);
-  // The probe ran and passed its test. The burners got their CPU, so there is no limit.
+  // The probe ran and passed its test. The burners got their CPU, so there is no limit. Had
+  // the neighbours taken 15% from the burners too, there would still be none: the VM delivers
+  // far more than a credit limit lets through.
   assertEquals(f.world.probe.length, 0);
   assertEquals(f.world.burners, 5);
   assertEquals(f.g.s.limit, undefined);
@@ -295,6 +298,26 @@ test("a probe that scores noise on a nearly idle box starts no limit: the burner
   // It waits like any failed test, and the slice is back at its ceiling.
   assertEquals(f.g.s.probe.backoffMs, 1_200_000);
   assertEquals(f.cap, 800);
+  const shared = fixture({ initial_balance: p.capacity });
+  await shared.advance();
+  shared.world.probe = [0.07, 0.13];
+  shared.world.burn = { busy: 4.25 / p.vcpus, steal: 0.15, seconds: 25 };
+  await shared.run(9, 0.3 / p.vcpus, 0.02 / p.vcpus);
+  await shared.advance(30, 1.58 / p.vcpus, 0.36 / p.vcpus);
+  assertEquals(shared.world.burners, 5);
+  assertEquals(shared.g.s.limit, undefined);
+  // Burners that could not run measure nothing, and a probe alone starts no limit either.
+  const broken = fixture({ initial_balance: p.capacity });
+  await broken.advance();
+  broken.world.probe = [0.07, 0.13];
+  broken.g.io.burner = () => {
+    throw new Error("temporarily unavailable");
+  };
+  await broken.run(9, 0.3 / p.vcpus, 0.02 / p.vcpus);
+  await broken.advance(30, 1.58 / p.vcpus, 0.36 / p.vcpus);
+  assertEquals(broken.world.probe.length, 0);
+  assertEquals(broken.g.s.limit, undefined);
+  assertEquals(broken.g.s.probe.backoffMs, 1_200_000);
 });
 
 test("a pass that probed and asked the burners is time the daemon watched", async () => {
@@ -370,7 +393,7 @@ test("work outside an idle slice pinned at the limit is confirmed with burners f
   // VM held at the plan's limit does.
   const other = fixture({ initial_balance: 20_000 });
   await other.advance();
-  other.world.burn = { busy: 4 / p.vcpus, steal: 0.2, seconds: 25 };
+  other.world.burn = { busy: 3.2 / p.vcpus, steal: 0.3, seconds: 25 };
   await other.run(3, 2.3 / p.vcpus, 0.1, 0);
   assertEquals(other.world.burners, 5);
   assertEquals(other.g.s.limit, undefined);
@@ -464,9 +487,13 @@ test("after a wall-clock step the estimate carries on from the own count, and no
   // settled under the old one, and go.
   const t = f.at;
   f.g.s.readings = [{ at: t - 3_600_000, v: 1 }, { at: t - 200_000, v: 1 }, { at: t, v: 1 }];
+  f.g.s.estimate.known = { at: t, slack: 99 };
   await f.advance(30, 0.5, 0, 4, -270);
   assertEquals(f.g.s.samples.every((x) => x.clockValid === false), true);
   assertEquals(f.g.s.estimate.anchor, { at: f.at, balance: f.g.s.balance });
+  // When the bank was last known is a time on the old clock: what a limit teaches is measured
+  // from the step.
+  assertEquals(f.g.s.estimate.known, { at: f.at, slack: 0 });
   assertEquals(f.g.s.readings.map((r) => r.at), [t - 3_600_000]);
 });
 
@@ -684,6 +711,53 @@ test("the estimate after a lift stands from the end of the test that found it", 
   assert(f.g.s.probe.quietUntil);
 });
 
+test("a lift test that finds the VM a little above the plan's limit decides nothing", async () => {
+  const f = await limited();
+  f.g.s.limit!.entry!.balance = 400;
+  // 2.6 cores: more than a credit limit's 2.4 with room for the measurement, and far less than
+  // a cap that is something else.
+  f.world.burn = { busy: 2.6 / p.vcpus, steal: 0.5, seconds: 25 };
+  await f.run(49);
+  assert(f.g.s.limit);
+  assertEquals(f.g.s.limit.confirmed, undefined);
+  f.world.burn = STILL;
+  await f.run(5);
+  assertEquals(f.g.s.limit!.confirmed, true);
+});
+
+test("neighbours' steal does not keep a limit from lifting", async () => {
+  const f = await limited();
+  // The burners get 4.6 of the 5 cores they ask for while the neighbours take 18%. A credit
+  // limit would hold the VM at 2.4.
+  f.world.burn = { busy: 4.6 / p.vcpus, steal: 0.18, seconds: 25 };
+  await f.run(48);
+  assertEquals(f.g.s.limit, undefined);
+});
+
+test("a lift test that measured nothing does not say what holds the VM", async () => {
+  const f = await limited();
+  f.g.s.limit!.entry!.balance = 400;
+  f.world.burn = STILL;
+  // The first test's burners die early: nothing was measured.
+  const burner = f.g.io.burner;
+  f.g.io.burner = () => ({
+    status: Promise.resolve({ success: false, code: 137, signal: null }),
+    kill: () => {},
+  });
+  await f.run(48);
+  assert(f.g.s.limit);
+  assertEquals(f.g.s.limit.confirmed, undefined);
+  assert(f.g.s.limit.testAt! > f.uptime);
+  // The next one runs, finds the VM held at the plan's limit, and the limit teaches.
+  f.g.io.burner = burner;
+  await f.run(5);
+  assertEquals(f.g.s.limit!.confirmed, true);
+  f.world.burn = GONE;
+  await f.run(60);
+  assertEquals(f.g.s.limit, undefined);
+  assert(f.g.s.estimate.pad > ESTIMATE.pad);
+});
+
 test("a limit no test confirmed teaches nothing, and the estimate carries on from the own count", async () => {
   const f = await limited();
   // Even where the estimate was off by little enough to be a billing gap.
@@ -861,8 +935,8 @@ test("a limit whose first failed lift test finds the VM held above the plan's li
   const f = await limited();
   // Off by little enough to be a billing gap: only what holds the VM says it is not one.
   f.g.s.limit!.entry!.balance = 400;
-  // Four cores get through with a fifth of demand stolen: a cap, and not a credit limit's.
-  f.world.burn = { busy: 4 / p.vcpus, steal: 0.2, seconds: 25 };
+  // 3.2 cores get through with a third of demand stolen: a cap, and not a credit limit's.
+  f.world.burn = { busy: 3.2 / p.vcpus, steal: 0.3, seconds: 25 };
   await f.run(49);
   assertEquals(f.g.s.limit!.confirmed, false);
   // However low the cap falls later, as Hostinger's sustained-use limit may.
@@ -1015,6 +1089,39 @@ test("a daemon restart in the same boot counts the time it missed, and earns not
   assertEquals(sample.unobserved, true);
   assertEquals(sample.earning, false);
   assertAlmostEquals(g.s.balance, before - (1.05 * 2 + 0.04) * 600);
+});
+
+test("a boot that began before the last pass, by the clock, starts the estimate over", async () => {
+  const f = fixture({ ...FEED, initial_balance: 20_000 });
+  f.world.readings = readings(start, 1, 1);
+  await f.advance();
+  await f.run(4, 0.5);
+  const last = f.at;
+  // The machine reboots with its clock an hour and 55 minutes slow, and work outside the slice
+  // runs for two hours before the daemon starts. The clock reads five minutes after the last
+  // pass, but the boot is two hours old.
+  f.reboot(30 - 6930);
+  f.elapse(7200, 1, 0, 0);
+  assertEquals(f.at - last, 300_000);
+  const g = f.restart();
+  await g.tick();
+  assertEquals(g.s.balance, 0);
+  assertEquals(g.s.estimate.anchor, { at: f.at, balance: 0 });
+  assertEquals(g.s.samples.every((x) => x.clockValid === false), true);
+});
+
+test("counters that start over in the same boot keep the estimate the readings stand behind", async () => {
+  const f = fixture({ ...FEED, initial_balance: 20_000 });
+  f.world.readings = readings(start, 1, 1);
+  await f.advance();
+  await f.run(4, 0.5);
+  const anchor = { ...f.g.s.estimate.anchor! };
+  // The boot is as old as it was: that it began before the last pass says nothing here.
+  f.resetCounters();
+  await f.advance(30, 0.5);
+  assertEquals(f.g.s.estimate.anchor, anchor);
+  assert(f.g.s.balance > 19_000);
+  assertEquals(f.g.s.samples.every((x) => x.clockValid !== false), true);
 });
 
 test("a reboot keeps the estimate the readings stand behind, less what the time down could have cost", async () => {
@@ -1186,6 +1293,25 @@ test("a limit in force when an older release stopped stays in force, and lifts a
   // A slice held at 40% for pressing on the limit is not reopened by the upgrade.
   assertEquals(f.g.s.limit?.ceiling, 40);
   assertEquals(f.g.s.limit?.tightenedCeiling, 40);
+  // Its clocks carry over within the boot, so a lift test that was due stays due.
+  const timed = fixture(FEED, {
+    ...saved,
+    bootId: "boot-a",
+    uptime: 70_000,
+    limit: {
+      ...saved.limit,
+      heldFrom: 50_000,
+      startedAt: 40_000,
+      testAt: 90_000,
+      testEvery: 240_000,
+    },
+  }).g.s.limit!;
+  assertEquals([timed.heldFrom, timed.startedAt, timed.testAt, timed.testEvery], [
+    50_000,
+    40_000,
+    90_000,
+    240_000,
+  ]);
   // One with no usable ceiling starts at the cautious one.
   for (const ceiling of [undefined, 5, "40"]) {
     const g = fixture(FEED, { ...saved, limit: { since: start, ceiling } }).g;
@@ -1385,6 +1511,29 @@ test("the published rate charges each sample as the estimate does", async () => 
   }
   const mean = 1.05 * (7 + 1.5) / 2 + 0.04;
   assertEquals(f.g.publicState(f.at).credits.rate, Math.round((p.baseline - mean) * 10) / 10);
+});
+
+test("the published rate counts each sample of the window once", async () => {
+  const f = fixture({ initial_balance: 20_000 });
+  await f.advance();
+  // The daemon was stopped for three idle hours, then the box runs seven cores for five
+  // minutes. Weighted by its length, the stop would show the bank filling.
+  f.elapse(10_800);
+  await f.g.tick();
+  await f.run(10, 7 / 8);
+  const charged = (10 * (1.05 * 7 + 0.04) + 0.04) / 11;
+  assertEquals(f.g.publicState(f.at).credits.rate, Math.round((p.baseline - charged) * 10) / 10);
+});
+
+test("a slow tick still gives limit detection its three passes", async () => {
+  const f = fixture({ initial_balance: 20_000, tick_seconds: 300 });
+  await f.advance(300);
+  // Three passes are fifteen minutes here, more than the five the window usually spans.
+  await f.advance(300, 0.2, 0.4);
+  await f.advance(300, 0.2, 0.4);
+  assertEquals(f.g.s.limit, undefined);
+  await f.advance(300, 0.2, 0.4);
+  assert(f.g.s.limit);
 });
 
 test("the daemon's state is saved private and its public state readable, and a start reads it back", async () => {

@@ -101,8 +101,10 @@ export const recoveryCeiling = (p: Plan, outside: number) =>
   Math.max(20, Math.floor((p.limit - outside - 0.2) * 10) * 10);
 export const tightenCeiling = (ceiling: number, managedDemand: number) =>
   Math.max(20, Math.min(Math.floor(ceiling / 2), Math.floor(managedDemand * 0.7 * 100)));
-export const liftConfirmed = (p: Plan, burners: number, busyCores: number, steal: number) =>
-  steal < LIFT_STEAL && busyCores >= Math.max(burners * 0.75, p.limit + 0.1);
+// A VM that delivers three quarters of what the burners ask is held by no credit limit, whatever
+// the neighbours take on top: under one it delivers the plan's limit and no more.
+export const liftConfirmed = (p: Plan, burners: number, busyCores: number) =>
+  busyCores >= Math.max(burners * 0.75, p.limit + 0.1);
 
 // End-stamped readings cover the interval since the previous reading, in percent of the plan.
 export type Reading = { at: number; v: number };

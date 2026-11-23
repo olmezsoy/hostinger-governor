@@ -11,7 +11,7 @@ layer.
   That one rule needed a meter fit, drift detection, a steal model, holds, a 90-day history store, a
   replay command and three modes. An audit found that about half the product code served it, and
   that its machinery had raised false alarms on a live box. The new estimate is about 200 lines in
-  `src/estimate.ts`, and `src/` goes from 10,104 lines to 4,123.
+  `src/estimate.ts`, and `src/` goes from 10,104 lines to 4,138.
   [The credit estimate](docs/estimate.md) describes it:
   - Anchor. Hostinger's own CPU readings, about one every 30 minutes through the API or the broker,
     are replayed through its published credit rules. Readings move the estimate both ways.
@@ -24,9 +24,10 @@ layer.
   - Steal. The tail charges stolen CPU whole while the VM delivers more than a credit limit could,
     the plan's limit + 0.1 cores. At or under that it charges none, because the steal may be a
     limit's own.
-  - Unknown time. A reading no sample covers counts its CPU in the worst order. Time nothing
-    measured, as after a reboot or a hole in the readings longer than the samples reach, counts at
-    the most the VM could have spent until readings settle past it.
+  - Unknown time. A reading no sample covers is billed and earns nothing, because a limit may have
+    come and gone unseen. Time nothing measured, as after a reboot or a hole in the readings longer
+    than the samples reach, counts at the most the VM could have spent until readings settle past
+    it.
   - Clock. Readings carry Hostinger's clock. After a wall-clock step of more than a minute, either
     way, the estimate carries on from the guest's own count, and readings that end more than two
     hours before the box's clock move nothing.
@@ -52,9 +53,13 @@ layer.
 - Stop false credit limits on a nearly idle box. A probe compares two 15-second steal shares, and at
   a third of a core of demand it scores noise. A live box on v0.3.1 took two false limits in one
   morning that way, each holding every login at 0.2 cores for 23 minutes, and v0.3.2's 0.4-core gate
-  would have cleared that box by 2%. The burners now run after a probe that passes, and overrule it
-  when the VM delivers what they ask: such a VM is under no limit. Replayed on the box's own
-  samples, v0.3.1 enters two limits, v0.3.2 one or two, and v1.0.0 none.
+  would have cleared that box by 2%. A probe that passes now only earns a burner test, and the
+  burners decide: a credit limit holds the VM at the plan's limit whatever is asked of it, so only a
+  VM they find held there starts a limit. Replayed on the box's own samples, v0.3.1 enters two
+  limits, v0.3.2 one or two, and v1.0.0 none. The burner test adds 35 seconds to recognising a limit
+  through a probe.
+- A limit lifts when the VM delivers three quarters of what the burners ask, whatever the neighbours
+  take on top. Their steal used to keep a limit in force.
 - Keep the rest of v0.3.2's limit detection: evident steal, the probe that cuts the slice to 20%,
   the burner test when the VM is pinned at the cap, the cooldown that backs off from 10 to 60
   minutes, and the bypass when steal jumps. The live steal charge of #23 and the detection rules
@@ -70,8 +75,6 @@ layer.
     tightens at once and relaxes to what every sample of the five-minute window allows: a spike
     gives its room back once it has left the window, and outside load that keeps swinging holds the
     low side instead of moving the quota every pass.
-  - A confirmed credit lift raises an estimate that is under the spending floor to the floor.
-    Hostinger's bank is at 20% by then.
   - A probe's cooldown runs from the probe's end, and the backoff returns to 10 minutes after 24
     hours of calm past the cooldown.
   - On plans with 4 or more vCPUs, outside a limit and away from the 20% floor and the full-plan
@@ -112,7 +115,8 @@ layer.
   [Study results](docs/study-results.md) has every number. All of it is simulation:
   - At the recorded seed all 23 studies pass. Over 12 seeds, 276 runs of 56 simulated days, they
     take 26 credit limits: one per run in S3 and S23, the limit that teaches a 0.10-core billing
-    gap, and 2 in S17, a 0.5-core jump in Hostinger's meter.
+    gap, and 2 in S17, a 0.5-core jump in Hostinger's meter. 275 runs pass. In the other a simulated
+    sustained-use limit, once its cap has fallen to the plan's limit, raises the pad.
   - The floor was chosen on the first 17 studies: with a 5% floor their 204 runs took 52 limits,
     with 7.5% they took 20, and with 10% they took 15. CPU delivered differed by 0.17% between 5%
     and 10%.
@@ -140,16 +144,17 @@ described in [Hostinger credentials](docs/hostinger-credentials.md).
   limit. The estimate stands where v0.3 had it and readings move it from there. What v0.3's limits
   taught carries over as the pad: `apply`'s billing gap, or the margin `off` and `shadow` widened.
   State from before v0.3 starts the estimate from zero and keeps an active limit.
-- Upgrade outside a limit if you can. A limit in force is carried with the ceiling it was held at,
-  but what it would have taught is not: on a host that bills more than it reads, the same upgrade
-  took one or two more limits in simulation where a v0.3.2 restart took none.
+- Upgrade outside a limit if you can. A limit in force is carried with the ceiling it was held at
+  and its lift-test clock, but what it would have taught is not: on a host that bills more than it
+  reads, the same upgrade took one more limit in simulation where a v0.3.2 restart took none.
 - `initial_balance`. It counts on a first start only, and only when above zero. A `persist.json`
   that is lost, unreadable or holds no state starts the estimate from zero, as v0.3 did. v0.3 told
   lost state from a first start by its history file. v1.0.0 keeps none and goes by `daemon.lock` in
   `/var/lib/governor`, which every release leaves behind from its first run.
-- Daemon stops. Time the daemon did not watch is charged from the kernel's counters and earns
-  nothing, as before, but it is no longer laid beside Hostinger's readings: the one sample that
-  spans a stop knows only a mean and cannot check the readings inside it.
+- Daemon stops and reboots. Time the daemon did not watch is charged from the kernel's counters and
+  earns nothing, as before. It is no longer laid beside Hostinger's readings, and the readings that
+  cover it are billed without earning either: a limit may have come and gone unseen. The estimate
+  reads low after a long stop until the bank is next full.
 - Readings from before the governor watched are never replayed. A first start, or lost state, begins
   at zero and climbs with what the bank earns from then on.
 - History. `history.json` and `history.log` in `/var/lib/governor` are no longer read or written.
@@ -166,8 +171,8 @@ described in [Hostinger credentials](docs/hostinger-credentials.md).
   `governor status --json`. `credits.margin`, `credits.anchor` and `credits.staleSince` hold what is
   left to read. In `limit`, `entry.used` is gone and `confirmed` is new: unset until a lift test
   fails, then whether that test found the VM held at the plan's limit.
-- `tick_seconds` above 100 now logs a warning at start. With fewer than three passes in five minutes
-  no limit is recognised, in v0.3 as well.
+- `tick_seconds` above 100. Limit detection now looks at the last three passes when they take longer
+  than five minutes. In v0.3 such a box recognised no limit at all.
 
 ## v0.3.2
 

@@ -151,7 +151,7 @@
       "creditLimits": 0,
       "hostLimits": [],
       "limitedHours": 0,
-      "cpuCoreHours": 5204.530230889133,
+      "cpuCoreHours": 5201.180479468872,
       "entries": 1,
       "falseEntries": 1,
       "minBank": 3282.5761948587897,
@@ -338,7 +338,7 @@
       "reboot": null,
       "corruptionRecovered": true,
       "ticksAfterCorruption": 141120,
-      "slowestTickMs": 1.6610419999997248,
+      "slowestTickMs": 1.2785000000003492,
       "readingGaps": 1,
       "comparison": null,
       "assessment": {

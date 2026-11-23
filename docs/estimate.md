@@ -106,9 +106,10 @@ steal that reveals a limit would not grow.
 
 Two cases have no sample.
 
-A reading no sample covers, as across a reboot or while the daemon was stopped, is taken as it is.
-Its CPU is counted in the worst order: the VM idle first, with the bank full and forgetting what it
-earns, then all the CPU.
+A reading no sample covers, as across a reboot or while the daemon was stopped, is billed as it is,
+and that time earns nothing. A limit may have come and gone unseen, and one pauses earning while
+work presses on it, which a reading cannot show. So the estimate stays a lower bound until the bank
+is next known full.
 
 Time since the anchor that no sample covers, as after a reboot, counts at the most the VM could have
 spent: every vCPU busy at the margin. On KVM 8 at the starting margin that is 3.64 cores above the
@@ -123,8 +124,12 @@ laid beside a reading any more, so the anchor moves to that moment with the esti
 had, and readings move it again from there. Readings the new clock places in the future were settled
 under the old one and are dropped, and so is a fetch that was sent under it.
 
-Uptime starts over at a reboot, so no pass can compare it with the wall clock. There only a clock
-that reads before the last saved pass shows a step, and the estimate starts over from zero.
+Uptime starts over at a reboot, so no pass can compare it with the wall clock. There the clock has
+gone back if it reads before the last saved pass, or if it says the new boot began before that pass.
+Then the estimate starts over from zero.
+
+A step also resets when the bank was last known, which is a time on the old clock. What a limit
+teaches is measured from the step.
 
 Readings that end more than two hours before the box's clock move nothing. Either the feed stopped
 or the clock is wrong. In studies S22, S24 and S25, a clock three hours ahead, three hours behind
@@ -142,10 +147,11 @@ the runs behind 10%.
 
 ## Credit limits
 
-Limit detection is v0.3.2's with the hardening #23 merged, and one change: the burners can overrule
-a probe that passes. A VM that delivers what they ask is under no limit. The
-[README](../README.md#how-it-works) describes detection. This section covers what a limit does to
-the estimate.
+Limit detection is v0.3.2's with the hardening #23 merged, and one change: a probe that passes only
+earns a burner test, and the burners decide. Only a VM they find held at the plan's limit starts a
+limit. The [README](../README.md#how-it-works) describes detection. It looks at the last five
+minutes, or the last three passes where `tick_seconds` makes those longer. This section covers what
+a limit does to the estimate.
 
 On entry the bank is empty, since that is what a credit limit means, and the estimate goes to zero.
 The governor keeps what the limit found: the lowest the estimate read in the 20 minutes before
@@ -158,17 +164,19 @@ anchor is set there. Nothing from before the limit comes back. What the limit fo
 spent while it lasted. And the anchor from before, replayed through a limit that work pressed on,
 would earn what the bank did not.
 
-Whether it was a credit limit is decided by the first lift test that fails. A lift test runs burners
-on more cores than the plan's limit allows, outside the slice.
+Whether it was a credit limit is decided by the first lift test that fails with a clear result. A
+lift test runs burners on more cores than the plan's limit allows, outside the slice.
 
-| What the first failed lift test finds                                     | The limit was                                 | Pad       |
+| What the burners find                                                     | Meaning                                       | Pad       |
 | ------------------------------------------------------------------------- | --------------------------------------------- | --------- |
+| Three quarters of what they ask delivered                                 | No limit: it lifts, whatever neighbours take  | Unchanged |
 | The VM held at the plan's limit + 0.1 cores or less, 15% of demand stolen | Hostinger's credit limit                      | May rise  |
-| The VM held higher                                                        | Something else, such as a sustained-use limit | Unchanged |
-| No test fails: the first one passes                                       | The neighbours, or over already               | Unchanged |
+| The VM held more than 0.3 cores above the plan's limit                    | Something else, such as a sustained-use limit | Unchanged |
+| Anything between, or nothing measured                                     | Nothing: the next test decides                | Unchanged |
 
-Later tests do not change the answer, however low a cap falls. A reboot forgets it, because the
-limit may have lifted while the VM was down.
+Later tests do not change a clear answer, however low a cap falls. A reboot forgets it, because the
+limit may have lifted while the VM was down. A limit whose first test passes was the neighbours, or
+over already, and teaches nothing.
 
 After a credit limit the governor expects no other for as long as full use takes to spend the 20%
 Hostinger lifts at, counted from the last test that still found the limit. Until then only evident
@@ -218,7 +226,8 @@ limit in eight weeks and delivered 0.11% less CPU than the same run with reading
 ## Restarts
 
 A daemon restart keeps the estimate. The time it was stopped is charged from the kernel's counters
-and earns nothing. When readings settle past the stop, they are taken as they are.
+and earns nothing. When readings settle past the stop, they are billed as they are, and the stop
+still earns nothing.
 
 A reboot keeps the estimate too when readings are fresh. Samples from before the reboot keep their
 place in time, and the time down counts as unknown time. In study S8 a 15-minute reboot with a full
@@ -270,6 +279,8 @@ baseline predicts, and whether a lift test confirmed the limit.
 | Floor, spend time, refill time        | 10%, 30 minutes, 60 minutes         | `LAW` in `src/credits.ts`             |
 | Valid reading interval                | 900 to 2,700 seconds                | `validSpacing()` in `credits.ts`      |
 | A credit limit at a failed lift test  | Limit + 0.1 cores, 15% stolen       | `limitGone()` in `governor.ts`        |
+| No credit limit at a failed lift test | More than limit + 0.3 cores         | `limitGone()` in `governor.ts`        |
+| A limit lifts                         | 75% of what the burners ask         | `liftConfirmed()` in `credits.ts`     |
 | What a limit found                    | Lowest estimate in 20 minutes       | `ONSET_MS` in `governor.ts`           |
 | Samples kept                          | 3 hours                             | `KEEP_MS` in `governor.ts`            |
 | Readings fetched and kept             | 48 hours, 72 hours                  | `FETCH_WINDOW_MS`, `READINGS_KEEP_MS` |

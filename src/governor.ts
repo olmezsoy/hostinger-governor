@@ -200,8 +200,6 @@ export type PublicState = {
 };
 
 const STEAL_WINDOW_MS = 5 * 60_000;
-// Limit detection needs three passes in that window.
-const MAX_DETECTING_TICK_SECONDS = 100;
 const CPU_WINDOW_MS = 30 * 60_000;
 // Samples outlast the slowest reading to settle, so the tail of the estimate is always counted.
 const KEEP_MS = 3 * 3_600_000;
@@ -401,7 +399,14 @@ type Legacy = {
   at?: number;
   bootId?: string;
   uptime?: number;
-  limit?: { since?: number; ceiling?: number };
+  limit?: {
+    since?: number;
+    ceiling?: number;
+    heldFrom?: number;
+    startedAt?: number;
+    testAt?: number;
+    testEvery?: number;
+  };
   probe?: { cooldownUntil?: number; backoffMs?: number; failedSf?: number; quietUntil?: number };
   vmId?: number | null;
   margin?: { mul?: number; add?: number };
@@ -417,7 +422,9 @@ export class Governor {
   s: Private;
   readonly io: GovernorIO;
   comparison: number | null = null;
-  liftEvidence: "unknown" | "limited" | "lifted" = "unknown";
+  // What the last burner test measured: the VM delivering what they asked, held at the plan's
+  // limit, or held well above it. Unknown where it measured nothing, or nothing that clear.
+  liftEvidence: "unknown" | "limited" | "lifted" | "held" = "unknown";
   private readonly hookRunner: HookRunner;
   private readonly fetcher?: DiagnosticsRunner;
   // Hook events wait until the pass has applied its quota.
@@ -539,12 +546,16 @@ export class Governor {
       const held = finite(old.limit.ceiling) && old.limit.ceiling! >= 20
         ? Math.min(old.limit.ceiling!, 100 * p.vcpus)
         : 100 * p.vcpus;
+      // Its clocks are in uptime. They hold if this is the same boot, and a new one resets them.
+      const l = old.limit;
       s.limit = {
-        since: old.limit.since!,
+        since: l.since!,
         ceiling: Math.min(held, recoveryCeiling(p, DEFAULT_OUTSIDE_CORES)),
         tightenedCeiling: held,
-        heldFrom: old.uptime ?? 0,
-        startedAt: old.uptime ?? 0,
+        heldFrom: finite(l.heldFrom) ? l.heldFrom! : old.uptime ?? 0,
+        startedAt: finite(l.startedAt) ? l.startedAt! : old.uptime ?? 0,
+        ...(finite(l.testAt) ? { testAt: l.testAt } : {}),
+        ...(finite(l.testEvery) ? { testEvery: l.testEvery } : {}),
       };
     }
     if (old.schema === 2 && samePlan && finite(old.balance, old.at)) {
@@ -624,8 +635,13 @@ export class Governor {
     return this.recent(window).filter((x) => !x.test);
   }
 
+  // The window limit detection looks at: five minutes, or the three passes it needs if they
+  // take longer.
+  private get window() {
+    return Math.max(STEAL_WINDOW_MS, 3000 * (this.cfg.tick_seconds ?? DEFAULT_TICK_SECONDS));
+  }
   private control(): Control {
-    const recent = this.controlSamples(STEAL_WINDOW_MS);
+    const recent = this.controlSamples(this.window);
     const latest = this.recent(Infinity).at(-1);
     const avgOutside = recent.length
       ? avg(recent.map((x) => x.outside))
@@ -676,9 +692,9 @@ export class Governor {
   publicState(now: number): PublicState {
     const s = this.s;
     const p = this.plan;
-    const recent = this.recent(STEAL_WINDOW_MS);
+    const recent = this.recent(this.window);
     const half = this.recent(CPU_WINDOW_MS);
-    const control = this.controlSamples(STEAL_WINDOW_MS);
+    const control = this.controlSamples(this.window);
     const outside = avg(control.map((x) => x.outside));
     const users30: Record<string, number> = {};
     for (const x of half) {
@@ -690,10 +706,8 @@ export class Governor {
     const steal5 = avg(recent.map((x) => x.steal));
     const m = this.margin;
     // Charged sample by sample, as the estimate is: steal counts only where a sample says so.
-    const watched = recent.reduce((n, x) => n + x.seconds, 0);
-    const charge = watched
-      ? recent.reduce((n, x) => n + ownCharge(p, x, m) * x.seconds, 0) / watched
-      : m.add;
+    // Each sample of the window counts once, like the busy and steal figures beside it.
+    const charge = recent.length ? avg(recent.map((x) => ownCharge(p, x, m))) : m.add;
     // The last settled reading, or when this run began if a configured feed has given none.
     const since = s.readings.at(-1)?.at ?? this.startedAt ?? now;
     const pressing = s.limit &&
@@ -781,7 +795,7 @@ export class Governor {
       ...this.recent(ONSET_MS).map((x) => x.balance ?? Infinity),
     );
     // Under the limit with what runs outside the slice on top.
-    const outside = avg(this.controlSamples(STEAL_WINDOW_MS).map((x) => x.outside));
+    const outside = avg(this.controlSamples(this.window).map((x) => x.outside));
     s.limit = {
       since: now,
       ceiling: recoveryCeiling(this.plan, outside),
@@ -961,11 +975,14 @@ export class Governor {
       const statuses = await Promise.all(burn.map((c) => c.status));
       if (!statuses.every((s) => s.code === 124)) return false;
       const busyCores = sample.busy * this.plan.vcpus;
-      const gone = liftConfirmed(this.plan, n, busyCores, sample.steal);
-      if (gone) this.liftEvidence = "lifted";
-      else if (busyCores <= this.plan.limit + 0.1 && sample.steal >= LIFT_STEAL) {
-        this.liftEvidence = "limited";
-      }
+      const gone = liftConfirmed(this.plan, n, busyCores);
+      this.liftEvidence = gone
+        ? "lifted"
+        : busyCores <= this.plan.limit + 0.1 && sample.steal >= LIFT_STEAL
+        ? "limited"
+        : busyCores > this.plan.limit + 0.3
+        ? "held"
+        : "unknown";
       return gone;
     } finally {
       for (const c of burn) {
@@ -978,19 +995,17 @@ export class Governor {
   }
 
   // Ask the host with burners before entering a limit that steal alone does not make evident,
-  // and return when they finished, or null where they speak against one. A VM that delivers
-  // what they ask is under no limit, whatever a probe scored. Where no probe spoke for a limit,
-  // as with work outside an idle slice, only a VM held at the plan's limit counts, so noisy
-  // neighbours near the cap start no false one.
-  private async burnersAgree(probed: boolean): Promise<Clock | null> {
+  // and return when they finished if they found the VM held at the plan's limit. Anything else
+  // starts no limit: neighbours near the cap, a probe that scored noise, or a test that
+  // measured nothing. The next check is ten minutes away.
+  private async heldAtLimit(): Promise<Clock | null> {
     try {
-      if (await this.limitGone() || !probed && this.liftEvidence !== "limited") return null;
+      await this.limitGone();
     } catch (e) {
       this.liftEvidence = "unknown";
       log("cap test inconclusive:", e);
-      if (!probed) return null;
     }
-    return await this.io.clock();
+    return this.liftEvidence === "limited" ? await this.io.clock() : null;
   }
 
   async tick(clock?: Clock) {
@@ -1145,9 +1160,10 @@ export class Governor {
       let confirmed = evident;
       let heldAt: Clock | null = null;
       // A probe compares two short steal shares, and on a nearly idle box noise passes it: a real
-      // box took false limits that way. So the burners can overrule a probe.
+      // box took false limits that way. So a probe only earns a burner test, and the burners
+      // decide: a credit limit holds the VM at the plan's limit, whatever is asked of it.
       if (!confirmed && (pinned || await this.probe(sfNow, current ?? 100 * p.vcpus))) {
-        heldAt = await this.burnersAgree(!pinned);
+        heldAt = await this.heldAtLimit();
         confirmed = !!heldAt;
       }
       if (confirmed) {
@@ -1214,8 +1230,9 @@ export class Governor {
         if (lifted) {
           this.lift(limit, now, finished);
         } else {
-          // The first test that fails says what holds the VM.
-          limit.confirmed ??= this.liftEvidence === "limited";
+          // The first test that fails says what holds the VM. One that measured nothing says
+          // nothing.
+          if (this.liftEvidence !== "unknown") limit.confirmed ??= this.liftEvidence === "limited";
           if (limit.confirmed && this.liftEvidence === "limited") limit.limitedUptime = done;
           limit.testEvery = Math.min(2 * (limit.testEvery ?? TEST_EVERY_MS / 2), TEST_MAX_MS);
           // Schedule from completion, not the sample taken before a 35-second test.
@@ -1239,6 +1256,9 @@ export class Governor {
     for (const x of this.s.samples) x.clockValid = false;
     this.s.readings = this.s.readings.filter((r) => r.at <= now);
     this.fetcher?.reset();
+    // When the bank was last known is a time on the old clock. What a limit teaches is measured
+    // from here.
+    this.s.estimate.known = { at: now, slack: 0 };
   }
 
   // The first pass of a boot, or after the CPU counters started over. There is no sample yet.
@@ -1246,8 +1266,10 @@ export class Governor {
     const s = this.s;
     this.fetcher?.reset();
     const reason = s.bootId !== bootId ? "reboot" : "counter-reset";
-    // Uptime starts over at a boot, so only a clock that reads before the last pass shows a step.
-    const back = hadState && now < s.at;
+    // Uptime starts over at a boot, so a pass cannot compare it with the wall clock. But a boot
+    // the clock says began before the last pass of the one before it did not: the clock has
+    // gone back. So has one that reads before the last pass.
+    const back = hadState && (reason === "reboot" ? now - uptime : now) < s.at;
     if (back) this.clockStepped(now);
     s.bootId = bootId;
     s.uptime = uptime;
@@ -1462,12 +1484,6 @@ export async function runDaemon() {
   const legacy = legacySettings(cfg);
   if (legacy.length) {
     log(`config: ${legacy.join(", ")} settings are from before v1.0.0 and no longer used`);
-  }
-  if ((cfg.tick_seconds ?? 0) > MAX_DETECTING_TICK_SECONDS) {
-    log(
-      `config: tick_seconds above ${MAX_DETECTING_TICK_SECONDS} leaves fewer than the three ` +
-        "passes in five minutes that limit detection needs; no limit will be recognised",
-    );
   }
   const controller = new AbortController();
   let ranPass = false;

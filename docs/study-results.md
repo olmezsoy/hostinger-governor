@@ -34,7 +34,7 @@ in `test/studies.ts` asks of them. The bank holds 34,560 core-seconds and the sp
 | S2    | 0.03 cores billed that readings do not show            |             0 |            2,266 |          0.155 |        5,217.5 |
 | S3    | 0.10 cores billed that readings do not show            |             1 |                0 |          0.274 |        5,139.6 |
 | S4    | Meter slope rises from 1.0463 to 1.07 on day 28        |             0 |            1,929 |          0.270 |        5,178.9 |
-| S5    | Sustained-use limit from day 7                         |             0 |            3,283 |          0.155 |        5,204.5 |
+| S5    | Sustained-use limit from day 7                         |             0 |            3,283 |          0.155 |        5,201.2 |
 | S6    | Neighbours steal 70% for six minutes on day 7          |             0 |            3,296 |          0.155 |        5,211.0 |
 | S7    | No readings on days 14 and 15                          |             0 |            3,269 |          0.155 |        5,211.6 |
 | S8    | Reboot on day 7, 15 minutes down                       |             0 |            3,238 |          0.155 |        5,217.2 |
@@ -92,7 +92,7 @@ floor holds back 3,456. Other seeds come closer, as the next section shows.
 
 ### Twelve seeds
 
-Seeds 1 to 12 make 276 runs of 56 simulated days. All 276 pass their criteria. They took 26 credit
+Seeds 1 to 12 make 276 runs of 56 simulated days, and 275 pass their criteria. They took 26 credit
 limits:
 
 - 12 in S3 and 12 in S23, one per run, each the limit that teaches the 0.10-core gap. The pad ended
@@ -100,6 +100,12 @@ limits:
 - 2 in S17, where the meter jumps half a core: one each in seeds 7 and 12.
 
 The other 20 studies took no limit in any seed.
+
+The run that fails is S5 at seed 12. The governor starts no limit while the sustained-use cap sits
+above the plan's limit. When the cap has fallen to 2 cores it looks like a credit limit, and in that
+run the estimate stood at 9% as it began, so the governor took the difference for a billing gap and
+raised the pad to 0.25 cores. That costs 2.7% of the run's CPU until
+`sudo governor calibrate --reset`. The other 11 seeds learn nothing from it.
 
 The floor is not wide in every seed. The most the estimate ran above the real bank, outside a limit,
 over the 12 seeds:
@@ -174,18 +180,18 @@ back-to-back limits, and steady work near the cap with no limit at all.
 | Probes       |    158 |            173 |          163 |
 
 Both false limits of the earlier design came from a probe that passed on a host with noisy
-neighbours. The burners now overrule those.
+neighbours. The burners now decide those.
 
 ## A limit that begins during a probe cooldown
 
 After a failed probe the governor waits 10 to 60 minutes before the next. A limit that begins in
 that wait must still be recognised. v1.0.0 was compared with v0.3.2 on 2,376 such cases over KVM 1,
 2, 4 and 8 with two steal models. No case goes unrecognised that v0.3.2 recognises. Of the 2,280
-cases both versions could be measured on, 2,002 are within a minute of v0.3.2, 122 are faster and
-156 slower. The burner test that now follows a probe takes 35 seconds, and that is the median
-difference. 89 of the slower cases are within two minutes.
+cases both versions could be measured on, 1,990 are within a minute of v0.3.2, 122 are faster and
+168 slower. The burner test that now follows a probe takes 35 seconds, and that is the median
+difference. 100 of the slower cases are within two minutes.
 
-- Timing, 288 cases: all within a minute of v0.3.2.
+- Timing, 288 cases: 276 within a minute of v0.3.2, 12 slower.
 - No cooldown, 96 cases: 90 within a minute, 6 slower.
 - Stale, 768 cases: 657 within a minute, 79 faster, 32 slower.
 - Wide, 1,008 cases: 761 within a minute, 43 faster, 108 slower, 96 not comparable. Many of the
@@ -238,17 +244,16 @@ tests found 24 minutes later. Eight variants cover what is not known: the eight 
 first event that the box no longer held, on either side of v0.3.2's gate; what a probe one pass
 later would have measured; and a burst 5% larger.
 
-| Release                                  | Variants with a limit | Limits | Held at 20% for |
-| ---------------------------------------- | --------------------: | -----: | --------------: |
-| v0.3.1                                   |                8 of 8 |      2 |      47 minutes |
-| v0.3.2                                   |                7 of 8 | 0 to 2 | 0 to 47 minutes |
-| v1.0.0 before the burners could overrule |                7 of 8 | 0 to 2 | 0 to 47 minutes |
-| v1.0.0                                   |                0 of 8 |      0 |               0 |
+| Release                           | Variants with a limit | Limits | Held at 20% for |
+| --------------------------------- | --------------------: | -----: | --------------: |
+| v0.3.1                            |                8 of 8 |      2 |      47 minutes |
+| v0.3.2                            |                7 of 8 | 0 to 2 | 0 to 47 minutes |
+| v1.0.0 before the burners decided |                7 of 8 | 0 to 2 | 0 to 47 minutes |
+| v1.0.0                            |                0 of 8 |      0 |               0 |
 
 v0.3.2's gate, at least 0.4 cores of slice demand before a probe, clears this box by 2%: its window
-sat at 0.28 to 0.41 cores. In v1.0.0 a probe that passes is followed by the burners, and a VM that
-delivers what they ask is under no limit, whatever the probe scored. The estimate stays full in
-every variant.
+sat at 0.28 to 0.41 cores. In v1.0.0 a probe that passes is followed by the burners, and only a VM
+they find held at the plan's limit starts a limit. The estimate stays full in every variant.
 
 The harness and the box's data are not in the repository, so no task reruns this.
 `test/governor_test.ts` holds the same case as a unit test.
@@ -263,15 +268,16 @@ probe cooldown, and during a limit.
 - In the 9 upgrades outside a limit, v1.0.0 took no limit afterwards. Its estimate stood between
   4.2% of capacity under the real bank and 3.3% over. The exception is a host that bills more than
   its readings show: 12.4% over, where a v0.3.2 restart read 10.6% over. Neither took a limit.
-- Of the 5 upgrades during a limit, 2 took no limit afterwards. The other 3 are on hosts that bill
-  more than their readings show, and took 1 or 2 more limits, where a v0.3.2 restart took none. The
-  limit in force lifts as a credit limit, but what it would have taught is not carried over.
+- Of the 5 upgrades during a limit, 1 took no limit afterwards. The other 4 are on hosts that bill
+  more than their readings show, and each took 1 more limit, where a v0.3.2 restart took none. The
+  limit in force is carried with its ceiling and its lift-test clock, but what it would have taught
+  is not.
 
 No task in `deno.json` reruns this.
 
 ## Size and speed
 
-`src/` went from 10,104 lines to 4,123, and the TypeScript under `test/` from 16,965 to 6,624. The
+`src/` went from 10,104 lines to 4,138, and the TypeScript under `test/` from 16,965 to 6,774. The
 23 studies run in under two minutes in sequence. Each took a minute or more before.
 
 ## Rerun
