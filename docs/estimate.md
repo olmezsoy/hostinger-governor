@@ -40,10 +40,9 @@ what it earned there. So `settle()` spreads the bill over the interval in the sh
 own count, sample by sample.
 
 A reading counts when its interval is 900 to 2,700 seconds long. Nobody knows what a reading after a
-longer interval averages. There the guest's own count stands in when samples cover the interval.
-When they don't, nobody watched that time, and it counts at the most the VM could have spent. A hole
-of more than about two hours in Hostinger's readings ends that way, because samples are kept three
-hours.
+longer interval averages. There the guest's own count stands in for the seconds that samples
+watched. The rest nobody watched, and it counts at the most the VM could have spent. A hole of more
+than about two hours in Hostinger's readings ends that way, because samples are kept three hours.
 
 The same goes for a reading whose interval began before the anchor, as the first one after a start,
 a lift or a seed does. It averages time the anchor has already settled, so it cannot say how much of
@@ -106,10 +105,11 @@ steal that reveals a limit would not grow.
 
 Two cases have no sample.
 
-A reading no sample covers, as across a reboot or while the daemon was stopped, is billed as it is,
-and that time earns nothing. A limit may have come and gone unseen, and one pauses earning while
-work presses on it, which a reading cannot show. So the estimate stays a lower bound until the bank
-is next known full.
+The seconds of a reading's interval that no sample watched, as across a reboot or while the daemon
+was stopped, are billed at the reading and earn nothing. A limit may have come and gone unseen, and
+one pauses earning while work presses on it, which a reading cannot show. So the estimate stays a
+lower bound until the bank is next known full. The seconds that samples did watch earn as usual,
+even where they are too few to check the reading by.
 
 Time since the anchor that no sample covers, as after a reboot, counts at the most the VM could have
 spent: every vCPU busy at the margin. On KVM 8 at the starting margin that is 3.64 cores above the

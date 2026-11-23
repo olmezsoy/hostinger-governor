@@ -152,12 +152,16 @@ Deno.test("samples must cover nine tenths of a reading's interval to stand besid
   // 27 of 30 minutes: covered, so the feed that reads low is caught.
   const most = fresh(10_000);
   settle(p, most, readings(1), samples(T0, T0 + 1_620_000, 4));
-  // The three minutes without samples are billed like the rest, and earn nothing.
-  assertAlmostEquals(most.anchor!.balance, 10_000 + (p.baseline - 4.24) * 1620 - 4.24 * 180);
-  // 26 minutes: not covered. The reading is all there is, and stands unguarded.
+  // The three minutes without samples have no usable reading either: they count at the most
+  // the VM could have spent.
+  const drain = maxDrain(p, margin(p, most));
+  assertAlmostEquals(most.anchor!.balance, 10_000 + (p.baseline - 4.24) * 1620 - drain * 180);
+  // 26 minutes: not covered. The reading is all there is, and stands unguarded. The watched
+  // minutes still earn, and the four that nobody watched pay the reading and earn nothing.
   const less = fresh(10_000);
   settle(p, less, readings(1), samples(T0, T0 + 1_560_000, 4));
-  assertAlmostEquals(less.anchor!.balance, 10_000 - (1 + ESTIMATE.pad) * 1800);
+  const bill = 1 + ESTIMATE.pad;
+  assertAlmostEquals(less.anchor!.balance, 10_000 + (p.baseline - bill) * 1560 - bill * 240);
   assertEquals(less.excess, []);
 });
 
@@ -190,6 +194,27 @@ Deno.test("an idle interval the daemon watched earns the baseline", () => {
   const e = fresh(5000);
   settle(p, e, readings(0), samples(T0, T0 + HALF, 0));
   assertAlmostEquals(e.anchor!.balance, 5000 + (p.baseline - ESTIMATE.pad) * 1800);
+});
+
+Deno.test("a gap in the samples costs the earnings of the gap, not of the half hour", () => {
+  // An idle half hour with three and a half minutes unwatched in the middle, as after a slow
+  // restart. 88% is too little to check the reading by, and enough to earn for.
+  const own = [...samples(T0, T0 + 600_000, 0), ...samples(T0 + 810_000, T0 + HALF, 0)];
+  const e = fresh(5000);
+  settle(p, e, readings(0), own);
+  assertAlmostEquals(
+    e.anchor!.balance,
+    5000 + (p.baseline - ESTIMATE.pad) * 1590 - ESTIMATE.pad * 210,
+  );
+  // With no usable reading, as in the first interval after a lift, the watched seconds go by
+  // the own count and the gap counts at the most the VM could have spent.
+  const late = fresh(5000, T0 + 30_000);
+  settle(p, late, readings(0), own);
+  const m = margin(p, late);
+  assertAlmostEquals(
+    late.anchor!.balance,
+    5000 + (p.baseline - m.add) * 1560 - maxDrain(p, m) * 210,
+  );
 });
 
 Deno.test("time no sample watched is billed and earns nothing", () => {

@@ -590,6 +590,10 @@ two minutes in sequence.
   with its later values on a real box showed no revision.
 - Time the daemon did not watch earns nothing in the estimate, because a limit may have come and
   gone unseen. After a long stop or a reboot the estimate reads low until the bank is next full.
+- The burner test is the last word on a limit that steal alone does not make evident, and it can be
+  wrong both ways. Neighbours who take half of what the burners ask make the VM look held at the
+  plan's limit, which starts a false limit for about 24 minutes. A burner test that fails to run
+  counts as a failed check, so a real limit behind it waits out the cooldown, up to an hour.
 - Limit detection needs three passes. With `tick_seconds` above 100 that takes longer than five
   minutes, and a limit is recognised later by as much. The default is 30.
 - System services and containers outside `user.slice` are measured, not capped. Enroll heavy work

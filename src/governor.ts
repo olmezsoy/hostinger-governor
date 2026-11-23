@@ -692,7 +692,7 @@ export class Governor {
   publicState(now: number): PublicState {
     const s = this.s;
     const p = this.plan;
-    const recent = this.recent(this.window);
+    const recent = this.recent(STEAL_WINDOW_MS);
     const half = this.recent(CPU_WINDOW_MS);
     const control = this.controlSamples(this.window);
     const outside = avg(control.map((x) => x.outside));
@@ -702,12 +702,22 @@ export class Governor {
         users30[who] = (users30[who] ?? 0) + v / half.length;
       }
     }
-    const busy5 = avg(recent.map((x) => x.busy));
-    const steal5 = avg(recent.map((x) => x.steal));
+    // The five-minute figures. A sample counts for the seconds of it that fall inside those five
+    // minutes, so neither a short extra pass nor one long sample over a stop tilts them.
+    const from = (s.uptime ?? 0) - STEAL_WINDOW_MS;
+    const mean5 = (f: (x: Sample) => number, none = 0) => {
+      let seconds = 0, sum = 0;
+      for (const x of recent) {
+        const inside = Math.min(x.seconds, (x.uptime! - from) / 1000);
+        seconds += inside;
+        sum += f(x) * inside;
+      }
+      return seconds > 0 ? sum / seconds : none;
+    };
+    const busy5 = mean5((x) => x.busy), steal5 = mean5((x) => x.steal);
     const m = this.margin;
     // Charged sample by sample, as the estimate is: steal counts only where a sample says so.
-    // Each sample of the window counts once, like the busy and steal figures beside it.
-    const charge = recent.length ? avg(recent.map((x) => ownCharge(p, x, m))) : m.add;
+    const charge = mean5((x) => ownCharge(p, x, m), m.add);
     // The last settled reading, or when this run began if a configured feed has given none.
     const since = s.readings.at(-1)?.at ?? this.startedAt ?? now;
     const pressing = s.limit &&

@@ -277,7 +277,7 @@ No task in `deno.json` reruns this.
 
 ## Size and speed
 
-`src/` went from 10,104 lines to 4,138, and the TypeScript under `test/` from 16,965 to 6,774. The
+`src/` went from 10,104 lines to 4,145, and the TypeScript under `test/` from 16,965 to 6,816. The
 23 studies run in under two minutes in sequence. Each took a minute or more before.
 
 ## Rerun

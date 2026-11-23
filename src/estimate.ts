@@ -132,15 +132,14 @@ export function settle(p: Plan, e: Estimate, readings: Reading[], samples: Sampl
     const o = own(p, samples, from, cur.at), covered = o.seconds >= 0.9 * seconds;
     const reading = cur.v / 100 * p.vcpus;
     const m = margin(p, e);
-    let bill: number;
-    if (!validSpacing(prev.at, cur.at) || prev.at < a.at || covered && reading < o.busy) {
-      // Three readings say nothing usable. Nobody knows what one after a long interval averages.
-      // One that began before the anchor averages time the anchor already settled. And one under
-      // what the guest itself counted cannot be Hostinger's bill for it: the feed is broken. The
-      // own count stands in. Where no sample covers the interval either, it counts at the most
-      // the VM could have spent above what it earned, like any time nobody watched.
-      bill = covered ? m.mul * o.busy + o.billed + m.add : maxDrain(p, m);
-    } else {
+    // Three readings say nothing usable. Nobody knows what one after a long interval averages.
+    // One that began before the anchor averages time the anchor already settled. And one under
+    // what the guest itself counted cannot be Hostinger's bill for it: the feed is broken.
+    const usable = validSpacing(prev.at, cur.at) && prev.at >= a.at &&
+      !(covered && reading < o.busy);
+    // What the watched seconds cost, as a mean: the reading, or the own count in its place.
+    let bill = m.mul * o.busy + o.billed + m.add;
+    if (usable) {
       // A reading counts for no more than a generous ceiling on the guest's own count, so a feed
       // that breaks high cannot starve the box.
       const held = covered ? Math.min(reading, 1.3 * o.busy + o.steal + 0.3) : reading;
@@ -152,24 +151,22 @@ export function settle(p: Plan, e: Estimate, readings: Reading[], samples: Sampl
       }
     }
     // A reading is a mean, and a bank that sits full for part of its interval forgets what that
-    // part earned: spread the bill over the interval in the shape of the own count. Idle
-    // throughout, it has no shape, and the bill is spread evenly.
+    // part earned: spread the bill over the watched seconds in the shape of the own count. Idle
+    // throughout, they have no shape, and the bill is spread evenly.
     let balance = a.balance, stepped = 0;
-    if (covered) {
-      for (const x of samples) {
-        const s = overlap(x, from, cur.at);
-        if (s <= 0) continue;
-        stepped += s;
-        const spent = o.busy > 0 ? bill * x.busy * p.vcpus / o.busy : bill;
-        balance = clamp(balance + (p.baseline - spent) * s, 0, p.capacity);
-      }
+    for (const x of samples) {
+      const s = overlap(x, from, cur.at);
+      if (s <= 0) continue;
+      stepped += s;
+      const spent = o.busy > 0 ? bill * x.busy * p.vcpus / o.busy : bill;
+      balance = clamp(balance + (p.baseline - spent) * s, 0, p.capacity);
     }
-    // Where no sample watched, nobody knows whether the bank earned: a limit may have come and
-    // gone, and one pauses earning while work presses on it. That time is billed and earns
-    // nothing. Under a second over, or less than nothing, is the wall clock and uptime drifting
-    // apart, not time nobody watched.
+    // The seconds no sample watched earn nothing: a limit may have come and gone, and one pauses
+    // earning while work presses on it, which no reading shows. They pay the reading, or without
+    // a usable one the most the VM could have spent above what it earned. Under a second over,
+    // or less than nothing, is the wall clock and uptime drifting apart, not time nobody watched.
     const rest = seconds - stepped < 1 ? 0 : seconds - stepped;
-    balance = clamp(balance - bill * rest, 0, p.capacity);
+    balance = clamp(balance - (usable ? bill : maxDrain(p, m)) * rest, 0, p.capacity);
     // Full is a point to measure from, and never an earlier one than is already known.
     if (balance >= p.capacity && cur.at > e.known.at) e.known = { at: cur.at, slack: 0 };
     a = { at: cur.at, balance };

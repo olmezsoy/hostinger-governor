@@ -11,7 +11,7 @@ layer.
   That one rule needed a meter fit, drift detection, a steal model, holds, a 90-day history store, a
   replay command and three modes. An audit found that about half the product code served it, and
   that its machinery had raised false alarms on a live box. The new estimate is about 200 lines in
-  `src/estimate.ts`, and `src/` goes from 10,104 lines to 4,138.
+  `src/estimate.ts`, and `src/` goes from 10,104 lines to 4,145.
   [The credit estimate](docs/estimate.md) describes it:
   - Anchor. Hostinger's own CPU readings, about one every 30 minutes through the API or the broker,
     are replayed through its published credit rules. Readings move the estimate both ways.

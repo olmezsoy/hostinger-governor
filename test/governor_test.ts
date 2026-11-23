@@ -1513,16 +1513,33 @@ test("the published rate charges each sample as the estimate does", async () => 
   assertEquals(f.g.publicState(f.at).credits.rate, Math.round((p.baseline - mean) * 10) / 10);
 });
 
-test("the published rate counts each sample of the window once", async () => {
+test("the published five-minute figures weigh each sample by its time inside them", async () => {
   const f = fixture({ initial_balance: 20_000 });
   await f.advance();
   // The daemon was stopped for three idle hours, then the box runs seven cores for five
-  // minutes. Weighted by its length, the stop would show the bank filling.
+  // minutes. The stop lies outside those five minutes, however long its one sample is.
   f.elapse(10_800);
   await f.g.tick();
   await f.run(10, 7 / 8);
-  const charged = (10 * (1.05 * 7 + 0.04) + 0.04) / 11;
-  assertEquals(f.g.publicState(f.at).credits.rate, Math.round((p.baseline - charged) * 10) / 10);
+  const state = f.g.publicState(f.at);
+  assertEquals(state.credits.rate, Math.round((p.baseline - 1.05 * 7 - 0.04) * 10) / 10);
+  assertAlmostEquals(state.cpu.busy5, 7 / 8);
+  // A short extra pass counts for its five seconds, not for half of two samples.
+  const extra = fixture({ initial_balance: 20_000 });
+  await extra.advance();
+  await extra.advance(5, 0);
+  await extra.advance(25, 7 / 8);
+  const charged = (5 * 0.04 + 25 * (1.05 * 7 + 0.04)) / 30;
+  assertEquals(
+    extra.g.publicState(extra.at).credits.rate,
+    Math.round((p.baseline - charged) * 10) / 10,
+  );
+  // At a slow tick they are still the last five minutes: busy ones here, after idle passes.
+  const slow = fixture({ initial_balance: 20_000, tick_seconds: 300 });
+  await slow.advance(300);
+  for (let i = 0; i < 3; i++) await slow.advance(300, 0);
+  await slow.advance(300, 0.5);
+  assertEquals(slow.g.publicState(slow.at).cpu.busy5, 0.5);
 });
 
 test("a slow tick still gives limit detection its three passes", async () => {
