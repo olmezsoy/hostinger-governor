@@ -91,16 +91,19 @@ export const billedSteal = (p: Plan, x: Pick<Sample, "busy" | "steal" | "limited
 export const ownCharge = (p: Plan, x: Pick<Sample, "busy" | "steal" | "limited">, m: Margin) =>
   m.mul * x.busy * p.vcpus + billedSteal(p, x) + m.add;
 
-// Seconds of [from, to] a sample covers, in wall time.
+// Seconds of [from, to] a sample covers, in wall time. A sample from before a clock step has no
+// place among the readings, and one over time the daemon was stopped knows only an average: it
+// cannot say when the CPU ran, or check one reading out of the several it spans.
 const overlap = (x: Sample, from: number, to: number) =>
-  (Math.min(to, x.at) - Math.max(from, x.at - x.seconds * 1000)) / 1000;
+  x.clockValid === false || x.unobserved
+    ? 0
+    : (Math.min(to, x.at) - Math.max(from, x.at - x.seconds * 1000)) / 1000;
 
 // The guest's own count over a stretch of wall time: the seconds its samples cover, and mean busy,
 // stolen and charged-steal cores over them.
 function own(p: Plan, samples: Sample[], from: number, to: number) {
   let seconds = 0, busy = 0, steal = 0, billed = 0;
   for (const x of samples) {
-    if (x.clockValid === false) continue;
     const s = overlap(x, from, to);
     if (s <= 0) continue;
     seconds += s;
@@ -130,13 +133,11 @@ export function settle(p: Plan, e: Estimate, readings: Reading[], samples: Sampl
     const reading = cur.v / 100 * p.vcpus;
     const m = margin(p, e);
     let bill: number;
-    if (
-      !validSpacing(prev.at, cur.at) || covered && (prev.at < a.at || reading < o.busy)
-    ) {
+    if (!validSpacing(prev.at, cur.at) || prev.at < a.at || covered && reading < o.busy) {
       // Three readings say nothing usable. Nobody knows what one after a long interval averages.
       // One that began before the anchor averages time the anchor already settled. And one under
       // what the guest itself counted cannot be Hostinger's bill for it: the feed is broken. The
-      // own count stands in. Where no sample covers a long interval either, it counts at the most
+      // own count stands in. Where no sample covers the interval either, it counts at the most
       // the VM could have spent, like any time nobody watched.
       bill = covered ? m.mul * o.busy + o.billed + m.add : m.mul * p.vcpus + m.add;
     } else {
@@ -155,7 +156,6 @@ export function settle(p: Plan, e: Estimate, readings: Reading[], samples: Sampl
     let balance = a.balance, stepped = 0;
     if (covered && o.busy > 0) {
       for (const x of samples) {
-        if (x.clockValid === false) continue;
         const s = overlap(x, from, cur.at);
         if (s <= 0) continue;
         stepped += s;
@@ -167,13 +167,14 @@ export function settle(p: Plan, e: Estimate, readings: Reading[], samples: Sampl
       }
     }
     // Where no sample says when the CPU ran, it is counted in the worst order: the VM idle first,
-    // the bank full and forgetting what it earns, and all the CPU after. A bank replayed from
-    // readings alone, as after a first start or lost state, then never reads above the real one.
-    const rest = seconds - stepped;
+    // the bank full and forgetting what it earns, and all the CPU after. Under a second over, or
+    // less than nothing, is the wall clock and uptime drifting apart, not time nobody watched.
+    const rest = seconds - stepped < 1 ? 0 : seconds - stepped;
     const idle = rest * (1 - Math.min(1, bill / p.vcpus));
     const forgotten = Math.max(0, balance + p.baseline * idle - p.capacity);
     balance = clamp(balance + (p.baseline - bill) * rest - forgotten, 0, p.capacity);
-    if (balance >= p.capacity) e.known = { at: cur.at, slack: 0 };
+    // Full is a point to measure from, and never an earlier one than is already known.
+    if (balance >= p.capacity && cur.at > e.known.at) e.known = { at: cur.at, slack: 0 };
     a = { at: cur.at, balance };
   }
   if (a.at === before) return false;

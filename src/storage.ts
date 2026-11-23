@@ -1,6 +1,5 @@
 // State files are replaced atomically, with a set file mode. persist.json is rewritten every pass
-// and not synced: one a power cut left empty is set aside, and the estimate starts over from the
-// readings.
+// and not synced: one a power cut left empty is set aside, and the estimate starts over.
 export async function writeText(path: string, text: string, mode: number) {
   const tmp = `${path}.tmp`;
   // A leftover temporary file the daemon cannot open, such as one a root run left, would fail every

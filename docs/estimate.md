@@ -45,6 +45,10 @@ When they don't, nobody watched that time, and it counts at the most the VM coul
 of more than about two hours in Hostinger's readings ends that way, because samples are kept three
 hours.
 
+The same goes for a reading whose interval began before the anchor, as the first one after a start,
+a lift or a seed does. It averages time the anchor has already settled, so it cannot say how much of
+its CPU ran after.
+
 The anchor never reaches further back than the samples do. On a first start, after lost state, or
 when the anchor is older than the three hours of samples kept, it is set to that moment with the
 estimate the own count has, and readings move it from there. Readings from before the governor
@@ -66,7 +70,9 @@ limits taught the pad comes on top. `margin()` computes it, and `governor status
 as `margin ×1.05 +0.04` or higher.
 
 A sample earns the baseline unless work pressed on a limit during it, a probe or lift test ran, or
-it spans more than two passes, which means the daemon was not watching.
+it spans more than two passes, which means the daemon was not watching. Such a sample still charges
+what the kernel counted, but it is never laid beside a reading: it knows one mean over the whole
+stop, and cannot check the several readings that fall inside it.
 
 ## Guard
 
@@ -82,7 +88,7 @@ breaks high cannot starve the box. In study S18, readings at eight times the met
 13.9% of the CPU.
 
 A feed that reads a little low passes both checks. That is billing the readings do not show, and it
-costs a limit before the pad learns it: readings at 95% of the meter took one limit in each of five
+costs a limit before the pad learns it: readings at 95% of the meter took one limit in each of eight
 seeds.
 
 ## Steal
@@ -100,8 +106,9 @@ steal that reveals a limit would not grow.
 
 Two cases have no sample.
 
-A reading no sample covers, as across a reboot, is taken as it is. Its CPU is counted in the worst
-order: the VM idle first, with the bank full and forgetting what it earns, then all the CPU.
+A reading no sample covers, as across a reboot or while the daemon was stopped, is taken as it is.
+Its CPU is counted in the worst order: the VM idle first, with the bank full and forgetting what it
+earns, then all the CPU.
 
 Time since the anchor that no sample covers, as after a reboot, counts at the most the VM could have
 spent: every vCPU busy at the margin. On KVM 8 at the starting margin that is 3.64 cores above the
@@ -114,10 +121,14 @@ Readings carry Hostinger's clock and samples the box's own. When the wall clock 
 seconds against uptime within one pass, it has stepped, forward or back. No earlier sample can be
 laid beside a reading any more, so the anchor moves to that moment with the estimate the own count
 had, and readings move it again from there. Readings the new clock places in the future were settled
-under the old one and are dropped.
+under the old one and are dropped, and so is a fetch that was sent under it.
+
+Uptime starts over at a reboot, so no pass can compare it with the wall clock. There only a clock
+that reads before the last saved pass shows a step, and the estimate starts over from zero.
 
 Readings that end more than two hours before the box's clock move nothing. Either the feed stopped
-or the clock is wrong. In study S22, a clock three hours ahead for 30 hours cost no limit.
+or the clock is wrong. In studies S22, S24 and S25, a clock three hours ahead, three hours behind
+and 90 minutes ahead cost no limit.
 
 ## Spending
 
@@ -131,39 +142,46 @@ the runs behind 10%.
 
 ## Credit limits
 
-Limit detection is v0.3.2's with the hardening #23 merged. The [README](../README.md#how-it-works)
-describes it. This section covers what a limit does to the estimate.
+Limit detection is v0.3.2's with the hardening #23 merged, and one change: the burners can overrule
+a probe that passes. A VM that delivers what they ask is under no limit. The
+[README](../README.md#how-it-works) describes detection. This section covers what a limit does to
+the estimate.
 
 On entry the bank is empty, since that is what a credit limit means, and the estimate goes to zero.
-The governor keeps the anchor from before and what the limit found: the lowest the estimate read in
-the 20 minutes before entry. The estimate rises under a limit nobody has recognised yet, so its
-value at entry would overstate what the limit found. While the limit lasts, the estimate rises on
-the guest's own count and stops at 20%, Hostinger's lift point. Readings are not replayed until the
-lift.
+The governor keeps what the limit found: the lowest the estimate read in the 20 minutes before
+entry. The estimate rises under a limit nobody has recognised yet, so its value at entry would
+overstate what the limit found. While the limit lasts, the estimate rises on the guest's own count
+and stops at 20%, Hostinger's lift point. Readings are not replayed until the lift.
 
-At the lift the governor asks two questions. Was the limit confirmed, meaning a lift test failed
-during it with the VM held at the cap? And did it begin as a credit limit does? A credit limit
-delivers no more than the plan's limit. `creditCap()` in `src/governor.ts` takes the cores the VM
-delivered in the sample that showed the limit: more than the plan's limit + 0.3 cores means
-something else, such as Hostinger's sustained-use limit or heavy neighbours. Later samples are not
-judged. They show what the governor's own recovery ceiling let through.
+At the lift the estimate carries on from what the own count rebuilt since the limit began, and the
+anchor is set there. Nothing from before the limit comes back. What the limit found may have been
+spent while it lasted. And the anchor from before, replayed through a limit that work pressed on,
+would earn what the bank did not.
 
-| What the lift finds                  | Estimate                                                                     | Pad       |
-| ------------------------------------ | ---------------------------------------------------------------------------- | --------- |
-| Confirmed, began at the plan's limit | Stays where the own count put it, raised to the 10% floor if lower           | May rise  |
-| Began above the plan's limit         | What the limit found, at most 20%; readings since the old anchor then replay | Unchanged |
-| Began at the limit, never confirmed  | The higher of the own count and what the limit found, at most 20%            | Unchanged |
+Whether it was a credit limit is decided by the first lift test that fails. A lift test runs burners
+on more cores than the plan's limit allows, outside the slice.
 
-A limit root declared with `governor limit on` counts as beginning at the plan's limit.
+| What the first failed lift test finds                                     | The limit was                                 | Pad       |
+| ------------------------------------------------------------------------- | --------------------------------------------- | --------- |
+| The VM held at the plan's limit + 0.1 cores or less, 15% of demand stolen | Hostinger's credit limit                      | May rise  |
+| The VM held higher                                                        | Something else, such as a sustained-use limit | Unchanged |
+| No test fails: the first one passes                                       | The neighbours, or over already               | Unchanged |
+
+Later tests do not change the answer, however low a cap falls. A reboot forgets it, because the
+limit may have lifted while the VM was down.
+
+After a credit limit the governor expects no other for as long as full use takes to spend the 20%
+Hostinger lifts at, counted from the last test that still found the limit. Until then only evident
+steal starts a limit.
 
 The pad is the one thing the governor learns. A confirmed credit limit means the bank emptied while
 the estimate still showed credits. `billingGap()` divides those credits by the time since the bank
 was last known, an hour at least. The bank is known when the estimate is full, when it is empty, and
-at a lift, where Hostinger's bank is at 20%. If the estimate restarts under 20% there, the
-difference counts with the credits, until the estimate next runs empty. The result is a rate in
-cores that Hostinger billed and its readings did not show. `learnedPad()` adds 1.25 times that rate
-to the pad, at most 1 core per limit. The pad is billed on top of every reading and added to the
-tail's charge.
+at the lift of a credit limit, where Hostinger's bank has reached 20%. If the estimate stands under
+20% there, the difference counts with the credits, until the estimate next runs empty. The result is
+a rate in cores that Hostinger billed and its readings did not show. `learnedPad()` adds 1.25 times
+that rate to the pad, at most 1 core per limit. The pad is billed on top of every reading and added
+to the tail's charge.
 
 A limit that found the estimate already empty teaches nothing. The estimate saw it coming, as when
 work outside the slice spends the bank, and no billing was missed.
@@ -200,16 +218,21 @@ limit in eight weeks and delivered 0.11% less CPU than the same run with reading
 ## Restarts
 
 A daemon restart keeps the estimate. The time it was stopped is charged from the kernel's counters
-and earns nothing until readings settle past it.
+and earns nothing. When readings settle past the stop, they are taken as they are.
 
 A reboot keeps the estimate too when readings are fresh. Samples from before the reboot keep their
 place in time, and the time down counts as unknown time. In study S8 a 15-minute reboot with a full
 bank left the estimate at 31,114 of 34,560 core-seconds. Without fresh readings a reboot restarts
 the estimate at zero, because nothing says what ran while the VM was down.
 
-A `persist.json` that does not parse is renamed `persist.json.bad-<time>` and the estimate starts
-over from zero. The three newest such files are kept. A changed plan, baseline or VM id also starts
-it over. `initial_balance` counts on a first start only, and only when it is above zero.
+A `persist.json` that does not parse, or holds no state, is renamed `persist.json.bad-<time>` or
+passed over, and the estimate starts over from zero. The three newest such files are kept. A changed
+plan, baseline or VM id also starts it over.
+
+`initial_balance` counts on a first start only, and only when it is above zero. A first start has no
+`persist.json` and no `daemon.lock` in `/var/lib/governor`. The daemon leaves that lock file behind
+from its first run, v0.3 included, so state that goes missing later is lost state and starts from
+zero.
 
 ## State, commands and logs
 
@@ -238,6 +261,7 @@ baseline predicts, and whether a lift test confirmed the limit.
 | Sample cover a reading needs          | 90% of its interval                 | `settle()`                            |
 | Steal charged above                   | Plan's limit + 0.1 cores            | `billedSteal()`                       |
 | Hole ignored                          | Under 60 seconds                    | `UNCOVERED_SLACK_S`                   |
+| Remainder of a reading ignored        | Under 1 second                      | `settle()`                            |
 | Clock step                            | Over 60 seconds in one pass         | `CLOCK_STEP_S` in `governor.ts`       |
 | Most the own count adds               | Baseline − 1.05 × (limit − 0.2)     | `mostAdded()`, never under 0.04       |
 | Pad learned per limit                 | 1.25 × the rate, at most 1 core     | `learnedPad()`                        |
@@ -245,7 +269,7 @@ baseline predicts, and whether a lift test confirmed the limit.
 | Shortest time a rate is measured over | 1 hour                              | `billingGap()`                        |
 | Floor, spend time, refill time        | 10%, 30 minutes, 60 minutes         | `LAW` in `src/credits.ts`             |
 | Valid reading interval                | 900 to 2,700 seconds                | `validSpacing()` in `credits.ts`      |
-| A credit limit's first sample         | Limit + 0.3 cores at most           | `creditCap()` in `governor.ts`        |
+| A credit limit at a failed lift test  | Limit + 0.1 cores, 15% stolen       | `limitGone()` in `governor.ts`        |
 | What a limit found                    | Lowest estimate in 20 minutes       | `ONSET_MS` in `governor.ts`           |
 | Samples kept                          | 3 hours                             | `KEEP_MS` in `governor.ts`            |
 | Readings fetched and kept             | 48 hours, 72 hours                  | `FETCH_WINDOW_MS`, `READINGS_KEEP_MS` |
@@ -262,6 +286,13 @@ Measured on real boxes:
 - Readings rising by about half a core per stolen core, on one box.
 - 19 false credit limits in 13 days on a live box running v0.3.1 in `apply`. v0.3.2's detection
   gates were written to stop them, and v1.0.0 keeps those gates.
+- Two more on that box on 2026-11-23, while it was 93 to 97% idle with a full bank. An hourly
+  one-core burst woke its vCPUs with a moment of steal, and the probe passed on noise: 22 probes in
+  two and a half days measured 1 to 26% steal with the slice cut and 1 to 25% restored, with no
+  pattern, and three passed. Each time v0.3.1 held every login at 0.2 cores for 23 minutes. The
+  box's slice demand sat at 0.28 to 0.41 cores, so v0.3.2's 0.4-core gate would have cleared it by
+  2%. [Study results](study-results.md#a-real-boxs-false-limits-replayed) has the replay.
+- The newest reading compared with its later values for seven days, under v0.3: none was revised.
 
 Never observed on a governed box:
 
@@ -271,7 +302,8 @@ Never observed on a governed box:
 - whether Hostinger bills stolen CPU;
 - any plan below KVM 8.
 
-So the design assumes Hostinger bills what its readings show plus a small constant. If real billing
-runs above the readings, the box takes a limit, the pad learns the difference, and that costs
-throttled time. v0.3 had the same exposure in `apply`. Everything else on this page and in
+So the design assumes Hostinger bills what its readings show plus a small constant, and that a
+settled reading is final. If real billing runs above the readings, or Hostinger revises a settled
+reading upward, the box takes a limit, the pad learns the difference, and that costs throttled time.
+v0.3 had the same exposure in `apply`. Everything else on this page and in
 [study results](study-results.md) comes from simulation.

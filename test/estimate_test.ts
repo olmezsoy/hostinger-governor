@@ -210,6 +210,22 @@ Deno.test("a full bank is known, and a replay never leaves the bank's bounds", (
   settle(p, e, rs, samples(T0, T0 + HALF, 0.2));
   assertEquals(e.anchor!.balance, p.capacity);
   assertEquals(e.known, { at: rs[1].at, slack: 0 });
+  // A point already known later is the better one to measure from, and stays.
+  const later = { ...fresh(p.capacity - 100), known: { at: rs[1].at + 1, slack: 5 } };
+  settle(p, later, rs, samples(T0, T0 + HALF, 0.2));
+  assertEquals(later.known, { at: rs[1].at + 1, slack: 5 });
+  // Uptime and the wall clock drift apart by a little. Samples that cover a hair less than the
+  // interval, or a hair more, leave a full bank full and make no credits.
+  for (const seconds of [29.99, 30.01]) {
+    const drift = samples(T0, T0 + HALF, 0.2).map((x) => ({ ...x, seconds }));
+    const full = fresh(p.capacity);
+    settle(p, full, rs, drift);
+    assertEquals(full.anchor!.balance, p.capacity);
+    assertEquals(full.known.at, rs[1].at);
+    const spent = fresh(0);
+    settle(p, spent, readings(8), samples(T0, T0 + HALF, 8).map((x) => ({ ...x, seconds })));
+    assertEquals(spent.anchor!.balance, 0);
+  }
   const empty = fresh(100);
   settle(p, empty, readings(8), samples(T0, T0 + HALF, 8));
   assertEquals(empty.anchor!.balance, 0);
@@ -240,10 +256,11 @@ Deno.test("a reading that began before the anchor counts only the time after it"
   settle(p, e, readings(6), samples(T0, T0 + HALF, 3));
   // The reading averages time the anchor already settled, so the own count stands in.
   assertAlmostEquals(e.anchor!.balance, 7000 + (p.baseline - 3.15 - 0.04) * 1200);
-  // Without samples the reading is all there is, over the time after the anchor.
+  // Without samples nobody watched that time, and the reading cannot say how much of its CPU
+  // ran after the anchor: it counts at the most the VM could have spent.
   const bare = fresh(7000, at);
   settle(p, bare, readings(6), []);
-  assertAlmostEquals(bare.anchor!.balance, 7000 + (p.baseline - 6 - ESTIMATE.pad) * 1200);
+  assertAlmostEquals(bare.anchor!.balance, 7000 - maxDrain(p, margin(p, bare)) * 1200);
 });
 
 Deno.test("a sample whose place in time is unknown covers no reading", () => {
@@ -253,6 +270,36 @@ Deno.test("a sample whose place in time is unknown covers no reading", () => {
   // Uncovered, so the reading stands unguarded.
   assertAlmostEquals(e.anchor!.balance, 10_000 + (p.baseline - 1 - ESTIMATE.pad) * 1800);
   assertEquals(e.excess, []);
+});
+
+Deno.test("a sample over time the daemon was stopped covers no reading", () => {
+  // Two hours stopped: one idle, one with every core busy outside the slice. The one sample the
+  // restart makes knows only the mean, four cores.
+  const stopped: Sample = {
+    at: T0 + 4 * HALF,
+    seconds: 7200,
+    busy: 0.5,
+    steal: 0,
+    outside: 4,
+    earning: false,
+    unobserved: true,
+  };
+  const e = fresh(p.capacity);
+  settle(p, e, readings(0, 0, 8, 8), [stopped]);
+  // Laid beside the readings, that mean would pass the idle hour for a broken feed and hold the
+  // busy hour's 8 cores to 5.5. The readings stand as they are: the bank was full, then spent.
+  // The idle hour's pad, 36 core-seconds, counts as 4.5 seconds with every core busy.
+  assertAlmostEquals(
+    e.anchor!.balance,
+    p.capacity - (8 - p.baseline) * 4.5 + (p.baseline - 8 - ESTIMATE.pad) * 3600,
+  );
+  assertEquals(e.excess, []);
+  // The estimate still charges the stop from that sample, and earns nothing for it.
+  const m = margin(p, fresh());
+  assertAlmostEquals(
+    tail(p, { at: T0, balance: p.capacity }, [stopped], m, T0 + 4 * HALF),
+    p.capacity - (1.05 * 4 + 0.04) * 7200,
+  );
 });
 
 Deno.test("the estimate is the anchor plus the own count since", () => {

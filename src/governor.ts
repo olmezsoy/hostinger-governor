@@ -106,10 +106,11 @@ export type Limit = {
   // The estimate the limit found, and whether the limit may teach: one an operator declared, or
   // whose entry a reboot or a seed separated from its lift, may not.
   entry?: { balance: number; learn: boolean };
-  // A lift test failed while it lasted: Hostinger was limiting the VM, not the neighbours.
+  // What the first lift test that failed found. True: the VM held at the plan's limit with
+  // steal, which is Hostinger's credit limit. False: something else held it, such as a
+  // sustained-use limit, whose cap starts higher however low it falls later. Unset until a test
+  // fails.
   confirmed?: boolean;
-  // Cores the VM delivered in the sample that showed the limit.
-  cap?: number;
   recovery?: { seconds: number; earningSeconds: number; charged: number };
   // Uptime of the last test that still found the limit.
   limitedUptime?: number;
@@ -152,10 +153,7 @@ export type Private = {
   rebuilding?: Rebuilding | null;
 };
 // The limit as consumers see it; internal evidence and timing stay private.
-export type PublicLimit = Omit<
-  Limit,
-  "limitedUptime" | "tightenedCeiling" | "cap"
->;
+export type PublicLimit = Omit<Limit, "limitedUptime" | "tightenedCeiling">;
 
 // What every consumer reads.
 export type PublicState = {
@@ -202,6 +200,8 @@ export type PublicState = {
 };
 
 const STEAL_WINDOW_MS = 5 * 60_000;
+// Limit detection needs three passes in that window.
+const MAX_DETECTING_TICK_SECONDS = 100;
 const CPU_WINDOW_MS = 30 * 60_000;
 // Samples outlast the slowest reading to settle, so the tail of the estimate is always counted.
 const KEEP_MS = 3 * 3_600_000;
@@ -246,12 +246,6 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const finite = (...xs: unknown[]) => xs.every((x) => typeof x === "number" && Number.isFinite(x));
 const planKey = (p: Plan) => `${p.vcpus}:${p.baseline}:${p.capacity}`;
 
-// A credit limit delivers no more than the plan's limit. A limit that began with the VM delivering
-// more is something else, such as Hostinger's sustained-use limit or heavy neighbours: the credit
-// rules went on under it, and it teaches nothing about billing. Only the sample that showed the
-// limit is judged. Later ones show what the governor's own recovery ceiling let through.
-export const creditCap = (p: Plan, cap?: number) => cap !== undefined && cap <= p.limit + 0.3;
-
 // Hostinger's readings less the guest's own busy CPU, in percentage points of the plan, over the
 // reading intervals the samples cover in full. A diagnostic for the report.
 export function compareReadings(readings: Reading[], samples: Sample[]): number | null {
@@ -261,7 +255,7 @@ export function compareReadings(readings: Reading[], samples: Sample[]): number 
     if (!validSpacing(start, end)) continue;
     let observed = 0, guest = 0;
     for (const x of samples) {
-      if (x.clockValid === false) continue;
+      if (x.clockValid === false || x.unobserved) continue;
       const ms = Math.min(end, x.at) - Math.max(start, x.at - x.seconds * 1000);
       if (ms <= 0) continue;
       observed += ms;
@@ -277,7 +271,6 @@ const publicLimit = (limit: Limit): PublicLimit => {
   const copy: Limit = { ...limit };
   delete copy.limitedUptime;
   delete copy.tightenedCeiling;
-  delete copy.cap;
   return copy;
 };
 async function list(dir: string): Promise<Deno.DirEntry[]> {
@@ -408,7 +401,7 @@ type Legacy = {
   at?: number;
   bootId?: string;
   uptime?: number;
-  limit?: { since?: number };
+  limit?: { since?: number; ceiling?: number };
   probe?: { cooldownUntil?: number; backoffMs?: number; failedSf?: number; quietUntil?: number };
   vmId?: number | null;
   margin?: { mul?: number; add?: number };
@@ -417,6 +410,7 @@ type Legacy = {
   cpuPrev?: Counters;
   usagePrev?: UsageSnapshot;
   calibration?: { gap?: number; estimates?: { acted?: number } };
+  evaluationFailed?: { behind?: number };
 };
 
 export class Governor {
@@ -525,7 +519,7 @@ export class Governor {
       rebuilding: { reason, since: now },
     });
     if (!saved) {
-      // A first start. Zero, the installer's default, states nothing: the readings may say more.
+      // A first start. Zero, the installer's default, states nothing.
       const initial = Math.min(this.cfg.initial_balance ?? 0, p.capacity);
       return fresh(initial, "first-start", initial > 0);
     }
@@ -539,25 +533,33 @@ export class Governor {
     const old = saved as Legacy;
     const samePlan = old.planKey === key;
     const s = fresh(0, samePlan || old.planKey === undefined ? "state-upgrade" : "plan-change");
-    // A limit in force stays in force, at a cautious ceiling, until a lift test passes. It is
-    // taken as the credit limit it was detected as, so its lift restarts the estimate there.
+    // A limit in force stays in force until a lift test passes, no wider than the ceiling it
+    // was held at: the upgrade must not reopen a slice that was pressing on the limit.
     if (old.limit && finite(old.limit.since)) {
+      const held = finite(old.limit.ceiling) && old.limit.ceiling! >= 20
+        ? Math.min(old.limit.ceiling!, 100 * p.vcpus)
+        : 100 * p.vcpus;
       s.limit = {
         since: old.limit.since!,
-        ceiling: recoveryCeiling(p, DEFAULT_OUTSIDE_CORES),
-        tightenedCeiling: 100 * p.vcpus,
+        ceiling: Math.min(held, recoveryCeiling(p, DEFAULT_OUTSIDE_CORES)),
+        tightenedCeiling: held,
         heldFrom: old.uptime ?? 0,
         startedAt: old.uptime ?? 0,
-        cap: p.limit,
       };
     }
     if (old.schema === 2 && samePlan && finite(old.balance, old.at)) {
       // v0.3's estimate was a lower bound, so it stands, and readings move it from here. Its
-      // samples cover the time those readings have not settled yet.
-      const acted = old.calibration?.estimates?.acted;
+      // samples cover the time those readings have not settled yet. It is the lowest of the
+      // estimates v0.3 kept: the open one, the one it acted on, and the open one less the hold
+      // of a calibration that was failing.
+      const acted = old.calibration?.estimates?.acted, behind = old.evaluationFailed?.behind;
       s.balance = Math.max(
         0,
-        Math.min(old.balance!, finite(acted) ? acted! : Infinity, p.capacity),
+        Math.min(
+          old.balance! - (finite(behind) ? Math.max(0, behind!) : 0),
+          finite(acted) ? acted! : Infinity,
+          p.capacity,
+        ),
       );
       s.at = old.at!;
       s.bootId = old.bootId;
@@ -588,6 +590,8 @@ export class Governor {
             limited: !!x.limited,
             clockValid: x.clockValid !== false,
             earning: !x.limited && !x.test && !x.unobserved,
+            ...(x.unobserved ? { unobserved: true } : {}),
+            ...(x.users && typeof x.users === "object" ? { users: x.users } : {}),
           }]
           : []
       );
@@ -685,7 +689,11 @@ export class Governor {
     const busy5 = avg(recent.map((x) => x.busy));
     const steal5 = avg(recent.map((x) => x.steal));
     const m = this.margin;
-    const charge = ownCharge(p, { busy: busy5, steal: steal5, limited: !!s.limit }, m);
+    // Charged sample by sample, as the estimate is: steal counts only where a sample says so.
+    const watched = recent.reduce((n, x) => n + x.seconds, 0);
+    const charge = watched
+      ? recent.reduce((n, x) => n + ownCharge(p, x, m) * x.seconds, 0) / watched
+      : m.add;
     // The last settled reading, or when this run began if a configured feed has given none.
     const since = s.readings.at(-1)?.at ?? this.startedAt ?? now;
     const pressing = s.limit &&
@@ -713,7 +721,7 @@ export class Governor {
           ? {
             checkedAt: s.fetchedAt,
             exact: false,
-            applied: !!s.estimate.anchor && !this.stale,
+            applied: !!s.estimate.anchor && !this.stale && !s.limit,
             difference: this.comparison,
           }
           : null,
@@ -766,7 +774,6 @@ export class Governor {
   // measure how far off it was.
   enterLimit(now: number, learn: boolean) {
     const s = this.s;
-    const latest = this.recent(Infinity).at(-1);
     // The estimate rises under a limit nobody has recognised yet, so what it reads now is not
     // what the limit found. The lowest it read in the 20 minutes before is.
     const found = Math.min(
@@ -782,10 +789,6 @@ export class Governor {
       heldFrom: s.uptime ?? 0,
       startedAt: s.uptime ?? 0,
       entry: { balance: found, learn },
-      confirmed: false,
-      // From the sample that showed the limit: the 5-minute window still holds samples from
-      // before it. A limit root declared is taken as the credit limit root says it is.
-      cap: learn && latest ? latest.busy * this.plan.vcpus : this.plan.limit,
       recovery: { seconds: 0, earningSeconds: 0, charged: 0 },
     };
     s.balance = 0;
@@ -793,13 +796,12 @@ export class Governor {
     return s.limit;
   }
 
-  // A limit is over. One that a lift test confirmed, with a credit limit's flat cap, was a credit
-  // limit: the bank was empty. If the estimate still showed credits, billing ran above it.
+  // A limit is over. One whose first failed lift test found the VM held at the plan's limit was a
+  // credit limit: the bank was empty. If the estimate still showed credits, billing ran above it.
   private lift(limit: Limit, now: number, finished: Clock) {
     const s = this.s, p = this.plan, e = s.estimate;
     const entry = limit.entry?.balance ?? 0;
-    const flat = creditCap(p, limit.cap);
-    const credit = !!limit.confirmed && flat;
+    const credit = limit.confirmed === true;
     const gap = billingGap(entry, e.known.slack, (limit.since - e.known.at) / 1000);
     // More than a fifth of a core is not a billing gap: something else emptied the bank, such as
     // readings that went missing. It teaches only when another follows within a day, which shows
@@ -808,12 +810,12 @@ export class Governor {
     if (credit && gap > BILLING_GAP_MAX) s.suspectAt = now;
     // A limit that found the estimate already empty was no surprise, as when work outside the
     // slice spends the bank: the gap is zero and nothing is learned.
+    const from = e.pad;
     if (
-      credit && limit.entry?.learn && Number.isFinite(gap) && gap > 0 &&
-      (gap <= BILLING_GAP_MAX || repeat)
+      credit && limit.entry?.learn && Number.isFinite(gap) &&
+      (gap <= BILLING_GAP_MAX || repeat) && learnedPad(p, from, gap) > from
     ) {
-      const from = e.pad;
-      e.pad = learnedPad(p, e.pad, gap);
+      e.pad = learnedPad(p, from, gap);
       log(
         "calibration:",
         JSON.stringify({ at: now, trigger: "credit-limit", gap, pad: { from, to: e.pad } }),
@@ -837,23 +839,16 @@ export class Governor {
           ? Math.round(recovery.seconds - recovery.earningSeconds)
           : null,
         baselineShare: p.baseline / p.vcpus,
-        confirmed: !!limit.confirmed,
+        confirmed: credit,
       }),
     );
-    if (!flat) {
-      // Not a credit limit's cap: the bank was never empty, so the estimate from before it comes
-      // back. The anchor has not moved since, and the readings it skipped are replayed from it.
-      s.balance = Math.min(entry, p.recovered);
-    } else {
-      // Hostinger lifts at 20%. A confirmed limit restarts at the spending floor, under that; a
-      // limit no test confirmed gets back at most what it found.
-      s.balance = Math.max(
-        s.balance,
-        limit.confirmed ? LAW.floor * p.capacity : Math.min(entry, p.recovered),
-      );
-      e.anchor = { at: Math.max(now, finished.at), balance: s.balance };
-      e.known = { at: now, slack: limit.confirmed ? p.recovered - s.balance : 0 };
-    }
+    // The estimate carries on from what the own count rebuilt since the limit began, when the
+    // bank held nothing or more. Nothing from before the limit comes back. What the limit found
+    // may have been spent while it lasted. And the anchor, replayed through a limit that work
+    // pressed on, would earn what the bank did not.
+    e.anchor = { at: Math.max(now, finished.at), balance: s.balance };
+    // Hostinger lifts a credit limit at 20%, so the bank held that much at some point since.
+    e.known = { at: now, slack: credit ? p.recovered - s.balance : 0 };
     // Right after a credit lift no credit limit can come yet.
     if (credit) {
       s.probe.quietUntil = (limit.limitedUptime ?? done) +
@@ -982,17 +977,20 @@ export class Governor {
     }
   }
 
-  // Work outside an idle slice sits near the host limit with steal: ask the host with burners
-  // before entering, so noisy neighbours near the cap never start a false limit.
-  private async pinnedLimit(): Promise<Clock | null> {
+  // Ask the host with burners before entering a limit that steal alone does not make evident,
+  // and return when they finished, or null where they speak against one. A VM that delivers
+  // what they ask is under no limit, whatever a probe scored. Where no probe spoke for a limit,
+  // as with work outside an idle slice, only a VM held at the plan's limit counts, so noisy
+  // neighbours near the cap start no false one.
+  private async burnersAgree(probed: boolean): Promise<Clock | null> {
     try {
-      if (await this.limitGone() || this.liftEvidence !== "limited") return null;
-      return await this.io.clock();
+      if (await this.limitGone() || !probed && this.liftEvidence !== "limited") return null;
     } catch (e) {
       this.liftEvidence = "unknown";
       log("cap test inconclusive:", e);
-      return null;
+      if (!probed) return null;
     }
+    return await this.io.clock();
   }
 
   async tick(clock?: Clock) {
@@ -1039,15 +1037,12 @@ export class Governor {
     // The wall clock jumped against uptime. Readings carry Hostinger's clock, so no sample from
     // before the jump, or across it, can be laid beside one any more.
     const stepped = Math.abs((now - beforeAt) / 1000 - seconds) > CLOCK_STEP_S;
-    if (stepped) {
-      for (const x of s.samples) x.clockValid = false;
-      // Readings the new clock places in the future were settled under the old one.
-      s.readings = s.readings.filter((r) => r.at <= now);
-    }
+    if (stepped) this.clockStepped(now);
     // Longer than two passes: the daemon was stopped, so the sample only knows the average. A
-    // pass that probed or tested the lift runs up to a minute longer, which the daemon watched.
+    // pass that probed and asked the burners runs up to 80 seconds longer, which the daemon
+    // watched.
     const unobserved = seconds >
-      2 * (this.cfg.tick_seconds ?? DEFAULT_TICK_SECONDS) + (tested ? 60 : 0);
+      2 * (this.cfg.tick_seconds ?? DEFAULT_TICK_SECONDS) + (tested ? 90 : 0);
     const pressing = !!s.limit && limitPressing(p, busy, steal);
     const sample: Sample = {
       at: now,
@@ -1093,9 +1088,7 @@ export class Governor {
     }
     // After a clock step the estimate carries on from where the own count has it, and readings
     // move it again from here.
-    if (stepped && s.estimate.anchor && !s.limit) {
-      s.estimate.anchor = { at: now, balance: s.balance };
-    }
+    if (stepped && s.estimate.anchor) s.estimate.anchor = { at: now, balance: s.balance };
     const fetched = this.fetched;
     this.fetched = false;
     this.resettle();
@@ -1150,21 +1143,23 @@ export class Governor {
       (uptime >= s.probe.cooldownUntil || evident || jumped)
     ) {
       let confirmed = evident;
-      let pinnedAt: Clock | null = null;
-      if (!confirmed && pinned) {
-        pinnedAt = await this.pinnedLimit();
-        confirmed = !!pinnedAt;
-      } else if (!confirmed) {
-        confirmed = await this.probe(sfNow, current ?? 100 * p.vcpus);
+      let heldAt: Clock | null = null;
+      // A probe compares two short steal shares, and on a nearly idle box noise passes it: a real
+      // box took false limits that way. So the burners can overrule a probe.
+      if (!confirmed && (pinned || await this.probe(sfNow, current ?? 100 * p.vcpus))) {
+        heldAt = await this.burnersAgree(!pinned);
+        confirmed = !!heldAt;
       }
       if (confirmed) {
         const entered = this.enterLimit(now, true);
         // Recovery's clock starts after the burners that found the cap.
-        if (pinnedAt) entered.startedAt = entered.heldFrom = Math.max(uptime, pinnedAt.uptime);
+        if (heldAt) entered.startedAt = entered.heldFrom = Math.max(uptime, heldAt.uptime);
         s.probe.backoffMs = BACKOFF_MS;
         s.probe.failedSf = undefined;
         log(
-          `limit: start${pinnedAt ? ", the VM pinned at the cap with the slice idle" : ""} ` +
+          `limit: start${
+            heldAt && pinned ? ", the VM pinned at the cap with the slice idle" : ""
+          } ` +
             `(estimate ${Math.round(100 * (entered.entry?.balance ?? 0) / p.capacity)}%)`,
         );
         this.notify("limit-start");
@@ -1219,10 +1214,9 @@ export class Governor {
         if (lifted) {
           this.lift(limit, now, finished);
         } else {
-          if (this.liftEvidence === "limited") {
-            limit.confirmed = true;
-            limit.limitedUptime = done;
-          }
+          // The first test that fails says what holds the VM.
+          limit.confirmed ??= this.liftEvidence === "limited";
+          if (limit.confirmed && this.liftEvidence === "limited") limit.limitedUptime = done;
           limit.testEvery = Math.min(2 * (limit.testEvery ?? TEST_EVERY_MS / 2), TEST_MAX_MS);
           // Schedule from completion, not the sample taken before a 35-second test.
           limit.testAt = done + limit.testEvery;
@@ -1238,11 +1232,23 @@ export class Governor {
     }
   }
 
+  // The wall clock moved against what was saved under it. No earlier sample can be laid beside a
+  // reading any more. Readings the new clock places in the future were settled under the old
+  // one, and a fetch sent under it would bring them back.
+  private clockStepped(now: number) {
+    for (const x of this.s.samples) x.clockValid = false;
+    this.s.readings = this.s.readings.filter((r) => r.at <= now);
+    this.fetcher?.reset();
+  }
+
   // The first pass of a boot, or after the CPU counters started over. There is no sample yet.
   private async restart({ at: now, uptime, bootId }: Clock, hadState: boolean) {
     const s = this.s;
     this.fetcher?.reset();
     const reason = s.bootId !== bootId ? "reboot" : "counter-reset";
+    // Uptime starts over at a boot, so only a clock that reads before the last pass shows a step.
+    const back = hadState && now < s.at;
+    if (back) this.clockStepped(now);
     s.bootId = bootId;
     s.uptime = uptime;
     s.at = now;
@@ -1256,7 +1262,7 @@ export class Governor {
     // them. Their uptime means nothing now.
     for (const x of s.samples) delete x.uptime;
     if (hadState) {
-      if (s.estimate.anchor && !this.stale && !s.limit) {
+      if (s.estimate.anchor && !this.stale && !s.limit && !back) {
         // The readings and the samples before the stop still say where the bank was. The time
         // down counts at the most the VM could have spent, until the readings that cover it settle.
         s.balance = tail(this.plan, s.estimate.anchor, s.samples, this.margin, now);
@@ -1264,6 +1270,7 @@ export class Governor {
         // Nothing recent says where the bank is. Empty is the lower bound.
         s.balance = 0;
         s.rebuilding = { reason, since: now };
+        if (back && s.estimate.anchor) s.estimate.anchor = { at: now, balance: 0 };
       }
     } else {
       // A first start: what the configuration stated about the bank holds from this pass on.
@@ -1277,6 +1284,7 @@ export class Governor {
       s.limit.testAt = 0;
       s.limit.testEvery = undefined;
       s.limit.limitedUptime = undefined;
+      s.limit.confirmed = undefined;
       if (s.limit.entry) s.limit.entry.learn = false;
       s.limit.recovery = { seconds: 0, earningSeconds: 0, charged: 0 };
     }
@@ -1382,9 +1390,11 @@ export async function openGovernor(
   plan: Plan,
   io: Partial<GovernorIO> = {},
   paths: Pick<typeof PATHS, "run" | "lib"> = PATHS,
+  // Whether a daemon has run on this box before. Then missing state is lost state.
+  ranBefore = false,
 ): Promise<Governor> {
   const { saved, readable } = await readPersisted(`${paths.lib}/persist.json`);
-  const g = new Governor(cfg, plan, saved, io, paths);
+  const g = new Governor(cfg, plan, saved ?? (ranBefore ? LOST : undefined), io, paths);
   g.persistWritable = readable;
   return g;
 }
@@ -1406,7 +1416,9 @@ export async function readPersisted(
     return { saved: LOST, readable: false };
   }
   try {
-    return { saved: JSON.parse(text) ?? LOST, readable: true };
+    const saved = JSON.parse(text);
+    // Anything but an object is no state either, and no first start.
+    return { saved: saved && typeof saved === "object" ? saved : LOST, readable: true };
   } catch {
     log("persist.json invalid; set aside, the estimate starts over");
     await Deno.rename(path, `${path}.bad-${Math.floor(Date.now() / 1000)}`).catch(() => {});
@@ -1436,21 +1448,26 @@ export async function runDaemon() {
   if (Deno.uid() === 0) throw new Error("governor run must run as the governor user");
   const cfg = await loadConfig();
   const p = await detectPlan(cfg);
-  // One daemon at a time: two would overwrite each other's state.
-  const lock = await Deno.open(`${PATHS.lib}/daemon.lock`, {
-    create: true,
-    write: true,
-    mode: 0o600,
-  });
+  // One daemon at a time: two would overwrite each other's state. The lock file outlives every
+  // run, so one that is already there says a daemon has run on this box before.
+  const lockPath = `${PATHS.lib}/daemon.lock`;
+  const ranBefore = await Deno.lstat(lockPath).then(() => true, () => false);
+  const lock = await Deno.open(lockPath, { create: true, write: true, mode: 0o600 });
   if (!await lock.tryLock(true)) {
     lock.close();
     throw new Error("another governor run is active");
   }
-  const g = await openGovernor(cfg, p);
+  const g = await openGovernor(cfg, p, {}, PATHS, ranBefore);
   log(startLine(p, g.s.balance));
   const legacy = legacySettings(cfg);
   if (legacy.length) {
     log(`config: ${legacy.join(", ")} settings are from before v1.0.0 and no longer used`);
+  }
+  if ((cfg.tick_seconds ?? 0) > MAX_DETECTING_TICK_SECONDS) {
+    log(
+      `config: tick_seconds above ${MAX_DETECTING_TICK_SECONDS} leaves fewer than the three ` +
+        "passes in five minutes that limit detection needs; no limit will be recognised",
+    );
   }
   const controller = new AbortController();
   let ranPass = false;

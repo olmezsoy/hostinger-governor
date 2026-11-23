@@ -30,7 +30,7 @@ full use. At zero the whole VPS drops to a fraction of its CPU (30% on KVM 2, 4 
 balance rebuilds, and while work keeps pressing on that limit, nothing is earned. A busy server can
 stay limited for as long as the load lasts.
 
-![Diagram of how hostinger-governor works. Hostinger holds the CPU credit bank, and the VPS cannot read its balance. Every 30 seconds by default, governor.service reads CPU and steal from the kernel, updates its estimate of the bank, and sets one shared CPU quota on user.slice: every login, governor exec jobs, and services or Docker you enroll. Everything else is measured, not capped. Every 30 minutes it fetches Hostinger's CPU readings in the background. Settled readings are replayed through Hostinger's rules and move the estimate up or down. The guest's own count, 1.05 × use + 0.04 vCPU or more, covers the 30 to 100 minutes no settled reading reaches yet. After two hours without a reading, or with no token, the estimate runs on the own count alone. Spending: every vCPU while the estimate is high, then a glide onto the 10% spending floor; with no governor, the same load empties the bank and Hostinger limits the VPS. When steal follows demand during a 20-second probe at 0.2 vCPU, which runs only while user.slice has work to cut (at least 0.4 vCPU on KVM 4 and up, 0.3 on KVM 1 and 2), or reaches 60% of demand and a quarter of the host limit, or burners confirm the whole VPS is capped while work outside an idle user.slice presses on it, the governor treats the VPS as limited: it sets the estimate to 0 and holds user.slice below the host limit, down to 0.2 vCPU, until a lift test passes. At the lift, a confirmed credit limit raises the pad billed on top of every reading and starts a quiet window before probing again; a sustained-use limit gets back the estimate from before it. If the probe or cap check does not confirm a limit, the governor stays in Spending and retries in 10 minutes, doubling to 1 hour. A saved limit resumes on start. A restart keeps the estimate; after a reboot the time down counts at the most the VPS could have spent, or the estimate restarts at 0 without recent readings. While the daemon is not running, systemd holds user.slice, SSH included, at 0.2 vCPU by default.](docs/how-it-works.svg)
+![Diagram of how hostinger-governor works. Hostinger holds the CPU credit bank, and the VPS cannot read its balance. Every 30 seconds by default, governor.service reads CPU and steal from the kernel, updates its estimate of the bank, and sets one shared CPU quota on user.slice: every login, governor exec jobs, and services or Docker you enroll. Everything else is measured, not capped. Every 30 minutes it fetches Hostinger's CPU readings in the background. Settled readings are replayed through Hostinger's rules and move the estimate up or down. The guest's own count, 1.05 × use + 0.04 vCPU or more, covers the 30 to 100 minutes no settled reading reaches yet. After two hours without a reading, or with no token, the estimate runs on the own count alone. Spending: every vCPU while the estimate is high, then a glide onto the 10% spending floor; with no governor, the same load empties the bank and Hostinger limits the VPS. When steal follows demand during a 20-second probe at 0.2 vCPU, which runs only while user.slice has work to cut (at least 0.4 vCPU on KVM 4 and up, 0.3 on KVM 1 and 2), and burners do not then get all the CPU they ask for, or steal reaches 60% of demand and a quarter of the host limit, or burners find the VPS held at the plan's limit while work outside an idle user.slice presses on it, the governor treats the VPS as limited: it sets the estimate to 0 and holds user.slice below the host limit, down to 0.2 vCPU, until a lift test passes. At the lift, a limit whose first failed lift test found the VPS held at the plan's limit raises the pad billed on top of every reading and starts a quiet window before probing again. After any limit the estimate carries on from the guest's own count since the limit began. If the probe or cap check does not confirm a limit, the governor stays in Spending and retries in 10 minutes, doubling to 1 hour. A saved limit resumes on start. A restart keeps the estimate; after a reboot the time down counts at the most the VPS could have spent, or the estimate restarts at 0 without recent readings. While the daemon is not running, systemd holds user.slice, SSH included, at 0.2 vCPU by default.](docs/how-it-works.svg)
 
 The governor measures the whole machine and caps workloads placed under `user.slice`:
 
@@ -60,17 +60,20 @@ The governor measures the whole machine and caps workloads placed under `user.sl
   governor compares steal with demand, cuts the quota for 20 seconds, then restores it. A limit's
   steal should follow demand. The probe runs only while the slice's own demand, its busy CPU and its
   share of the steal, is at least 0.4 cores (0.3 cores on KVM 1 and 2): below that the cut removes
-  too little, and on an idle box neighbour noise alone used to confirm false limits. Steal of 60% of
-  demand counts as a limit without a probe only when it is also a quarter of the host limit in
-  cores; otherwise a busy slice is still probed. Work outside an idle slice can still press on a
-  limit: when the whole VM sits near the host limit (85% of it up to +0.1 cores) with 15% steal or
-  more, the governor confirms the cap with its burners before entering so noisy neighbours near the
-  cap cannot cause false limits. After a confirmed credit lift, for as long as full use takes to
-  spend the 20% a lift leaves (36 minutes at cost on every plan, a few minutes less with the margin,
-  measured from the last failed lift test), only evident steal starts a limit. Failed probes and cap
-  checks back off from 10 minutes, doubling to an hour. Obvious or sharply increased steal can
-  bypass that cooldown. This is a heuristic; the guest cannot read the host's count of throttled
-  scheduling periods, so detection can be delayed and neighbours can cause false alarms.
+  too little. A probe that passes is not enough either. On a real, nearly idle box its two short
+  measurements scored noise and started false limits, so the governor then runs its burners, busy
+  loops on more cores than the plan's limit allows. A VM that delivers what they ask is under no
+  limit, and the probe is overruled. Steal of 60% of demand counts as a limit without a probe only
+  when it is also a quarter of the host limit in cores; otherwise a busy slice is still probed. Work
+  outside an idle slice can still press on a limit: when the whole VM sits near the host limit (85%
+  of it up to +0.1 cores) with 15% steal or more, the burners decide without a probe, and there only
+  a VM they find held at the plan's limit starts a limit. After a confirmed credit lift, for as long
+  as full use takes to spend the 20% a lift leaves (36 minutes at cost on every plan, a few minutes
+  less with the margin, measured from the last failed lift test), only evident steal starts a limit.
+  Failed probes and cap checks back off from 10 minutes, doubling to an hour. Obvious or sharply
+  increased steal can bypass that cooldown. This is a heuristic; the guest cannot read the host's
+  count of throttled scheduling periods, so detection can be delayed and neighbours can cause false
+  alarms.
 - **Helps the VPS recover.** Under a limit it sets the estimate to zero and reduces login and
   enrolled-workload demand so earning can resume. It accounts for services outside the slice and
   tightens every minute while demand still presses on the limit, down to a 20% quota of one core,
@@ -79,14 +82,15 @@ The governor measures the whole machine and caps workloads placed under `user.sl
   point, or after the earliest possible idle recovery time. Failed tests back off for 2, 4, 8, then
   15 minutes from completion. Probe and test intervals still count toward billed CPU, but cannot
   tighten the quota or masquerade as outside demand.
-- **Learns one thing from limits.** A credit limit that a failed lift test confirmed, and that began
-  with the VM delivering no more than 0.3 cores above the plan's limit, means the bank emptied while
-  the estimate still showed credits. The governor turns those credits into a rate, multiplies it by
-  1.25 and adds it to the pad, the cores it bills on top of every reading. A limit that begins with
-  the VM delivering more is not a credit limit, but something like Hostinger's sustained-use limit:
-  it teaches nothing, and the estimate restarts at what the limit found, at most 20%, until readings
-  say more. A limit whose first lift test passes teaches nothing either. Neither does a limit that
-  found the estimate already empty, as when work outside the slice spends the bank.
+- **Learns one thing from limits.** The first lift test that fails says what holds the VM. If it
+  finds the VM held at the plan's limit, that is Hostinger's credit limit, and the bank emptied
+  while the estimate still showed credits. The governor turns those credits into a rate, multiplies
+  it by 1.25 and adds it to the pad, the cores it bills on top of every reading. A limit whose first
+  failed test finds the VM held higher is something else, such as Hostinger's sustained-use limit,
+  and teaches nothing. Neither does one whose first test passes, or one that found the estimate
+  already empty, as when work outside the slice spends the bank. Whatever the limit was, the
+  estimate carries on from what the guest's own count rebuilt since it began. Nothing from before
+  the limit comes back.
 - **Keeps a fallback quota.** The default is 20% of one core before startup, after shutdown or a
   crash, and early in boot. Operators can choose a different fallback. The helper can change only
   `user.slice`; recovery and probe floors still use 20%.
@@ -209,7 +213,8 @@ configuration if setup fails. See
 A fresh install starts the estimate at zero because the real balance is unknown. It grows from
 observed CPU use, and with a Hostinger token or broker the readings move it from the first pass on.
 Readings from before the install are not replayed. Root can state a known balance with
-`governor seed`.
+`governor seed`. `initial_balance` in the config does the same for the very first start only: once a
+daemon has run on the box, missing state is lost state and starts from zero.
 
 To run one control pass immediately, as root:
 
@@ -578,8 +583,15 @@ two minutes in sequence.
 - Sustained work above the baseline (4.8 vCPU on KVM 8) cannot fit; it runs slower instead. If that
   is your normal load, a plan with dedicated vCPUs is the fix.
 - Hostinger also throttles sustained high use as potential abuse, on rules it does not publish. The
-  governor tells that limit from a credit limit by its cap, which starts higher or falls, and learns
-  nothing from it. It cannot predict it.
+  governor tells that limit from a credit limit by its first failed lift test: a VM held more than
+  0.1 cores above the plan's limit is not under a credit limit, and the limit teaches nothing. A
+  sustained-use limit that holds the VM at or under that looks like a credit limit and is treated as
+  one. The governor cannot predict either.
+- A settled reading is taken as final. If Hostinger revised older readings upward, the estimate
+  would miss the difference until a limit taught the pad. Seven days of comparing the newest reading
+  with its later values on a real box showed no revision.
+- `tick_seconds` above 100 leaves limit detection fewer than the three passes in five minutes it
+  needs, so no limit is recognised. The daemon logs a warning at start. The default is 30.
 - System services and containers outside `user.slice` are measured, not capped. Enroll heavy work
   using the commands above. The governor cannot guarantee recovery while outside demand remains
   above the host limit. Limits that outside work causes can still raise the pad a little, when the

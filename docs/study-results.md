@@ -32,14 +32,14 @@ in `test/studies.ts` asks of them. The bank holds 34,560 core-seconds and the sp
 | ----- | ------------------------------------------------------ | ------------: | ---------------: | -------------: | -------------: |
 | S1    | Billing equals the meter                               |             0 |            3,261 |          0.155 |        5,217.5 |
 | S2    | 0.03 cores billed that readings do not show            |             0 |            2,266 |          0.155 |        5,217.5 |
-| S3    | 0.10 cores billed that readings do not show            |             1 |                0 |          0.268 |        5,143.3 |
+| S3    | 0.10 cores billed that readings do not show            |             1 |                0 |          0.274 |        5,139.6 |
 | S4    | Meter slope rises from 1.0463 to 1.07 on day 28        |             0 |            1,929 |          0.270 |        5,178.9 |
-| S5    | Sustained-use limit from day 7                         |             0 |            3,286 |          0.155 |        5,204.5 |
-| S6    | Neighbours steal 70% for six minutes on day 7          |             0 |            3,296 |          0.155 |        5,211.6 |
+| S5    | Sustained-use limit from day 7                         |             0 |            3,283 |          0.155 |        5,204.5 |
+| S6    | Neighbours steal 70% for six minutes on day 7          |             0 |            3,296 |          0.155 |        5,211.0 |
 | S7    | No readings on days 14 and 15                          |             0 |            3,269 |          0.155 |        5,211.6 |
 | S8    | Reboot on day 7, 15 minutes down                       |             0 |            3,238 |          0.155 |        5,217.2 |
 | S9    | A 62-minute reading interval every 31 readings         |             0 |            2,917 |          0.117 |        5,210.8 |
-| S10   | Clock an hour ahead for an hour on day 7               |             0 |            3,261 |          0.155 |        5,217.5 |
+| S10   | Clock an hour ahead for an hour on day 7               |             0 |            3,288 |          0.155 |        5,217.3 |
 | S11   | Unreadable `persist.json` at a restart on day 7        |             0 |            3,292 |          0.155 |        5,216.9 |
 | S13   | Readings 50% noisier                                   |             0 |            3,584 |          0.236 |        5,206.3 |
 | S15   | Neighbours steal up to a core, billed at half of it    |             0 |            3,765 |          0.233 |        5,189.8 |
@@ -49,9 +49,9 @@ in `test/studies.ts` asks of them. The bank holds 34,560 core-seconds and the sp
 | S19   | No Hostinger API configured                            |             0 |            3,129 |          0.040 |        5,211.7 |
 | S20   | Readings at half the meter from day 7                  |             0 |            3,306 |          0.107 |        5,172.2 |
 | S21   | No readings for 2.4 hours on day 8, every core wanted  |             0 |            3,306 |          0.190 |        5,977.3 |
-| S22   | Clock three hours ahead for 30 hours from day 7        |             0 |            3,261 |          0.155 |        5,216.1 |
-| S23   | S3's 0.10 cores, and neighbours who steal under limits |             1 |                0 |          0.234 |        5,053.1 |
-| S24   | Clock three hours behind for 12 hours on day 7         |             0 |            3,261 |          0.155 |        5,207.9 |
+| S22   | Clock three hours ahead for 30 hours from day 7        |             0 |            3,216 |          0.155 |        5,215.8 |
+| S23   | S3's 0.10 cores, and neighbours who steal under limits |             1 |                0 |          0.234 |        5,052.2 |
+| S24   | Clock three hours behind for 12 hours on day 7         |             0 |            3,288 |          0.155 |        5,207.6 |
 | S25   | Clock 90 minutes ahead for 12 hours, every core wanted |             0 |            3,306 |          0.172 |        5,977.4 |
 
 "Final addition" is the cores the own count adds to 1.05 × busy cores at the end of the run. It
@@ -61,7 +61,7 @@ What the rows show:
 
 - S1 delivers 0.11% more CPU than S19, the same run on the guest's own count alone.
 - S2's hidden 0.03 cores cost no limit. The bank's low point is 2,266 where S1's is 3,261.
-- S3 takes one limit on day 2.8, for 54 minutes. It raises the pad from 0.02 to 0.133 cores, and the
+- S3 takes one limit on day 2.8, for 54 minutes. It raises the pad from 0.02 to 0.139 cores, and the
   remaining 53 days take no limit.
 - S4, S13, S15, S16 and S17 show the addition following the readings. In S17 the box pays for the
   extra half core with 5.7% less CPU than S1.
@@ -84,7 +84,7 @@ What the rows show:
 - S23 is S3 with neighbours who take 3% of the VM and keep taking it while Hostinger limits it. The
   governor's recovery ceiling cuts what the VM delivers during the limit, and the limit still counts
   as a credit limit, because only the sample that showed it is judged. It takes one limit on day
-  2.9, for 31 minutes, and the pad ends at 0.108 cores.
+  2.9, for 32 minutes, and the pad ends at 0.108 cores.
 
 Outside a limit, the estimate at seed 13 ran above the real bank by 2,547 core-seconds at most in
 every study but the two with 0.10 hidden cores, where it reached 4,878 (S3) and 5,067 (S23). The
@@ -96,7 +96,7 @@ Seeds 1 to 12 make 276 runs of 56 simulated days. All 276 pass their criteria. T
 limits:
 
 - 12 in S3 and 12 in S23, one per run, each the limit that teaches the 0.10-core gap. The pad ended
-  between 0.100 and 0.133 cores.
+  between 0.101 and 0.133 cores.
 - 2 in S17, where the meter jumps half a core: one each in seeds 7 and 12.
 
 The other 20 studies took no limit in any seed.
@@ -106,7 +106,7 @@ over the 12 seeds:
 
 | Study                        | Most above the bank | Seeds past the 3,456 floor |
 | ---------------------------- | ------------------: | -------------------------: |
-| S17, meter jumps half a core |               5,538 |                          5 |
+| S17, meter jumps half a core |               5,539 |                          5 |
 | S2, 0.03 hidden cores        |               3,452 |                          0 |
 | S4, meter slope rises        |               3,213 |                          0 |
 | The 18 others without a gap  |               2,769 |                          0 |
@@ -147,13 +147,13 @@ Totals over the 15 scenarios at seed 1, against the unreleased v0.3.3 code in `a
 |                      |  v1.0.0 | v0.3.3 `apply` | v0.3.3 `off` |
 | -------------------- | ------: | -------------: | -----------: |
 | Throttles            |      27 |             43 |           46 |
-| Throttled hours      |    78.5 |          248.7 |        241.1 |
-| Core-hours delivered | 9,799.6 |        9,147.9 |      9,129.2 |
+| Throttled hours      |    80.3 |          248.7 |        241.1 |
+| Core-hours delivered | 9,798.7 |        9,147.9 |      9,129.2 |
 
 v1.0.0 delivers 7.1% more than `apply`, but one scenario carries most of that. With a hidden
 overhead and a per-vCPU limit, `apply` stayed throttled for 141.8 hours of its week and delivered
 132.8 core-hours where v1.0.0 delivers 660.4. Without that scenario v1.0.0 delivers 1.4% more, and
-throttled hours go from 106.9 to 78.5.
+throttled hours go from 106.9 to 80.3.
 
 All 27 throttles are in the three scenarios where Hostinger's real baseline is 30%. There the rules
 the governor replays are wrong, and only limits can show it.
@@ -170,25 +170,29 @@ back-to-back limits, and steady work near the cap with no limit at all.
 |              | v1.0.0 | v0.3.3 `apply` | v0.3.3 `off` |
 | ------------ | -----: | -------------: | -----------: |
 | Throttles    |     46 |             58 |           48 |
-| False limits |      2 |              2 |            2 |
+| False limits |      0 |              2 |            2 |
 | Probes       |    158 |            173 |          163 |
+
+Both false limits of the earlier design came from a probe that passed on a host with noisy
+neighbours. The burners now overrule those.
 
 ## A limit that begins during a probe cooldown
 
 After a failed probe the governor waits 10 to 60 minutes before the next. A limit that begins in
 that wait must still be recognised. v1.0.0 was compared with v0.3.2 on 2,376 such cases over KVM 1,
 2, 4 and 8 with two steal models. No case goes unrecognised that v0.3.2 recognises. Of the 2,280
-cases both versions could be measured on, 2,071 are within a minute of v0.3.2, 125 are faster and 84
-slower.
+cases both versions could be measured on, 2,002 are within a minute of v0.3.2, 122 are faster and
+156 slower. The burner test that now follows a probe takes 35 seconds, and that is the median
+difference. 89 of the slower cases are within two minutes.
 
 - Timing, 288 cases: all within a minute of v0.3.2.
-- No cooldown, 96 cases: all within a minute.
-- Stale, 768 cases: 677 within a minute, 79 faster, 12 slower.
-- Wide, 1,008 cases: 798 within a minute, 46 faster, 68 slower, 96 not comparable. 58 of the slower
-  ones start with the estimate 30% under the floor. The floor is now twice as high, so the estimate
-  has twice as far to climb before the ceiling opens. The slowest case is a KVM 1, 1,970 seconds
+- No cooldown, 96 cases: 90 within a minute, 6 slower.
+- Stale, 768 cases: 657 within a minute, 79 faster, 32 slower.
+- Wide, 1,008 cases: 761 within a minute, 43 faster, 108 slower, 96 not comparable. Many of the
+  slower ones start with the estimate under the floor, which is now twice as high, so the estimate
+  has twice as far to climb before the ceiling opens. The slowest case is a KVM 1, 2,005 seconds
   against 250.
-- Shape, 216 cases: 212 within a minute, 4 slower. 30 cases are not recognised within 90 minutes by
+- Shape, 216 cases: 206 within a minute, 10 slower. 30 cases are not recognised within 90 minutes by
   either version.
 
 These runs have no readings feed, so they exercise the guest's own count. No task in `deno.json`
@@ -211,12 +215,43 @@ Readings at 95% of the meter stay above the guest's own count at low load, so th
 That is billing the readings do not show: each run takes one limit, and the pad ends between 0.098
 and 0.205 cores.
 
-With a wrong clock the estimate ran at most 5.5% of capacity above the bank. The last row is S23's
+With a wrong clock the estimate ran at most 5.4% of capacity above the bank. The last row is S23's
 condition: one limit per run, the one that teaches the gap.
 
 Without a readings feed, a week of billing at 1.12 × the guest's CPU + 0.15 cores takes 3 or 4
 limits over five seeds while the pad learns it, where v0.3.3 `off` took 2. With a feed the readings
 show that overhead and the week takes none.
+
+## A real box's false limits, replayed
+
+This section is the one on this page that rests on real measurements. On 2026-11-23 a KVM 8 box on
+v0.3.1 took two false credit limits, at 07:01 and 08:31 UTC. It was 93 to 97% idle, Hostinger's
+readings showed 3.5 to 5.2% of its vCPUs in use, and the bank was full. Each limit held every login
+at 0.2 cores for 23 minutes. The cause: an hourly burst of about one core woke the vCPUs with 0.3
+cores of steal for one pass, which is 11 to 12% of the little demand in the five-minute window. The
+probe then measured 3% and 7% of demand stolen, cut and restored, and later 7% and 13%, and passed
+both times.
+
+The box's own per-pass samples and the probe measurements its journal logged were replayed through
+each release's `Governor`. The burners are taken to get their CPU, which is what the box's own lift
+tests found 24 minutes later. Eight variants cover what is not known: the eight passes before the
+first event that the box no longer held, on either side of v0.3.2's gate; what a probe one pass
+later would have measured; and a burst 5% larger.
+
+| Release                                  | Variants with a limit | Limits | Held at 20% for |
+| ---------------------------------------- | --------------------: | -----: | --------------: |
+| v0.3.1                                   |                8 of 8 |      2 |      47 minutes |
+| v0.3.2                                   |                7 of 8 | 0 to 2 | 0 to 47 minutes |
+| v1.0.0 before the burners could overrule |                7 of 8 | 0 to 2 | 0 to 47 minutes |
+| v1.0.0                                   |                0 of 8 |      0 |               0 |
+
+v0.3.2's gate, at least 0.4 cores of slice demand before a probe, clears this box by 2%: its window
+sat at 0.28 to 0.41 cores. In v1.0.0 a probe that passes is followed by the burners, and a VM that
+delivers what they ask is under no limit, whatever the probe scored. The estimate stays full in
+every variant.
+
+The harness and the box's data are not in the repository, so no task reruns this.
+`test/governor_test.ts` holds the same case as a unit test.
 
 ## Upgrading from v0.3.2
 
@@ -236,7 +271,7 @@ No task in `deno.json` reruns this.
 
 ## Size and speed
 
-`src/` went from 10,104 lines to 4,106, and the TypeScript under `test/` from 16,965 to 6,411. The
+`src/` went from 10,104 lines to 4,123, and the TypeScript under `test/` from 16,965 to 6,624. The
 23 studies run in under two minutes in sequence. Each took a minute or more before.
 
 ## Rerun
