@@ -82,7 +82,8 @@ export function shares(
   );
 }
 
-// The processes behind a hot or stolen moment, appended to one file a day, kept a week.
+// The summary (load, %Cpu(s) with steal, memory) and the processes behind a hot or stolen moment,
+// appended to one file a day, kept a week.
 export async function topSnapshot(dir: string, at: number) {
   const out = await new Deno.Command("top", {
     args: ["-b", "-c", "-n", "2", "-d", "1", "-o", "%CPU", "-w", "220"],
@@ -90,7 +91,7 @@ export async function topSnapshot(dir: string, at: number) {
     stderr: "null",
   }).output();
   const text = new TextDecoder().decode(out.stdout);
-  const rows = (text.split(/^top - /m).at(-1) ?? "").split("\n").slice(6, 21).join("\n");
+  const rows = (text.split(/^top - /m).at(-1) ?? "").split("\n").slice(0, 21).join("\n");
   await Deno.mkdir(dir, { recursive: true });
   await Deno.writeTextFile(
     `${dir}/${new Date(at).toISOString().slice(0, 10)}.log`,
