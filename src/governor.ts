@@ -465,7 +465,7 @@ export class Governor {
       demand: demandSample,
       burner: () =>
         new Deno.Command("timeout", {
-          args: ["35", "sh", "-c", "while :; do :; done"],
+          args: ["32", "sh", "-c", "while :; do :; done"],
           stdout: "null",
           stderr: "null",
         }).spawn(),
@@ -1254,7 +1254,7 @@ export class Governor {
           if (this.liftEvidence !== "unknown") limit.confirmed ??= this.liftEvidence === "limited";
           if (limit.confirmed && this.liftEvidence === "limited") limit.limitedUptime = done;
           limit.testEvery = Math.min(2 * (limit.testEvery ?? TEST_EVERY_MS / 2), TEST_MAX_MS);
-          // Schedule from completion, not the sample taken before a 35-second test.
+          // Schedule from completion, not the sample taken before a 32-second test.
           limit.testAt = done + limit.testEvery;
         }
       }
