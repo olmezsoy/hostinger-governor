@@ -599,7 +599,8 @@ two minutes in sequence.
   plan's limit, which starts a false limit for about 24 minutes. A burner test that fails to run
   counts as a failed check, so a real limit behind it waits out the cooldown, up to an hour.
 - Limit detection needs three passes. With `tick_seconds` above 100 that takes longer than five
-  minutes, and a limit is recognised later by as much. The default is 30.
+  minutes, and a limit is recognised later by as much. The default is 30. The most it accepts is
+  120, so that the public state stays fresh.
 - System services and containers outside `user.slice` are measured, not capped. Enroll heavy work
   using the commands above. The governor cannot guarantee recovery while outside demand remains
   above the host limit. Limits that outside work causes can still raise the pad a little, when the

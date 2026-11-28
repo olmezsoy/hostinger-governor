@@ -334,9 +334,9 @@ export function validateConfig(cfg: Config): Config {
   if (cfg.hook_timeout_seconds !== undefined) validateHookTimeout(cfg.hook_timeout_seconds);
   if (
     cfg.tick_seconds !== undefined &&
-    (!Number.isFinite(cfg.tick_seconds) || cfg.tick_seconds < 1 || cfg.tick_seconds > 300)
+    (!Number.isFinite(cfg.tick_seconds) || cfg.tick_seconds < 1 || cfg.tick_seconds > 120)
   ) {
-    throw new Error("tick_seconds must be from 1 to 300");
+    throw new Error("tick_seconds must be from 1 to 120");
   }
   if (
     cfg.initial_balance !== undefined &&

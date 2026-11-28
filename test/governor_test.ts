@@ -1422,6 +1422,7 @@ test("settings of earlier releases still load, and a misspelt one does not", () 
     "is not a setting",
   );
   assertThrows(() => validateConfig({ tick_seconds: 0 }), Error, "tick_seconds");
+  assertThrows(() => validateConfig({ tick_seconds: 121 }), Error, "tick_seconds");
   assertThrows(() => validateConfig({ initial_balance: -1 }), Error, "initial_balance");
   assertThrows(() => validateConfig({ slice: "system.slice" }), Error, "slice");
   assertThrows(() => validateConfig({ vcpus: 0 }), Error, "vcpus");
@@ -1549,21 +1550,22 @@ test("the published five-minute figures weigh each sample by its time inside the
     Math.round((p.baseline - charged) * 10) / 10,
   );
   // At a slow tick they are still the last five minutes: busy ones here, after idle passes.
-  const slow = fixture({ initial_balance: 20_000, tick_seconds: 300 });
-  await slow.advance(300);
-  for (let i = 0; i < 3; i++) await slow.advance(300, 0);
-  await slow.advance(300, 0.5);
-  assertEquals(slow.g.publicState(slow.at).cpu.busy5, 0.5);
+  // Two busy passes hold 240 of the five minutes, and the idle pass before them the other 60.
+  const slow = fixture({ initial_balance: 20_000, tick_seconds: 120 });
+  await slow.advance(120);
+  for (let i = 0; i < 3; i++) await slow.advance(120, 0);
+  for (let i = 0; i < 2; i++) await slow.advance(120, 0.5);
+  assertAlmostEquals(slow.g.publicState(slow.at).cpu.busy5, 0.4);
 });
 
 test("a slow tick still gives limit detection its three passes", async () => {
-  const f = fixture({ initial_balance: 20_000, tick_seconds: 300 });
-  await f.advance(300);
-  // Three passes are fifteen minutes here, more than the five the window usually spans.
-  await f.advance(300, 0.2, 0.4);
-  await f.advance(300, 0.2, 0.4);
+  const f = fixture({ initial_balance: 20_000, tick_seconds: 120 });
+  await f.advance(120);
+  // Three passes are six minutes here, more than the five the window usually spans.
+  await f.advance(120, 0.2, 0.4);
+  await f.advance(120, 0.2, 0.4);
   assertEquals(f.g.s.limit, undefined);
-  await f.advance(300, 0.2, 0.4);
+  await f.advance(120, 0.2, 0.4);
   assert(f.g.s.limit);
 });
 
