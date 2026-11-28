@@ -90,7 +90,7 @@ export async function topSnapshot(dir: string, at: number) {
     stderr: "null",
   }).output();
   const text = new TextDecoder().decode(out.stdout);
-  const rows = (text.split(/^top - /m).at(-1) ?? "").split("\n").slice(6, 21).join("\n");
+  const rows = (text.split(/^top - /m).at(-1) ?? "").split("\n").slice(0, 21).join("\n");
   await Deno.mkdir(dir, { recursive: true });
   await Deno.writeTextFile(
     `${dir}/${new Date(at).toISOString().slice(0, 10)}.log`,
