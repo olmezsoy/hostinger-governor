@@ -1632,6 +1632,8 @@ test("the API's readings and the guest's own count are compared over whole inter
   assertEquals(compareReadings(rs, own.slice(0, 30)), null);
   // Time the daemon did not watch is compared with nothing.
   assertEquals(compareReadings(rs, own.map((x) => ({ ...x, unobserved: true }))), null);
-  assertEquals(startLine(p, 17_280).includes("50% credits"), true);
+  const up = startLine(p, 17_280, "9.9.9");
+  assertEquals(up.startsWith("governor up: 9.9.9, "), true);
+  assertEquals(up.includes("50% credits"), true);
   return Promise.resolve();
 });

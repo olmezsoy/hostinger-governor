@@ -86,7 +86,7 @@ const [cmd, ...args] = Deno.args;
 try {
   switch (cmd) {
     case "run":
-      await runDaemon();
+      await runDaemon(VERSION);
       break;
     case "tick":
       if (args.length) usage();
