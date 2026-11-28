@@ -208,6 +208,8 @@ const READINGS_KEEP_MS = 72 * 3_600_000;
 // Outside a limit on 4+ vCPU plans, ignore 10% ceiling jitter to stop nonstop sudo/systemctl churn.
 const CEILING_DEADBAND = 20;
 const TEST_EVERY_MS = 2 * 60_000;
+// How long each burner runs. A burner test's measurement has to end before the burners do.
+const BURN_SECONDS = 32;
 const TEST_MAX_MS = 15 * 60_000;
 const TIGHTEN_AFTER_MS = 60_000;
 const BACKOFF_MS = 10 * 60_000;
@@ -464,7 +466,7 @@ export class Governor {
       demand: demandSample,
       burner: () =>
         new Deno.Command("timeout", {
-          args: ["32", "sh", "-c", "while :; do :; done"],
+          args: [String(BURN_SECONDS), "sh", "-c", "while :; do :; done"],
           stdout: "null",
           stderr: "null",
         }).spawn(),
@@ -982,12 +984,24 @@ export class Governor {
     this.s.noEarn = true;
     this.s.tested = true;
     try {
+      const started = (await this.io.clock()).uptime;
       for (let i = 0; i < n; i++) burn.push(this.io.burner());
       await this.io.pause(5_000);
       const sample = await this.io.demand(25_000);
+      const ranMs = (await this.io.clock()).uptime - started;
       const statuses = await Promise.all(burn.map((c) => c.status));
       if (!statuses.every((s) => s.code === 124)) {
         log("burner test: a burner stopped early, no result");
+        return false;
+      }
+      // Exit code 124 says only that timeout stopped a burner, not that it outlasted the
+      // measurement. Late timers can stop the burners inside it and count too few cores.
+      if (ranMs >= BURN_SECONDS * 1000) {
+        log(
+          `burner test: the measurement ran ${
+            Math.round(ranMs / 1000)
+          } s, past the burners, no result`,
+        );
         return false;
       }
       const busyCores = sample.busy * this.plan.vcpus;

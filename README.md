@@ -168,7 +168,7 @@ stopping. This removes only the runtime snapshot; credit estimates in `/var/lib/
 sudo systemctl stop governor.service
 sudo rm -f /run/governor/state.json
 sudo systemctl start governor.service
-sudo governor exec --wait 60 -- /usr/bin/true
+sudo governor exec --wait 90 -- /usr/bin/true
 grep NoNewPrivs "/proc/$(systemctl show governor.service --property=MainPID --value)/status"
 ```
 
