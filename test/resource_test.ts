@@ -355,7 +355,11 @@ Deno.test("report warns when readings have stopped, and shows a ceiling failure 
       `None since ${new Date(now - 7_200_000).toISOString()}; the estimate runs on guest CPU alone`,
     ),
   );
-  assert(text.includes("Hostinger reads 2.5 percentage points above the guest's CPU count"));
+  assert(
+    text.includes(
+      "Hostinger read 2.5 percentage points above the guest's CPU count in the last 3 hours",
+    ),
+  );
 
   // Recovery quota failure remains visible even while an active limit is present.
   state.limit = { since: now - 60_000, ceiling: 100, heldFrom: 0 };

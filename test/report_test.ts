@@ -43,7 +43,9 @@ Deno.test("creditLines warns, with the date, once Hostinger's readings have stop
   const healthy = creditLines(s, () => "00:00Z");
   assert(!healthy.some((line) => line.startsWith("Warning:")));
   assert(
-    healthy.join("\n").includes("Hostinger readings checked 00:00Z, CPU difference 1.3 points"),
+    healthy.join("\n").includes(
+        "Hostinger readings checked 00:00Z, CPU difference 1.3 points in the last 3 hours",
+      ),
   );
   s.credits.staleSince = Date.parse("2026-11-16T09:05:00Z");
   // Status passes a time of day for the last check; a warning carries the date whatever it
