@@ -1511,6 +1511,20 @@ test("the published rate charges each sample as the estimate does", async () => 
   }
   const mean = 1.05 * (7 + 1.5) / 2 + 0.04;
   assertEquals(f.g.publicState(f.at).credits.rate, Math.round((p.baseline - mean) * 10) / 10);
+  // A full bank earns nothing, even when it shows as full only once rounded, but spending above
+  // the baseline still shows.
+  const full = fixture({ initial_balance: p.capacity });
+  await full.advance();
+  for (let i = 0; i < 10; i++) await full.advance(30, 0.5 / 8);
+  full.g.s.balance = p.capacity - 0.4;
+  assertEquals(full.g.publicState(full.at).credits.rate, 0);
+  for (let i = 0; i < 10; i++) await full.advance(30, 7 / 8);
+  full.g.s.balance = p.capacity;
+  assertEquals(
+    full.g.publicState(full.at).credits.rate,
+    Math.round((p.baseline - 1.05 * 7 - 0.04) * 10) / 10,
+  );
+  assert(full.g.publicState(full.at).credits.rate < 0);
 });
 
 test("the published five-minute figures weigh each sample by its time inside them", async () => {
