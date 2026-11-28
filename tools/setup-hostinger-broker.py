@@ -60,10 +60,11 @@ CHILD_CLEANUP_SECONDS = 5
 CONNECTION_CHECK_SECONDS = 2 * BROKER.REQUEST_SECONDS + QUICK_COMMAND_SECONDS
 # Governor finishes its active tick and waits for an in-flight diagnostic request
 # on SIGTERM. Startup derives the plan locally and publishes after one full tick.
-# A tick may hold a limit probe: 20 s capped, then 20 s restored.
-# A lift test runs instead of the probe and is shorter. Pinned against
-# governor.ts by governor_limit_test_ms in test/fixtures/hostinger-protocol.json.
-GOVERNOR_LIMIT_TEST_SECONDS = 40
+# The longest pass holds a probe, 40 s: 20 s with the slice cut to 20% of a
+# core, then 20 s restored. A burner test of 32 s follows it, so 72 s in all.
+# Nothing ties this value to the code: update it by hand when the probe or
+# burner timing in src/governor.ts changes.
+GOVERNOR_LIMIT_TEST_SECONDS = 72
 # governor.service sets no TimeoutStopSec, so systemd waits its default 90 s
 # for the active tick and diagnostics request to finish. Outlast that wait.
 SYSTEMD_STOP_SECONDS = 90

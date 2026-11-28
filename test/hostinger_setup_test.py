@@ -245,9 +245,12 @@ class DeadlineTests(unittest.TestCase):
         # STOP_SECONDS assumes systemd's default stop timeout for the unit.
         self.assertNotIn("TimeoutStopSec", unit)
         self.assertGreater(REMOTE.STOP_SECONDS, REMOTE.SYSTEMD_STOP_SECONDS)
+        # On SIGTERM, stop() aborts the control loop and closes diagnostics at
+        # once, so the running pass and an in-flight broker request finish side
+        # by side. The longer of the two has to fit, not their sum.
         self.assertGreater(
             REMOTE.SYSTEMD_STOP_SECONDS,
-            REMOTE.GOVERNOR_LIMIT_TEST_SECONDS + REMOTE.BROKER.REQUEST_SECONDS,
+            max(REMOTE.GOVERNOR_LIMIT_TEST_SECONDS, REMOTE.BROKER.REQUEST_SECONDS),
         )
         self.assertGreater(
             REMOTE.FRESH_STATE_SECONDS,

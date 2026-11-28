@@ -69,10 +69,10 @@ Setup and rollback stop Governor before marking the new start. They require a st
 after that boundary. The old daemon's shutdown write cannot certify a new process that never
 publishes, even if the service reports active. Governor finishes its current tick and any active
 diagnostics request before it stops and publishes only after its first tick, and a tick may include
-a 40-second limit test. Setup therefore waits up to 105 seconds for stopping, covering systemd's
-default 90-second stop timeout plus a margin, and 55 seconds for fresh state, covering one long tick
-and startup. Startup uses configured vCPUs or the kernel's CPU count without contacting Hostinger.
-Rollback has its own step deadlines; the overall setup deadline does not interrupt it.
+a 72-second probe and burner test. Setup therefore waits up to 105 seconds for stopping, covering
+systemd's default 90-second stop timeout plus a margin, and 87 seconds for fresh state, covering one
+long tick and startup. Startup uses configured vCPUs or the kernel's CPU count without contacting
+Hostinger. Rollback has its own step deadlines; the overall setup deadline does not interrupt it.
 
 The wizard does not rotate or revoke Hostinger tokens. Revoke an old token in hPanel after verifying
 migration if it is no longer used elsewhere. Other copies of a token and existing credential-manager
@@ -174,8 +174,8 @@ Re-run the regular Governor installer when upgrading. Its `KillMode=mixed` servi
 initial stop signal to the daemon so its broker launcher can finish; systemd still cleans up
 remaining children afterward. Replacing only the binary keeps the old service setting. This also
 lets an active probe or lift test, including its CPU burners, finish before stopping. Hooks still
-cancel their own process groups. The 40-second limit-test budget plus a 25-second broker request
-fits within systemd's default 90-second stop timeout.
+cancel their own process groups. The 72-second probe and burner test and a 25-second broker request
+run side by side, and both fit within systemd's default 90-second stop timeout.
 
 The installer doesn't touch an installed broker, and the setup wizard refuses to overwrite its
 files. Replace the broker's source with the matching release's copy as root. The release publishes
