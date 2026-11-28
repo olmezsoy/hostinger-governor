@@ -356,7 +356,9 @@ export function buildReport(
     const a = state.credits.anchor;
     const detail = a.difference === null
       ? "Guest and API samples are not comparable yet"
-      : `Hostinger reads ${number(a.difference)} percentage points above the guest's CPU count`;
+      : `Hostinger reads ${
+        number(a.difference)
+      } percentage points above the guest's CPU count in the last 3 hours`;
     sections.push({
       title: "API comparison",
       note: `Last checked ${new Date(a.checkedAt).toISOString()}. ${detail}.`,

@@ -201,7 +201,7 @@ export function creditLines(s: PublicState, clock: (ms: number) => string): stri
     ? `Hostinger readings checked ${clock(c.anchor.checkedAt)}${
       c.anchor.difference === null
         ? ""
-        : `, CPU difference ${c.anchor.difference.toFixed(1)} points`
+        : `, CPU difference ${c.anchor.difference.toFixed(1)} points in the last 3 hours`
     }`
     : "Hostinger readings not yet checked";
   return [
