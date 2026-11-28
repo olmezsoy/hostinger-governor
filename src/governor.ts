@@ -167,7 +167,6 @@ export type PublicState = {
   credits: {
     balance: number;
     percent: number;
-    minutesAtFull: number;
     // vCPUs of credit earned per second now; negative while spending.
     rate: number;
     margin: Margin;
@@ -722,6 +721,10 @@ export class Governor {
     const since = s.readings.at(-1)?.at ?? this.startedAt ?? now;
     const pressing = s.limit &&
       limitPressing(p, avg(control.map((x) => x.busy)), avg(control.map((x) => x.steal)));
+    // The estimate stops the bank at capacity, so a bank published as full earns nothing.
+    const earn = Math.round(s.balance) >= p.capacity
+      ? Math.min(0, p.baseline - charge)
+      : p.baseline - charge;
     return {
       schemaVersion: 1,
       updatedAt: now,
@@ -733,9 +736,8 @@ export class Governor {
       credits: {
         balance: Math.round(s.balance),
         percent: Math.round((100 * s.balance) / p.capacity),
-        minutesAtFull: Math.round(s.balance / (p.vcpus - p.baseline) / 60),
         rate: Math.round(
-          (pressing || s.noEarn || s.earning === false ? -charge : p.baseline - charge) * 10,
+          (pressing || s.noEarn || s.earning === false ? -charge : earn) * 10,
         ) / 10,
         margin: { mul: m.mul, add: Math.round(m.add * 10_000) / 10_000 },
         law: LAW,
