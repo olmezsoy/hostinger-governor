@@ -34,7 +34,11 @@ Deno.test("plans follow Hostinger's published table", () => {
 const MARGIN = { mul: 1.05, add: 0.04 };
 
 Deno.test("the spend law glides onto the floor and spends every core above it", () => {
-  assertEquals(allowedCores(kvm8, kvm8.capacity, MARGIN), 8);
+  // A full bank's allowance is not cut to the plan's vCPUs; sliceCeiling caps the slice instead.
+  assertEquals(
+    allowedCores(kvm8, kvm8.capacity, MARGIN).toFixed(3),
+    ((4.8 + (34_560 - 3_456) / 1800 - 0.04) / 1.05).toFixed(3),
+  );
   assertEquals(
     allowedCores(kvm8, LAW.floor * kvm8.capacity, MARGIN).toFixed(3),
     ((4.8 - 0.04) / 1.05).toFixed(3),

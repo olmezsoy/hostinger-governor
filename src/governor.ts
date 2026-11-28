@@ -1341,17 +1341,13 @@ export class Governor {
   private async applyCeiling(current: number | null, { busy, steal, outside }: Control) {
     const s = this.s;
     const target = this.targetCeiling(outside);
-    // Outside a limit on 4+ vCPU plans, skip 10% jitter away from the 20% floor and full-plan
-    // ceiling. While actively throttling below full vCPU capacity, never delay tightening so the
-    // deadband cannot bias credit spend upward.
+    // Outside a limit on 4+ vCPU plans, skip a rise of 10% away from the 20% floor and full-plan
+    // ceiling. Never delay tightening, so the deadband cannot bias credit spend upward.
     if (
       !s.limit && !s.capFailed && current !== null && this.plan.vcpus >= 4 && current > 20 &&
       target > 20 && target < this.plan.vcpus * 100
     ) {
-      const full = allowedCores(this.plan, s.balance, this.margin) >= this.plan.vcpus;
-      const skip = full
-        ? Math.abs(target - current) < CEILING_DEADBAND
-        : target > current && target - current < CEILING_DEADBAND;
+      const skip = target > current && target - current < CEILING_DEADBAND;
       if (skip) {
         s.ceiling = current;
         return;

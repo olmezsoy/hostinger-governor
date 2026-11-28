@@ -30,28 +30,28 @@ in `test/studies.ts` asks of them. The bank holds 34,560 core-seconds and the sp
 
 | Study | Condition                                              | Credit limits | Lowest real bank | Final addition | CPU core-hours |
 | ----- | ------------------------------------------------------ | ------------: | ---------------: | -------------: | -------------: |
-| S1    | Billing equals the meter                               |             0 |            3,261 |          0.155 |        5,217.5 |
-| S2    | 0.03 cores billed that readings do not show            |             0 |            2,266 |          0.155 |        5,217.5 |
-| S3    | 0.10 cores billed that readings do not show            |             1 |                0 |          0.274 |        5,139.6 |
-| S4    | Meter slope rises from 1.0463 to 1.07 on day 28        |             0 |            1,929 |          0.270 |        5,178.9 |
-| S5    | Sustained-use limit from day 7                         |             0 |            3,283 |          0.155 |        5,201.2 |
-| S6    | Neighbours steal 70% for six minutes on day 7          |             0 |            3,296 |          0.155 |        5,211.0 |
-| S7    | No readings on days 14 and 15                          |             0 |            3,269 |          0.155 |        5,211.6 |
-| S8    | Reboot on day 7, 15 minutes down                       |             0 |            3,238 |          0.155 |        5,217.2 |
-| S9    | A 62-minute reading interval every 31 readings         |             0 |            2,917 |          0.117 |        5,210.8 |
-| S10   | Clock an hour ahead for an hour on day 7               |             0 |            3,288 |          0.155 |        5,217.3 |
-| S11   | Unreadable `persist.json` at a restart on day 7        |             0 |            3,292 |          0.155 |        5,216.9 |
-| S13   | Readings 50% noisier                                   |             0 |            3,584 |          0.236 |        5,206.3 |
-| S15   | Neighbours steal up to a core, billed at half of it    |             0 |            3,765 |          0.233 |        5,189.8 |
-| S16   | 2% steal all the time, with S4's slope change          |             0 |            2,607 |          0.191 |        5,108.1 |
-| S17   | Meter adds 0.5 cores from day 7, readings and billing  |             0 |            2,091 |          0.666 |        4,918.8 |
-| S18   | Readings at 8 times the meter from day 7               |             0 |            3,306 |          1.865 |        4,494.1 |
-| S19   | No Hostinger API configured                            |             0 |            3,129 |          0.040 |        5,211.7 |
-| S20   | Readings at half the meter from day 7                  |             0 |            3,306 |          0.107 |        5,172.2 |
+| S1    | Billing equals the meter                               |             0 |            3,263 |          0.155 |        5,217.7 |
+| S2    | 0.03 cores billed that readings do not show            |             0 |            2,265 |          0.155 |        5,217.7 |
+| S3    | 0.10 cores billed that readings do not show            |             1 |                0 |          0.274 |        5,139.8 |
+| S4    | Meter slope rises from 1.0463 to 1.07 on day 28        |             0 |            1,929 |          0.270 |        5,179.1 |
+| S5    | Sustained-use limit from day 7                         |             0 |            3,282 |          0.155 |        5,201.3 |
+| S6    | Neighbours steal 70% for six minutes on day 7          |             0 |            3,295 |          0.155 |        5,211.1 |
+| S7    | No readings on days 14 and 15                          |             0 |            3,270 |          0.155 |        5,211.6 |
+| S8    | Reboot on day 7, 15 minutes down                       |             0 |            3,238 |          0.155 |        5,217.4 |
+| S9    | A 62-minute reading interval every 31 readings         |             0 |            2,918 |          0.117 |        5,211.0 |
+| S10   | Clock an hour ahead for an hour on day 7               |             0 |            3,289 |          0.155 |        5,217.4 |
+| S11   | Unreadable `persist.json` at a restart on day 7        |             0 |            3,293 |          0.155 |        5,217.0 |
+| S13   | Readings 50% noisier                                   |             0 |            3,584 |          0.236 |        5,206.5 |
+| S15   | Neighbours steal up to a core, billed at half of it    |             0 |            3,765 |          0.233 |        5,190.1 |
+| S16   | 2% steal all the time, with S4's slope change          |             0 |            2,607 |          0.191 |        5,108.4 |
+| S17   | Meter adds 0.5 cores from day 7, readings and billing  |             0 |            2,091 |          0.666 |        4,919.0 |
+| S18   | Readings at 8 times the meter from day 7               |             0 |            3,306 |          1.865 |        4,494.2 |
+| S19   | No Hostinger API configured                            |             0 |            3,129 |          0.040 |        5,212.0 |
+| S20   | Readings at half the meter from day 7                  |             0 |            3,306 |          0.107 |        5,172.4 |
 | S21   | No readings for 2.4 hours on day 8, every core wanted  |             0 |            3,306 |          0.190 |        5,977.3 |
-| S22   | Clock three hours ahead for 30 hours from day 7        |             0 |            3,216 |          0.155 |        5,215.8 |
-| S23   | S3's 0.10 cores, and neighbours who steal under limits |             1 |                0 |          0.234 |        5,052.2 |
-| S24   | Clock three hours behind for 12 hours on day 7         |             0 |            3,288 |          0.155 |        5,207.6 |
+| S22   | Clock three hours ahead for 30 hours from day 7        |             0 |            3,216 |          0.155 |        5,216.0 |
+| S23   | S3's 0.10 cores, and neighbours who steal under limits |             1 |                0 |          0.234 |        5,052.5 |
+| S24   | Clock three hours behind for 12 hours on day 7         |             0 |            3,289 |          0.155 |        5,207.7 |
 | S25   | Clock 90 minutes ahead for 12 hours, every core wanted |             0 |            3,306 |          0.172 |        5,977.4 |
 
 "Final addition" is the cores the own count adds to 1.05 × busy cores at the end of the run. It
@@ -60,7 +60,7 @@ starts at 0.04.
 What the rows show:
 
 - S1 delivers 0.11% more CPU than S19, the same run on the guest's own count alone.
-- S2's hidden 0.03 cores cost no limit. The bank's low point is 2,266 where S1's is 3,261.
+- S2's hidden 0.03 cores cost no limit. The bank's low point is 2,265 where S1's is 3,263.
 - S3 takes one limit on day 2.8, for 54 minutes. It raises the pad from 0.02 to 0.139 cores, and the
   remaining 53 days take no limit.
 - S4, S13, S15, S16 and S17 show the addition following the readings. In S17 the box pays for the
