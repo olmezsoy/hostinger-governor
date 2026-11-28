@@ -28,6 +28,7 @@ Deno.test("plans follow Hostinger's published table", () => {
   ]);
   assertEquals([plan(4).capacity, plan(2).capacity, plan(1).capacity], [17_280, 8_640, 4_320]);
   assertEquals(plan(1).limit, 0.4);
+  assertEquals(plan(8, undefined, 0.7).capacity, 25_920);
 });
 
 // What the guest's own count charges before any reading says otherwise (src/estimate.ts).

@@ -28,7 +28,7 @@ export function plan(vcpus: number, name = `KVM ${vcpus}`, baselineShare = BASEL
     throw new Error("baseline_share must be from 0.1 to 0.9");
   }
   const baseline = baselineShare * vcpus;
-  const capacity = 10_800 * (vcpus - baseline);
+  const capacity = Math.round(10_800 * (vcpus - baseline));
   return {
     name,
     vcpus,
