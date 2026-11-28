@@ -1649,7 +1649,9 @@ test("the API's readings and the guest's own count are compared over whole inter
   // Time the daemon did not watch is compared with nothing.
   assertEquals(compareReadings(rs, own.map((x) => ({ ...x, unobserved: true }))), null);
   const up = startLine(p, 17_280, "9.9.9");
-  assertEquals(up.startsWith("governor up: 9.9.9, "), true);
-  assertEquals(up.includes("50% credits"), true);
+  assertEquals(
+    up,
+    "governor up: 9.9.9, KVM 8, baseline 4.8 vCPU, capacity 34560 core-seconds, 50% credits saved",
+  );
   return Promise.resolve();
 });
