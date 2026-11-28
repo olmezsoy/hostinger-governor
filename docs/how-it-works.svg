@@ -410,7 +410,7 @@
   <text x="532" y="822">cut each minute, down to 0.2 vCPU, while</text>
   <text x="532" y="840">work still presses, so earning can resume.</text>
   <text x="532" y="858">CPU outside the slice can still block it.</text>
-  <text x="532" y="884">Lift test: a 35 s burst on several cores.</text>
+  <text x="532" y="884">Lift test: a 32 s burst on several cores.</text>
   <text x="532" y="902">The VPS must keep ¾ of them busy with</text>
   <text x="532" y="920">under 15% steal. First test after 24 min,</text>
   <text x="532" y="938">then after 2, 4, 8, then every 15 min.</text>

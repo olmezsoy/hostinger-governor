@@ -385,7 +385,7 @@ export function run(sc: Sc) {
     steal: (ms) => Promise.resolve(sample(ms).steal),
     demand: (ms) => Promise.resolve(sample(ms)),
     burner: () => {
-      const end = h.t + 35_000;
+      const end = h.t + 32_000;
       h.burners.push(end);
       return {
         get status() {
