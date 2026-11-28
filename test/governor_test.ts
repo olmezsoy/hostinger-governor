@@ -1570,11 +1570,12 @@ test("the published five-minute figures weigh each sample by its time inside the
 test("a slow tick still gives limit detection its three passes", async () => {
   const f = fixture({ initial_balance: 20_000, tick_seconds: 120 });
   await f.advance(120);
-  // Three passes are six minutes here, more than the five the window usually spans.
-  await f.advance(120, 0.2, 0.4);
-  await f.advance(120, 0.2, 0.4);
+  // Passes that run late, 160 seconds apart: three of them span 320 seconds, more than the five
+  // minutes the window usually spans.
+  await f.advance(160, 0.2, 0.4);
+  await f.advance(160, 0.2, 0.4);
   assertEquals(f.g.s.limit, undefined);
-  await f.advance(120, 0.2, 0.4);
+  await f.advance(160, 0.2, 0.4);
   assert(f.g.s.limit);
 });
 
