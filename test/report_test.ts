@@ -19,8 +19,7 @@ Deno.test("text status distinguishes warmup and uses reserve-aware, margin-adjus
 });
 
 Deno.test("status runway stops at the spending floor", () => {
-  const g = new Governor(
-    {
+  const g = new Governor({
     hostinger: { vm_id: 1, token_file: "/etc/governor/hostinger-token" },
   }, plan(8));
   const s = g.publicState(1000);
