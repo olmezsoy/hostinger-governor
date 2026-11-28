@@ -963,12 +963,13 @@ export class Governor {
     if (!restored) throw new Error("failed to restore probe ceiling");
     await this.io.pause(5_000);
     const sfRestore = await this.io.steal(15_000);
+    const passed = limitConfirmed(sf0, sfCut, sfRestore);
     log(
       `limit test: steal ${Math.round(sf0 * 100)}% of demand, ${Math.round(sfCut * 100)}% cut, ${
         Math.round(sfRestore * 100)
-      }% restored`,
+      }% restored, ${passed ? "passed" : "failed"}`,
     );
-    return limitConfirmed(sf0, sfCut, sfRestore);
+    return passed;
   }
 
   // More cores than the limit allows, busy for 30 seconds: under it much of that is stolen.
@@ -983,7 +984,10 @@ export class Governor {
       await this.io.pause(5_000);
       const sample = await this.io.demand(25_000);
       const statuses = await Promise.all(burn.map((c) => c.status));
-      if (!statuses.every((s) => s.code === 124)) return false;
+      if (!statuses.every((s) => s.code === 124)) {
+        log("burner test: a burner stopped early, no result");
+        return false;
+      }
       const busyCores = sample.busy * this.plan.vcpus;
       const gone = liftConfirmed(this.plan, n, busyCores);
       this.liftEvidence = gone
@@ -993,6 +997,11 @@ export class Governor {
         : busyCores > this.plan.limit + 0.3
         ? "held"
         : "unknown";
+      log(
+        `burner test: ${n} burners, ${busyCores.toFixed(2)} cores busy, steal ${
+          Math.round(sample.steal * 100)
+        }% of demand: ${this.liftEvidence}`,
+      );
       return gone;
     } finally {
       for (const c of burn) {
@@ -1133,7 +1142,7 @@ export class Governor {
           at: now,
           balance: Math.round(s.balance),
           anchor: s.estimate.anchor ?? null,
-          margin: this.margin,
+          margin: { ...this.margin, add: Math.round(this.margin.add * 10_000) / 10_000 },
           pad: s.estimate.pad,
           stale: this.stale,
         }),
@@ -1469,13 +1478,13 @@ async function pruneQuarantine(path: string): Promise<void> {
   }
 }
 
-export function startLine(p: Plan, balance: number) {
-  return `governor up: ${p.name}, baseline ${p.baseline} vCPU, capacity ${p.capacity} core-seconds, ${
+export function startLine(p: Plan, balance: number, version: string) {
+  return `governor up: ${version}, ${p.name},baseline ${p.baseline} vCPU, capacity ${p.capacity} core-seconds, ${
     Math.round((100 * balance) / p.capacity)
   }% credits saved`;
 }
 
-export async function runDaemon() {
+export async function runDaemon(version: string) {
   // Files root created would be root's, mode 0600, and the service could no longer read them.
   if (Deno.uid() === 0) throw new Error("governor run must run as the governor user");
   const cfg = await loadConfig();
@@ -1490,7 +1499,7 @@ export async function runDaemon() {
     throw new Error("another governor run is active");
   }
   const g = await openGovernor(cfg, p, {}, PATHS, ranBefore);
-  log(startLine(p, g.s.balance));
+  log(startLine(p, g.s.balance, version));
   const legacy = legacySettings(cfg);
   if (legacy.length) {
     log(`config: ${legacy.join(", ")} settings are from before v1.0.0 and no longer used`);
