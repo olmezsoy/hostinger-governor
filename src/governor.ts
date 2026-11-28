@@ -1477,7 +1477,7 @@ async function pruneQuarantine(path: string): Promise<void> {
 }
 
 export function startLine(p: Plan, balance: number, version: string) {
-  return `governor up: ${version}, ${p.name},baseline ${p.baseline} vCPU, capacity ${p.capacity} core-seconds, ${
+  return `governor up: ${version}, ${p.name}, baseline ${p.baseline} vCPU, capacity ${p.capacity} core-seconds, ${
     Math.round((100 * balance) / p.capacity)
   }% credits saved`;
 }
