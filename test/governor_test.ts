@@ -277,6 +277,15 @@ test("lesser steal is tested: a limit's steal goes when the slice is cut and com
   assertEquals(held.world.burners, 5);
   assertEquals(held.g.s.limit, undefined);
   assertEquals(held.g.s.probe.backoffMs, 1_200_000);
+  // A measurement that outlasts the burners counts too few cores, and starts no limit.
+  const late = fixture({ initial_balance: 20_000 });
+  await late.advance();
+  late.world.probe = [0.01, 0.16];
+  late.world.burn = STILL;
+  late.world.burnSeconds = 33;
+  await late.run(3, 0.5, 0.1);
+  assertEquals(late.world.burners, 5);
+  assertEquals(late.g.s.limit, undefined);
 });
 
 test("a probe that scores noise on a nearly idle box starts no limit: the burners all run", async () => {
@@ -324,16 +333,16 @@ test("a pass that probed and asked the burners is time the daemon watched", asyn
   const f = fixture({ initial_balance: p.capacity, tick_seconds: 10 });
   await f.advance(10);
   f.world.probe = [0.07, 0.13];
-  // The probe takes 40 seconds and the burners 35.
-  f.world.burnSeconds = 75;
+  // The probe takes 40 seconds and the burner test 32.
+  f.world.burnSeconds = 72;
   for (let i = 0; i < 9; i++) await f.advance(10, 0.3 / p.vcpus, 0.02 / p.vcpus);
   await f.advance(10, 1.58 / p.vcpus, 0.36 / p.vcpus);
   assertEquals(f.world.burners, 5);
   f.elapse(10, 0.3 / p.vcpus);
   await f.g.tick();
-  // 85 seconds, where two passes are 20: watched all the same, though it earns nothing.
+  // 82 seconds, where two passes are 20: watched all the same, though it earns nothing.
   const sample = f.g.s.samples.at(-1)!;
-  assertEquals(sample.seconds, 85);
+  assertEquals(sample.seconds, 82);
   assertEquals(sample.test, true);
   assertEquals(sample.unobserved, undefined);
   assertEquals(sample.earning, false);
