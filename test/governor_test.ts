@@ -587,16 +587,16 @@ test("samples are kept three hours and readings three days", async () => {
   assertEquals(f.g.s.readings.map((r) => r.at), [start - hour]);
 });
 
-test("with every vCPU allowed, the ceiling ignores jitter of ten points either way", async () => {
+test("with a full bank the ceiling stays at every vCPU while outside work wobbles", async () => {
   const f = fixture({ initial_balance: p.capacity });
   await f.advance();
   await f.advance(30, 0.05, 0, 0.35);
-  assertEquals(f.cap, 790);
-  // A tenth of a core more outside the slice would move it by ten points.
+  assertEquals(f.cap, 800);
+  // A tenth of a core more outside the slice.
   await f.advance(30, 0.05, 0, 0.25);
-  assertEquals(f.cap, 790);
+  assertEquals(f.cap, 800);
   await f.advance(30, 0.1, 0, 0.3);
-  assertEquals(f.cap, 750);
+  assertEquals(f.cap, 800);
 });
 
 test("requests are taken in the order they were sent", async () => {
@@ -1035,10 +1035,10 @@ test("root's requests set the limit and the estimate by hand", async () => {
   assertEquals(f.g.s.estimate.excess, []);
   assertEquals(f.g.s.suspectAt, undefined);
   assertEquals(f.g.s.balance, p.capacity);
-  // The request reaches the ceiling in the pass that follows: every vCPU, less the 0.4 cores
-  // assumed outside the slice before anything is measured.
+  // The request reaches the ceiling in the pass that follows: a full bank allows more than every
+  // vCPU even after the 0.4 cores assumed outside the slice, so the slice gets them all.
   await f.advance(1);
-  assertEquals(f.cap, 760);
+  assertEquals(f.cap, 800);
 });
 
 test("a request file must be root's own, a regular file, and not writable by others", async () => {

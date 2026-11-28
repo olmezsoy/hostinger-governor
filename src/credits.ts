@@ -15,7 +15,7 @@ export const LAW: Law = { floor: 0.1, spendS: 1800, refillS: 3600 };
 export function allowedCores(p: Plan, balance: number, m: Margin, law = LAW): number {
   const floor = law.floor * p.capacity;
   const billed = p.baseline + (balance - floor) / (balance >= floor ? law.spendS : law.refillS);
-  return clamp((billed - m.add) / m.mul, 0, p.vcpus);
+  return Math.max(0, (billed - m.add) / m.mul);
 }
 
 // The slice ceiling in percent of one vCPU: the allowance less what runs outside the slice.
